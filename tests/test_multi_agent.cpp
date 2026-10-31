@@ -76,9 +76,19 @@ static void test_automatic_coordination_and_deps() {
     return reply("审查完成");
   };
   team.add_agent(coder,r);
-  const auto result=team.run("完成 C++ 代码及代码审查");
+  TeamOptions verify;
+  verify.validate_task=[](const TeamTask& task,const DelegationResult& answer) {
+    TaskValidation v;
+    v.passed=!answer.answer.empty();
+    v.reason="Empty sub Agent output";
+    v.evidence=j::object{{"task",task.id},{"checked",true}};
+    return v;
+  };
+  const auto result=team.run("完成 C++ 代码及代码审查",verify);
   assert(result.status==TeamStatus::Completed);
   assert(result.tasks.size()==2);
+  assert(result.tasks[0].verification=="verified");
+  assert(result.tasks[1].verification_evidence.at("checked").as<bool>());
   assert(result.usage_by_agent.at("coordinator").total_tokens==40);
   assert(result.usage_by_agent.at("coder").total_tokens==20);
   assert(result.usage_by_agent.at("reviewer").total_tokens==20);
@@ -114,6 +124,19 @@ static void test_parallel_and_dependency_budget() {
   const auto limited=team.collaborate(graph,budget);
   assert(limited.status==TeamStatus::LimitReached);
   assert(limited.model_calls<=1);
+  // 宿主验证失败时，不再把子 Agent 的口头承诺当成成功。
+  // 后续有依赖的步骤应直接跳过，避免在不合格的代码上执行提交。
+  TeamOptions strict;
+  strict.validate_task=[](const TeamTask& t,const DelegationResult&) {
+    TaskValidation v;
+    v.passed=t.id!="t1";
+    v.reason="external tests failed";
+    return v;
+  };
+  const auto rejected=team.collaborate(graph,strict);
+  assert(rejected.status==TeamStatus::Partial);
+  assert(rejected.tasks[0].verification=="failed");
+  assert(rejected.tasks[2].error.find("Skipped")!=std::string::npos);
   std::vector<TeamTask> invalid={TeamTask{"b","worker0","wrong dependency",{"a"}}};
   auto bad=team.collaborate(invalid);
   assert(bad.status==TeamStatus::Failed);

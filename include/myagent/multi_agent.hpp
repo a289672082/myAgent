@@ -19,13 +19,27 @@ struct AgentSpec {
   std::filesystem::path workspace;
   bool allow_workspace_write = false;
 };
+// 交给子 Agent 的是任务相关的摘要和文件引用，而非主 Agent 的完整对话历史。
+struct TaskContext {
+  std::string goal;
+  Json relevant_context = mymcp::json::object{};
+  Json artifacts = mymcp::json::object{};
+  Json constraints = mymcp::json::object{};
+};
+struct TaskValidation {
+  bool passed = false;
+  std::string reason;
+  Json evidence = mymcp::json::object{};
+};
 struct TeamTask {
   std::string id;
   std::string agent;
   std::string description;
   std::vector<std::string> depends_on; // 只能依赖计划中较早的任务。
   LoopMode mode = LoopMode::ReAct;
+  TaskContext context; // 调用方传入的有限任务上下文；默认空。
 };
+struct DelegationResult;
 struct TeamOptions {
   unsigned max_delegations = 8;       // 主协调器最多可产生多少个子任务
   unsigned max_parallel_agents = 2;   // 同时运行的不同 Agent 数量，至少 1
@@ -36,6 +50,9 @@ struct TeamOptions {
   unsigned max_handoff_chars = 6000;  // 向子 Agent 仅传相关上游摘要
   LoopOptions worker_loop;
   std::function<bool()> cancelled;
+  // 任务完成后由宿主程序审查真实证据（例如测试退出码）。
+  // 不设置时仅是模型报告完成，不能声称客观测试已通过。
+  std::function<TaskValidation(const TeamTask&, const DelegationResult&)> validate_task;
 };
 enum class TeamStatus { Completed, Partial, LimitReached, Cancelled, Failed };
 struct DelegationResult {
@@ -47,6 +64,9 @@ struct DelegationResult {
   TokenUsage usage;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
+  Json details = mymcp::json::object{}; // Worker Loop 的 plan/evaluations，包含实际工具证据。
+  std::string verification = "unverified";
+  Json verification_evidence = mymcp::json::object{};
 };
 struct TeamResult {
   TeamStatus status = TeamStatus::Failed;
