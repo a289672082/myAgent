@@ -42,10 +42,9 @@ myagent::Agent agent(config);
 - 支持 `Config::auto_skill_selection = false` 只用显式激活机制；`clear_history()` 保留目录注册和手动激活状态。
 - 遵循 `disable-model-invocation: true`（Claude）和 `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`（Codex）禁用自动激活，仍允许显式 use_skill；忽略不认识的扩展 YAML 字段，不提供完整 Claude/Codex 执行语义。
 
-## P0 Skill YAML 专项示例
+## P0 Agent Skills YAML 专项示例
 
 - 独立源文件：`examples/run_skill_yaml_demo.cpp`，入口 `run_skill_yaml_demo()`，单独的可执行目标 `run_skill_yaml_demo`，不依赖 `run_agent_demo()`。
-- 独立 YAML 配置示例：`examples/skill_yaml_demo/config/example.yaml`，展示 yaml-cpp 读取嵌套映射、数组、布尔值、数字和多行文本。
 - 示例资源：`examples/skill_yaml_demo/skills` 中的多行 YAML、完整元数据、Codex/Claude 禁用自动激活策略和参考文件；`invalid-skills` 中有预期失败的 YAML 文件。
 - 离线 Mock Model 演示 `agent_skill_load` 与 `agent_skill_read_file` 的往返结果、手动 `use_skill()`、`clear_history()`。**不需要模型凭据、命令行参数或任何网络请求**。
 - `MYAGENT_SKILL_YAML_DEMO_DIR` 在 CMake 构建时定位示例资源根目录，避免依赖执行时的 cwd；`ctest` 中注册 `myagent_skill_yaml_demo`。

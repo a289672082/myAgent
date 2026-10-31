@@ -2,7 +2,6 @@
 // 使用真实的 SKILL.md / agents/openai.yaml 样例，以及离线 Mock Model。
 // 可直接运行 run_skill_yaml_demo；独立于 run_agent_demo。
 #include "myagent/agent.hpp"
-#include "yaml-cpp/yaml.h"
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -131,42 +130,6 @@ int run_skill_yaml_demo() {
     const fs::path demo_root = MYAGENT_SKILL_YAML_DEMO_DIR;
     const fs::path skills_dir = demo_root / "skills";
     const fs::path invalid_dir = demo_root / "invalid-skills";
-
-    // 0. 普通 YAML 配置示例：yaml-cpp 可读取嵌套对象、列表、多行文字和类型。
-    // 这是 examples/skill_yaml_demo/config/example.yaml，不是 SKILL.md。
-    const fs::path example_yaml_file = demo_root / "config" / "example.yaml";
-    const YAML::Node app_config = YAML::LoadFile(example_yaml_file.string());
-    const std::string application_name = app_config["application"]["name"].as<std::string>();
-    const std::string model_name = app_config["model"]["name"].as<std::string>();
-    const std::string model_base_url = app_config["model"]["base_url"].as<std::string>();
-    const bool append_responses_path =
-      app_config["model"]["append_responses_path"].as<bool>();
-    const bool auto_discover =
-      app_config["skills"]["auto_discover"].as<bool>();
-    const auto directories =
-      app_config["skills"]["directories"].as<std::vector<std::string>>();
-    const int priority =
-      app_config["skills"]["policies"]["code-review"]["priority"].as<int>();
-    const std::string prompt =
-      app_config["instructions"].as<std::string>();
-
-    ensure(application_name == "myAgent YAML 使用示例", "application.name 解析错误");
-    ensure(model_name == "gpt-4.1-mini", "model.name 解析错误");
-    ensure(model_base_url == "https://api.openai.com", "model.base_url 解析错误");
-    ensure(append_responses_path && auto_discover, "YAML 布尔值解析错误");
-    ensure(directories.size() == 3 && directories[0] == "./skills",
-           "YAML 列表解析错误");
-    ensure(priority == 10, "YAML 嵌套整数解析错误");
-    ensure(contains(prompt, "不要自动执行"), "YAML 多行字符串解析错误");
-    std::cout << "[普通 YAML 文件] " << example_yaml_file << "\n"
-              << "  application.name: " << application_name << "\n"
-              << "  model: " << model_name << " @ " << model_base_url << "\n"
-              << "  append_responses_path: " << std::boolalpha
-              << append_responses_path << "\n"
-              << "  skills.auto_discover: " << auto_discover << "\n"
-              << "  skills.directories: " << directories.size() << " 个路径\n"
-              << "  skills.policies.code-review.priority: " << priority << "\n"
-              << "  instructions: " << prompt << "\n";
 
     // 1. 解析 P0 新增的完整 YAML 元数据（含多行字符串和嵌套 map）。
     myagent::SkillLibrary library;
