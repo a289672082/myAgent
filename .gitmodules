@@ -1,3 +1,7 @@
 [submodule "third_party/myMcpTools"]
 	path = third_party/myMcpTools
 	url = https://github.com/a289672082/myMcpTools.git
+
+[submodule "third_party/yaml-cpp"]
+	path = third_party/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git

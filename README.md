@@ -14,7 +14,7 @@
 
 ## 构建
 
-依赖 C++20、CMake >= 3.20、OpenSSL 和 Threads。子模块及其中的第三方依赖均保留原 LICENSE 文件。
+依赖 C++20、CMake >= 3.20、OpenSSL 和 Threads。新增固定版本 **yaml-cpp 0.9.0** Git submodule（MIT），用于标准 YAML frontmatter 解析；子模块源码和 LICENSE 随 `--recurse-submodules` 克隆后可离线编译。
 
 ~~~sh
 git clone --recurse-submodules https://github.com/a289672082/myAgent.git
@@ -113,7 +113,7 @@ std::string answer = agent.ask("帮我审查这段 C++ 代码");
 // agent.use_skill("brief-summary");
 ~~~
 
-Skill 目录应为 `name/SKILL.md` 格式，frontmatter 至少包含 `name` 与 `description`；支持简单的单行 YAML 键值写法，并不是完整的 YAML 解析器。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能规范或外部技能市场同步。
+Skill 目录应为 `name/SKILL.md` 格式，`SKILL.md` 通过 yaml-cpp 完整解析 YAML frontmatter（含多行 `|`/`>`、引号、注释、嵌套 `metadata` 等），并严格校验 Agent Skills 规范：`name`（1–64，ASCII 小写字母/数字/单连字符，和文件夹同名），`description`（1–1024 Unicode 字符）、可选 `license`、`compatibility`（1–500 字符）、`metadata`（字符串映射）及 `allowed-tools`（字符串）。会拒绝无效 YAML、字段类型错误、重复 YAML 键及缺少 frontmatter，错误包含文件与字段/行号。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。支持 Claude `disable-model-invocation: true` 和 Codex `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`，这种 Skill 不会被模型自动激活，但仍可用 `use_skill()` 显式启用。**`allowed-tools` 仅作元数据，不代表授予执行权限。** 其他厂商扩展字段不会阻止加载。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能运行时行为或外部技能市场同步。
 
 ## MCP 快捷接口（推荐）
 

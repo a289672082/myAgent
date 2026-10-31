@@ -36,10 +36,16 @@ struct Skill {
   std::string description;
   std::string content; // Empty during discovery: full SKILL.md is read on demand.
   std::filesystem::path source;
+  // Agent Skills standard optional frontmatter fields (metadata only).
+  std::string license;
+  std::string compatibility;
+  std::map<std::string, std::string> metadata;
+  std::string allowed_tools; // Informational; never grants tool permissions.
+  bool auto_invocable = true; // Honors optional Codex/Claude opt-out.
 };
 
 // A skill is trusted prompt material, not an executable plugin.
-// Supports SKILL.md with simple YAML frontmatter (name/description).
+// Validates Agent Skills YAML frontmatter with yaml-cpp; instructions load on demand.
 class SkillLibrary {
 public:
   void load(const std::filesystem::path& directory);

@@ -1,5 +1,6 @@
 #include "myagent/agent.hpp"
 #include "httplib.h"
+#include "yaml-cpp/yaml.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -155,6 +156,135 @@ std::string output_text(const Json& response) {
 } // namespace
 
 // Read only the YAML metadata at discovery time; body is read when selected.
+namespace {
+// A separate parsing boundary lets YAML errors include the filename and line.
+// The 16 KiB bound prevents huge metadata and YAML alias expansion attacks.
+struct Frontmatter {
+  YAML::Node yaml;
+  std::size_t lines_before_yaml = 1; // First YAML line is SKILL.md line 2.
+};
+std::runtime_error skill_error(const std::filesystem::path& file,
+                               const std::string& explanation,
+                               const YAML::Mark& mark = YAML::Mark::null_mark()) {
+  std::string message = "Skill " + file.generic_string() + ": " + explanation;
+  if (!mark.is_null()) {
+    message += " (line " + std::to_string(mark.line + 2) +
+               ", column " + std::to_string(mark.column + 1) + ")";
+  }
+  return std::runtime_error(message);
+}
+std::string strip_cr(std::string value) {
+  if (!value.empty() && value.back() == '\r') value.pop_back();
+  return value;
+}
+YAML::Node yaml_document(const std::string& contents,
+                         const std::filesystem::path& path,
+                         std::size_t offset = 1) {
+  try {
+    const auto docs = YAML::LoadAll(contents);
+    if (docs.size() != 1 || !docs[0].IsMap())
+      throw skill_error(path, "frontmatter must contain exactly one YAML mapping");
+    return docs[0];
+  } catch (const YAML::Exception& ex) {
+    std::string message = "invalid YAML: " + std::string(ex.what());
+    if (!ex.mark.is_null())
+      message += " (line " + std::to_string(ex.mark.line + offset + 1) +
+                 ", column " + std::to_string(ex.mark.column + 1) + ")";
+    throw skill_error(path, message);
+  }
+}
+YAML::Node yaml_unique_map(const YAML::Node& node,
+                           const std::filesystem::path& path,
+                           const std::string& field) {
+  if (!node.IsMap()) throw skill_error(path, "'" + field + "' must be a YAML mapping", node.Mark());
+  std::set<std::string> names;
+  for (const auto& entry : node) {
+    if (!entry.first.IsScalar())
+      throw skill_error(path, "'" + field + "' keys must be strings", entry.first.Mark());
+    const auto key = entry.first.Scalar();
+    if (!names.insert(key).second)
+      throw skill_error(path, "duplicate YAML key '" + key + "' in " + field, entry.first.Mark());
+  }
+  return node;
+}
+std::string scalar_field(const YAML::Node& map, const std::string& name,
+                         const std::filesystem::path& file, bool required = false) {
+  const auto value = map[name];
+  if (!value.IsDefined()) {
+    if (required) throw skill_error(file, "missing required field '" + name + "'");
+    return {};
+  }
+  if (!value.IsScalar())
+    throw skill_error(file, "'" + name + "' must be a string", value.Mark());
+  return value.Scalar();
+}
+bool boolean_field(const YAML::Node& map, const std::string& name,
+                   const std::filesystem::path& file, bool fallback) {
+  const auto node = map[name];
+  if (!node.IsDefined()) return fallback;
+  if (!node.IsScalar() || (node.Scalar() != "true" && node.Scalar() != "false"))
+    throw skill_error(file, "'" + name + "' must be true or false", node.Mark());
+  return node.Scalar() == "true";
+}
+std::size_t utf8_chars(const std::string& value, const std::filesystem::path& file,
+                       const std::string& field) {
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < value.size();) {
+    const unsigned char c = static_cast<unsigned char>(value[i]);
+    std::size_t bytes = 0;
+    if (c < 0x80) bytes = 1;
+    else if (c >= 0xc2 && c <= 0xdf) bytes = 2;
+    else if (c >= 0xe0 && c <= 0xef) bytes = 3;
+    else if (c >= 0xf0 && c <= 0xf4) bytes = 4;
+    if (!bytes || i + bytes > value.size())
+      throw skill_error(file, "invalid UTF-8 in '" + field + "'");
+    for (std::size_t j = 1; j < bytes; ++j)
+      if ((static_cast<unsigned char>(value[i + j]) & 0xc0) != 0x80)
+        throw skill_error(file, "invalid UTF-8 in '" + field + "'");
+    // Disallow overlong, surrogate, and out-of-range code points.
+    if ((bytes == 3 && c == 0xe0 && static_cast<unsigned char>(value[i+1]) < 0xa0) ||
+        (bytes == 3 && c == 0xed && static_cast<unsigned char>(value[i+1]) >= 0xa0) ||
+        (bytes == 4 && c == 0xf0 && static_cast<unsigned char>(value[i+1]) < 0x90) ||
+        (bytes == 4 && c == 0xf4 && static_cast<unsigned char>(value[i+1]) > 0x8f))
+      throw skill_error(file, "invalid UTF-8 in '" + field + "'");
+    i += bytes;
+    ++count;
+  }
+  return count;
+}
+YAML::Node read_frontmatter(const std::filesystem::path& file) {
+  if (std::filesystem::file_size(file) > MaxSkillBytes)
+    throw skill_error(file, "SKILL.md exceeds the 128 KiB limit");
+  std::ifstream in(file, std::ios::binary);
+  if (!in) throw skill_error(file, "cannot open SKILL.md");
+  std::string line;
+  if (!std::getline(in, line))
+    throw skill_error(file, "SKILL.md is empty");
+  if (line.rfind("\xef\xbb\xbf", 0) == 0) line.erase(0, 3); // UTF-8 BOM.
+  if (strip_cr(line) != "---")
+    throw skill_error(file, "SKILL.md must start with '---' YAML frontmatter");
+  std::string yaml;
+  bool closed = false;
+  for (std::size_t i = 0; std::getline(in, line); ++i) {
+    if (i >= 1024 || yaml.size() + line.size() > 16 * 1024)
+      throw skill_error(file, "YAML frontmatter exceeds 16 KiB");
+    line = strip_cr(std::move(line));
+    if (line == "---") { closed = true; break; }
+    yaml += line + "\n";
+  }
+  if (!closed) throw skill_error(file, "missing closing '---' frontmatter delimiter");
+  return yaml_document(yaml, file);
+}
+bool valid_skill_name(const std::string& name) {
+  if (name.empty() || name.size() > 64 || name.front() == '-' || name.back() == '-' ||
+      name.find("--") != std::string::npos) return false;
+  for (unsigned char c : name)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+      return false;
+  return true;
+}
+} // namespace
+
 void SkillLibrary::load_directory(const std::filesystem::path& directory,
                                   bool ignore_duplicates) {
   if (!std::filesystem::is_directory(directory))
@@ -164,39 +294,63 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
            directory, std::filesystem::directory_options::skip_permission_denied)) {
     if (entry.is_symlink() || !entry.is_regular_file() ||
         entry.path().filename() != "SKILL.md") continue;
-    if (std::filesystem::file_size(entry.path()) > MaxSkillBytes)
-      throw std::runtime_error("Skill exceeds size limit: " + entry.path().string());
-    std::ifstream in(entry.path(), std::ios::binary);
-    if (!in) throw std::runtime_error("Cannot read skill metadata");
-    std::string line;
-    if (!std::getline(in, line) || trim(line) != "---")
-      throw std::invalid_argument("Skill requires YAML frontmatter: " + entry.path().string());
-    std::string name;
-    std::string description;
-    std::size_t metadata_bytes = 0;
-    bool closed = false;
-    while (std::getline(in, line)) {
-      metadata_bytes += line.size() + 1;
-      if (metadata_bytes > 16 * 1024)
-        throw std::runtime_error("Skill frontmatter exceeds 16 KiB");
-      if (trim(line) == "---") { closed = true; break; }
-      const auto colon = line.find(':');
-      if (colon == std::string::npos) continue;
-      const auto key = trim(line.substr(0, colon));
-      if (key == "name") name = trim(line.substr(colon + 1));
-      if (key == "description") description = trim(line.substr(colon + 1));
+    const auto& path = entry.path();
+    auto root = yaml_unique_map(read_frontmatter(path), path, "frontmatter");
+    Skill skill;
+    skill.name = scalar_field(root, "name", path, true);
+    skill.description = scalar_field(root, "description", path, true);
+    skill.source = path;
+    if (!valid_skill_name(skill.name))
+      throw skill_error(path, "'name' must be 1-64 lowercase letters, digits or hyphens"
+                               " (no leading/trailing/double hyphens)");
+    if (path.parent_path().filename().string() != skill.name)
+      throw skill_error(path, "'name' must match the parent folder name: " +
+                              path.parent_path().filename().string());
+    const auto desc_length = utf8_chars(skill.description, path, "description");
+    if (trim(skill.description).empty() || desc_length > 1024)
+      throw skill_error(path, "'description' must be 1-1024 characters");
+    skill.license = scalar_field(root, "license", path);
+    skill.compatibility = scalar_field(root, "compatibility", path);
+    if (root["compatibility"].IsDefined()) {
+      const auto n = utf8_chars(skill.compatibility, path, "compatibility");
+      if (trim(skill.compatibility).empty() || n > 500)
+        throw skill_error(path, "'compatibility' must be 1-500 characters");
     }
-    if (!closed || name.empty() || description.empty() || name.size() > 64 ||
-        description.size() > 1024 || name.find_first_of("\r\n") != std::string::npos)
-      throw std::invalid_argument("Invalid Skill frontmatter: " + entry.path().string());
-    auto clash = [&](const Skill& skill) { return skill.name == name; };
+    skill.allowed_tools = scalar_field(root, "allowed-tools", path);
+    const auto metadata = root["metadata"];
+    if (metadata.IsDefined()) {
+      yaml_unique_map(metadata, path, "metadata");
+      for (const auto& pair : metadata) {
+        if (!pair.second.IsScalar())
+          throw skill_error(path, "'metadata' values must be strings", pair.second.Mark());
+        skill.metadata.emplace(pair.first.Scalar(), pair.second.Scalar());
+      }
+    }
+    // Claude extension: manual-only skills must never be advertised to the model.
+    if (boolean_field(root, "disable-model-invocation", path, false))
+      skill.auto_invocable = false;
+    const auto codex = path.parent_path() / "agents" / "openai.yaml";
+    if (std::filesystem::exists(codex)) {
+      if (!std::filesystem::is_regular_file(codex) || std::filesystem::is_symlink(codex))
+        throw skill_error(codex, "expected a regular agents/openai.yaml file");
+      const auto text = read_bounded_file(codex, MaxSkillBytes);
+      const auto doc = yaml_unique_map(yaml_document(text, codex, 0), codex, "agents/openai.yaml");
+      const auto policy = doc["policy"];
+      if (policy.IsDefined()) {
+        yaml_unique_map(policy, codex, "policy");
+        if (!boolean_field(policy, "allow_implicit_invocation", codex, true))
+          skill.auto_invocable = false;
+      }
+    }
+    const auto clash = [&](const Skill& existing) { return existing.name == skill.name; };
     if (std::any_of(skills_.begin(), skills_.end(), clash) ||
         std::any_of(added.begin(), added.end(), clash)) {
       if (ignore_duplicates) continue; // Project Skill wins over a global Skill.
-      throw std::invalid_argument("Duplicate skill: " + name);
+      throw skill_error(path, "duplicate Skill name '" + skill.name + "'");
     }
-    added.push_back(Skill{std::move(name), std::move(description), {}, entry.path()});
-    if (skills_.size() + added.size() > 64) throw std::runtime_error("Too many skills");
+    added.emplace_back(std::move(skill));
+    if (skills_.size() + added.size() > 64)
+      throw skill_error(path, "too many Skills (limit 64)");
   }
   std::sort(added.begin(), added.end(),
             [](const Skill& a, const Skill& b) { return a.name < b.name; });
@@ -413,6 +567,7 @@ std::string Agent::instructions() const {
               "without an explicitly authorized execution tool.\n";
     std::size_t budget = 8000;
     for (const auto& skill : skills_.all()) {
+      if (!skill.auto_invocable) continue;
       const std::string line = "- " + skill.name + ": " +
                                skill.description.substr(0, 300) + "\n";
       if (line.size() > budget) { result += "(Skill catalog truncated)\n"; break; }
@@ -528,6 +683,8 @@ std::string Agent::run(Json user_content) {
           const auto skill_name = as_string(args, "name");
           if (skill_name.empty()) throw std::invalid_argument("Skill name is required");
           if (name == "agent_skill_load") {
+            if (!skills_.get(skill_name).auto_invocable)
+              throw std::invalid_argument("Skill allows explicit activation only: " + skill_name);
             const auto content = skills_.read(skill_name);
             loaded_skills.insert(skill_name);
             const auto files = skills_.supporting_files(skill_name);
