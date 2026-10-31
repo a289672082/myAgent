@@ -6,6 +6,7 @@
 #include <utility>
 
 namespace myagent::detail {
+namespace json = mymcp::json;
 namespace {
 std::string required_string(const Json& obj, const char* field) {
   const Json* value = json::if_contains(obj, field);
