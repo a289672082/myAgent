@@ -54,7 +54,7 @@ int main() {
     "---\nname: rewrite\ndescription: Rewrite natural-language text\n---\n"
     "Make text clear and concise.\n");
   // Duplicate global-like skill should lose to the first project discovery root.
-  write(project / ".claude" / "skills" / "duplicate" / "SKILL.md",
+  write(project / ".claude" / "skills" / "code-review" / "SKILL.md",
     "---\nname: code-review\ndescription: Alternate reviewer\n---\nDUPLICATE\n");
   fs::current_path(project);
 

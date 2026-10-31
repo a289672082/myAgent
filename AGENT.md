@@ -36,11 +36,11 @@ myagent::Agent agent(config);
 ## Skill 自动发现与渐进式披露
 
 - 默认自动扫描项目 `.agents/skills/`、`.claude/skills/`、当前 `skills/` 及用户的 `~/.agents/skills/`、`~/.claude/skills/`（`Config::auto_discover_skills` 可以关闭）。
-- 发现仅解析 YAML frontmatter 的 `name` / `description`；`Skill.content` 在目录阶段留空，完整正文按需从 SKILL.md 读取。
+- 发现阶段使用本地固定的 yaml-cpp 0.9.0 解析标准 YAML frontmatter，校验 name/description/license/compatibility/metadata/allowed-tools 类型及长度与目录名；`Skill.content` 在目录阶段留空，完整正文按需从 SKILL.md 读取。
 - 模型收到 Skill 元数据而不是正文；可调用内部工具 `agent_skill_load(name)` 获取完整指令，必要时再调用 `agent_skill_read_file(name,path)` 读取选中 Skill 的 references/scripts/assets 文本材料。
 - 自动 Skill 激活与辅助文件读取权限是本轮调用范围，避免无关任务之间持续注入。显式 `use_skill(name)` 则在该 Agent 会话内持续生效。
 - 支持 `Config::auto_skill_selection = false` 只用显式激活机制；`clear_history()` 保留目录注册和手动激活状态。
-- 禁止目录穿越和目录内软链接、拒绝二进制文本读取；不自动执行 scripts/。目前使用基础 YAML 解析和有限目录大小，不具备 Codex/Claude 全部特殊机制。
+- 遵循 `disable-model-invocation: true`（Claude）和 `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`（Codex）禁用自动激活，仍允许显式 use_skill；忽略不认识的扩展 YAML 字段，不提供完整 Claude/Codex 执行语义。
 
 ## MCP 设计
 
