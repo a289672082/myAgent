@@ -187,7 +187,9 @@ auto result = team.run("开发并审查 C++ 组件");
 myagent::AgentSpec coder;
 coder.name = "coder";
 coder.description = "负责 C++ 开发";
-coder.config = modelConfig; // 配置各自 base_url / api_key / model
+coder.config.base_url = "https://model-a.example.com";
+coder.config.api_key = "example-coder-key";
+coder.config.model = "coder-model";
 coder.config.auto_discover_skills = false; // 不扫描全局项目/用户 Skill
 coder.config.auto_skill_selection = true; // 模型可通过 agent_skill_load 按需加载
 team.add_agent(coder);
@@ -201,7 +203,9 @@ coding.add_mcp_stdio("git", "./git-mcp-server");
 myagent::AgentSpec reviewer;
 reviewer.name = "reviewer";
 reviewer.description = "只负责审查";
-reviewer.config = reviewerConfig;
+reviewer.config.base_url = "https://model-b.example.com";
+reviewer.config.api_key = "example-reviewer-key";
+reviewer.config.model = "reviewer-model";
 reviewer.config.auto_discover_skills = false;
 reviewer.config.auto_skill_selection = false; // 禁止模型自主加载 Skill
 team.add_agent(reviewer);
