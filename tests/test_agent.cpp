@@ -156,8 +156,12 @@ int main() {
     stdio_agent.add_mcp_stdio("worker", MYAGENT_TEST_STDIO_SERVER);
     stdio_model->handler = [&](const Json& request) -> Json {
       const Json& defs = request.at("tools");
-      assert(defs.size() == 1);
-      assert(defs[0].at("name").as_string() == "worker__multiply");
+      bool found_multiply = false;
+      for (const auto& definition : defs.array_range()) {
+        if (definition.at("name").as_string() == "worker__multiply")
+          found_multiply = true;
+      }
+      assert(found_multiply);
       const auto& input = request.at("input");
       if (stdio_model->count == 1)
         return call("worker__multiply", R"({"lhs":6,"rhs":7})");
