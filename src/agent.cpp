@@ -2,10 +2,12 @@
 #include "httplib.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -28,7 +30,7 @@ std::string trim(std::string s) {
     s = s.substr(1, s.size() - 2);
   return s;
 }
-std::string read_file(const std::filesystem::path& file, std::size_t limit) {
+std::string read_bounded_file(const std::filesystem::path& file, std::size_t limit) {
   if (!std::filesystem::is_regular_file(file))
     throw std::runtime_error("Not a regular file: " + file.string());
   if (std::filesystem::file_size(file) > limit)
@@ -152,41 +154,48 @@ std::string output_text(const Json& response) {
 }
 } // namespace
 
-void SkillLibrary::load(const std::filesystem::path& directory) {
+// Read only the YAML metadata at discovery time; body is read when selected.
+void SkillLibrary::load_directory(const std::filesystem::path& directory,
+                                  bool ignore_duplicates) {
   if (!std::filesystem::is_directory(directory))
     throw std::invalid_argument("Skill directory does not exist: " + directory.string());
   std::vector<Skill> added;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(
            directory, std::filesystem::directory_options::skip_permission_denied)) {
-    if (!entry.is_regular_file() || entry.path().filename() != "SKILL.md") continue;
-    std::string contents = read_file(entry.path(), MaxSkillBytes);
-    // Normalize CRLF: Windows text-mode SKILL.md files use \r\n.
-    contents.erase(std::remove(contents.begin(), contents.end(), '\r'), contents.end());
-    std::string name = entry.path().parent_path().filename().string();
+    if (entry.is_symlink() || !entry.is_regular_file() ||
+        entry.path().filename() != "SKILL.md") continue;
+    if (std::filesystem::file_size(entry.path()) > MaxSkillBytes)
+      throw std::runtime_error("Skill exceeds size limit: " + entry.path().string());
+    std::ifstream in(entry.path(), std::ios::binary);
+    if (!in) throw std::runtime_error("Cannot read skill metadata");
+    std::string line;
+    if (!std::getline(in, line) || trim(line) != "---")
+      throw std::invalid_argument("Skill requires YAML frontmatter: " + entry.path().string());
+    std::string name;
     std::string description;
-    if (contents.rfind("---\n", 0) == 0) {
-      const auto end = contents.find("\n---", 4);
-      if (end != std::string::npos) {
-        std::istringstream lines(contents.substr(4, end - 4));
-        std::string line;
-        while (std::getline(lines, line)) {
-          const auto colon = line.find(':');
-          if (colon == std::string::npos) continue;
-          const auto key = trim(line.substr(0, colon));
-          if (key == "name") name = trim(line.substr(colon + 1));
-          if (key == "description") description = trim(line.substr(colon + 1));
-        }
-        contents = contents.substr(end + 4);
-      }
+    std::size_t metadata_bytes = 0;
+    bool closed = false;
+    while (std::getline(in, line)) {
+      metadata_bytes += line.size() + 1;
+      if (metadata_bytes > 16 * 1024)
+        throw std::runtime_error("Skill frontmatter exceeds 16 KiB");
+      if (trim(line) == "---") { closed = true; break; }
+      const auto colon = line.find(':');
+      if (colon == std::string::npos) continue;
+      const auto key = trim(line.substr(0, colon));
+      if (key == "name") name = trim(line.substr(colon + 1));
+      if (key == "description") description = trim(line.substr(colon + 1));
     }
-    if (name.empty() || name.size() > 80)
-      throw std::invalid_argument("Invalid skill name in " + entry.path().string());
-    auto clash = [&](const Skill& s) { return s.name == name; };
+    if (!closed || name.empty() || description.empty() || name.size() > 64 ||
+        description.size() > 1024 || name.find_first_of("\r\n") != std::string::npos)
+      throw std::invalid_argument("Invalid Skill frontmatter: " + entry.path().string());
+    auto clash = [&](const Skill& skill) { return skill.name == name; };
     if (std::any_of(skills_.begin(), skills_.end(), clash) ||
-        std::any_of(added.begin(), added.end(), clash))
+        std::any_of(added.begin(), added.end(), clash)) {
+      if (ignore_duplicates) continue; // Project Skill wins over a global Skill.
       throw std::invalid_argument("Duplicate skill: " + name);
-    added.push_back(Skill{std::move(name), std::move(description),
-                          std::move(contents), entry.path()});
+    }
+    added.push_back(Skill{std::move(name), std::move(description), {}, entry.path()});
     if (skills_.size() + added.size() > 64) throw std::runtime_error("Too many skills");
   }
   std::sort(added.begin(), added.end(),
@@ -194,9 +203,93 @@ void SkillLibrary::load(const std::filesystem::path& directory) {
   skills_.insert(skills_.end(), std::make_move_iterator(added.begin()),
                  std::make_move_iterator(added.end()));
 }
+void SkillLibrary::load(const std::filesystem::path& directory) {
+  load_directory(directory, false);
+}
+void SkillLibrary::discover() {
+  namespace fs = std::filesystem;
+  const auto cwd = fs::current_path();
+  // Most-local first; stop ascending at a Git worktree boundary.
+  auto dir = cwd;
+  for (int depth = 0; depth < 16; ++depth) {
+    for (const auto& relative : {".agents/skills", ".claude/skills"}) {
+      const auto root = dir / relative;
+      if (fs::is_directory(root)) load_directory(root, true);
+    }
+    if (dir == cwd && fs::is_directory(dir / "skills"))
+      load_directory(dir / "skills", true); // Backward-compatible examples.
+    if (fs::exists(dir / ".git") || dir == dir.root_path()) break;
+    const auto parent = dir.parent_path();
+    if (parent == dir || parent.empty()) break;
+    dir = parent;
+  }
+  // HOME / USERPROFILE is for Skill discovery only, never model credentials.
+  const char* home = std::getenv("HOME");
+#ifdef _WIN32
+  if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+  if (home && *home) {
+    for (const auto& relative : {".agents/skills", ".claude/skills"}) {
+      const auto root = fs::path(home) / relative;
+      if (fs::is_directory(root)) load_directory(root, true);
+    }
+  }
+}
 const Skill& SkillLibrary::get(const std::string& name) const {
   for (const auto& skill : skills_) if (skill.name == name) return skill;
   throw std::out_of_range("Unknown skill: " + name);
+}
+std::string SkillLibrary::read(const std::string& name) const {
+  const auto& skill = get(name);
+  std::string contents = read_bounded_file(skill.source, MaxSkillBytes);
+  contents.erase(std::remove(contents.begin(), contents.end(), '\r'), contents.end());
+  return contents;
+}
+std::vector<std::string> SkillLibrary::supporting_files(const std::string& name) const {
+  const auto root = get(name).source.parent_path();
+  std::vector<std::string> result;
+  for (const auto& folder : {"references", "scripts", "assets"}) {
+    const auto start = root / folder;
+    if (!std::filesystem::is_directory(start) || std::filesystem::is_symlink(start))
+      continue;
+    for (auto iter = std::filesystem::recursive_directory_iterator(
+          start, std::filesystem::directory_options::skip_permission_denied);
+         iter != std::filesystem::recursive_directory_iterator(); ++iter) {
+      if (iter->is_symlink()) { iter.disable_recursion_pending(); continue; }
+      if (!iter->is_regular_file()) continue;
+      result.push_back(iter->path().lexically_relative(root).generic_string());
+      if (result.size() >= 64) break;
+    }
+    if (result.size() >= 64) break;
+  }
+  std::sort(result.begin(), result.end());
+  return result;
+}
+std::string SkillLibrary::read_file(const std::string& name,
+                                    const std::string& relative_path) const {
+  namespace fs = std::filesystem;
+  const auto root = get(name).source.parent_path();
+  const fs::path rel(relative_path);
+  if (rel.empty() || rel.is_absolute() || rel.has_root_name() ||
+      relative_path.find('\\') != std::string::npos)
+    throw std::invalid_argument("Skill file path must be relative");
+  auto part = rel.begin();
+  if (part == rel.end() || (*part != "references" && *part != "scripts" && *part != "assets"))
+    throw std::invalid_argument("Skill file must be inside references/, scripts/ or assets/");
+  for (const auto& segment : rel) {
+    if (segment == ".." || segment == "." || segment.empty())
+      throw std::invalid_argument("Skill file path traversal is not permitted");
+  }
+  fs::path path = root;
+  for (const auto& segment : rel) {
+    path /= segment;
+    if (fs::is_symlink(path))
+      throw std::invalid_argument("Skill symlinks are not permitted");
+  }
+  auto content = read_bounded_file(path, MaxSkillBytes);
+  if (content.find('\0') != std::string::npos)
+    throw std::invalid_argument("Binary Skill asset cannot be read as text");
+  return content;
 }
 
 OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
@@ -218,7 +311,7 @@ Json OpenAIResponses::create(const Json& request) {
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
                                         const std::string& model) const {
-  const std::string bytes = read_file(file, MaxMediaBytes);
+  const std::string bytes = read_bounded_file(file, MaxMediaBytes);
   // Audio APIs are separate endpoints on the same origin, not Responses URLs.
   const auto url = parse_base_url(config_.base_url);
   httplib::Client client(url.origin);
@@ -256,6 +349,7 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
+  if (config_.auto_discover_skills) skills_.discover();
 }
 void Agent::validate_mcp_prefix(const std::string& prefix) const {
   if (prefix.empty() || safe_tool_name(prefix) != prefix)
@@ -302,16 +396,29 @@ void Agent::tool(std::string name, std::string description,
 }
 void Agent::load_skills(const std::filesystem::path& directory) { skills_.load(directory); }
 void Agent::use_skill(const std::string& name) {
-  skills_.get(name);
-  if (std::find(active_skills_.begin(), active_skills_.end(), name) == active_skills_.end())
-    active_skills_.push_back(name);
+  // Explicit activation stays pinned until the caller changes the Agent.
+  if (!manual_skill_contents_.count(name))
+    manual_skill_contents_.emplace(name, skills_.read(name));
 }
 std::string Agent::instructions() const {
   std::string result = config_.instructions;
-  for (const auto& name : active_skills_) {
-    const auto& skill = skills_.get(name);
-    result += "\n\n# Skill: " + skill.name + "\n" + skill.description +
-              "\n\n" + skill.content;
+  for (const auto& [name, content] : manual_skill_contents_)
+    result += "\n\n# Explicit Skill: " + name + "\n" + content;
+  if (config_.auto_skill_selection && !skills_.all().empty()) {
+    result += "\n\n# Available Skills (metadata only)\n"
+              "Use agent_skill_load with the matching skill name when a task "
+              "would benefit from its instructions. Do not load irrelevant "
+              "skills. Use agent_skill_read_file only if the loaded skill "
+              "requires supporting reference material. Never execute scripts "
+              "without an explicitly authorized execution tool.\n";
+    std::size_t budget = 8000;
+    for (const auto& skill : skills_.all()) {
+      const std::string line = "- " + skill.name + ": " +
+                               skill.description.substr(0, 300) + "\n";
+      if (line.size() > budget) { result += "(Skill catalog truncated)\n"; break; }
+      result += line;
+      budget -= line.size();
+    }
   }
   return result;
 }
@@ -334,6 +441,30 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
           {"strict", false}});
     }
   }
+  if (config_.auto_skill_selection && !skills_.all().empty()) {
+    // Keep built-in Skill tools separate from externally registered MCP routes.
+    if (routes.count("agent_skill_load") || routes.count("agent_skill_read_file"))
+      throw std::runtime_error("An MCP tool collides with an internal Skill tool");
+    tools.push_back(json::object{
+      {"type", "function"}, {"name", "agent_skill_load"},
+      {"description", "Load one relevant Skill's complete SKILL.md on demand; no script execution."},
+      {"parameters", json::object{
+        {"type", "object"}, {"properties", json::object{
+          {"name", json::object{{"type", "string"}, {"description", "Skill name from catalog"}}}
+        }}, {"required", json::array{"name"}}, {"additionalProperties", false}
+      }}, {"strict", false}
+    });
+    tools.push_back(json::object{
+      {"type", "function"}, {"name", "agent_skill_read_file"},
+      {"description", "Read a UTF-8 text file under a previously loaded Skill's references/, scripts/ or assets/ folder; never executes a script."},
+      {"parameters", json::object{
+        {"type", "object"}, {"properties", json::object{
+          {"name", json::object{{"type", "string"}}},
+          {"path", json::object{{"type", "string"}, {"description", "Relative path inside selected Skill"}}}
+        }}, {"required", json::array{"name", "path"}}, {"additionalProperties", false}
+      }}, {"strict", false}
+    });
+  }
   return tools;
 }
 std::string Agent::execute_tool(const Route& route, const Json& call) {
@@ -354,6 +485,7 @@ std::string Agent::run(Json user_content) {
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
   std::map<std::string, Route> routes;
   const Json tools = tool_definitions(routes);
+  std::set<std::string> loaded_skills; // Per-request automatic selection.
   for (unsigned round = 0; round <= config_.max_tool_rounds; ++round) {
     if (proposed.size() > config_.max_history_items)
       throw std::runtime_error("Conversation exceeded max_history_items; clear_history()");
@@ -385,11 +517,47 @@ std::string Agent::run(Json user_content) {
       if (as_string(item, "type") != "function_call") continue;
       const auto id = as_string(item, "call_id");
       const auto name = as_string(item, "name");
-      if (id.empty() || !routes.count(name))
-        throw std::runtime_error("Unknown tool call ID or name: " + name);
+      if (id.empty()) throw std::runtime_error("Missing tool call ID");
+      std::string output;
+      if (name == "agent_skill_load" || name == "agent_skill_read_file") {
+        if (!config_.auto_skill_selection || skills_.all().empty())
+          throw std::runtime_error("Skill tools are disabled");
+        try {
+          const Json args = json::parse(as_string(item, "arguments", "{}"));
+          if (!args.is_object()) throw std::invalid_argument("Skill args must be an object");
+          const auto skill_name = as_string(args, "name");
+          if (skill_name.empty()) throw std::invalid_argument("Skill name is required");
+          if (name == "agent_skill_load") {
+            const auto content = skills_.read(skill_name);
+            loaded_skills.insert(skill_name);
+            const auto files = skills_.supporting_files(skill_name);
+            Json paths = json::array{};
+            for (const auto& path : files) paths.push_back(path);
+            output = json::serialize(json::object{
+              {"name", skill_name}, {"instructions", content}, {"supporting_files", paths},
+              {"note", "Scripts are listed/read as text only; not executed"}
+            });
+          } else {
+            if (!loaded_skills.count(skill_name) && !manual_skill_contents_.count(skill_name))
+              throw std::invalid_argument("Load the Skill before reading supporting files");
+            const auto path = as_string(args, "path");
+            output = json::serialize(json::object{
+              {"name", skill_name}, {"path", path},
+              {"content", skills_.read_file(skill_name, path)}
+            });
+          }
+        } catch (const std::exception& e) {
+          output = json::serialize(json::object{{"isError", true}, {"message", e.what()}});
+        }
+      } else {
+        const auto route = routes.find(name);
+        if (route == routes.end())
+          throw std::runtime_error("Unknown tool: " + name);
+        output = execute_tool(route->second, item);
+      }
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
-        {"output", execute_tool(routes.at(name), item)}
+        {"output", output}
       });
     }
   }
@@ -403,7 +571,7 @@ std::string Agent::ask_parts(Json content) {
 }
 std::string Agent::ask_image(const std::string& question, const std::filesystem::path& image) {
   const auto mime = media_type(image);
-  const auto data_url = "data:" + mime + ";base64," + base64(read_file(image, MaxMediaBytes));
+  const auto data_url = "data:" + mime + ";base64," + base64(read_bounded_file(image, MaxMediaBytes));
   return ask_parts(json::array{
     json::object{{"type", "input_text"}, {"text", question}},
     json::object{{"type", "input_image"}, {"image_url", data_url}}
@@ -430,7 +598,7 @@ void Agent::save_history(const std::filesystem::path& file) const {
   write_file(file, json::serialize(history_));
 }
 void Agent::load_history(const std::filesystem::path& file) {
-  Json data = json::parse(read_file(file, 8 * 1024 * 1024));
+  Json data = json::parse(read_bounded_file(file, 8 * 1024 * 1024));
   if (!data.is_array() || data.size() > config_.max_history_items)
     throw std::runtime_error("Invalid history file");
   for (const auto& entry : data.array_range())

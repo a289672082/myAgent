@@ -45,13 +45,10 @@ int run_agent_demo() {
     // OAuth MCP：完成浏览器授权后，传入已认证的 OAuth Session：
     // agent.add_mcp_oauth("private", "https://example.com/mcp", authenticatedSession);
 
-    // 4. 读取示例 Skill。该目录已随项目提供。
-    const std::filesystem::path skillDirectory = "./skills";
-    const std::string skillName = "brief-summary";
-    if (std::filesystem::is_directory(skillDirectory)) {
-      agent.load_skills(skillDirectory);
-      agent.use_skill(skillName);
-    }
+    // 4. Skill 自动发现 / 选择：无需手动调用 load_skills() 或 use_skill()。
+    // Agent 构造时会搜索 ./skills、.agents/skills、.claude/skills 和用户级目录。
+    // 初始只把名称/描述发送给模型；模型决定是否按需读取 SKILL.md。
+    // 如需强制指定，可保留使用：agent.use_skill("brief-summary");
 
     // 5. 多轮对话：第二次请求复用第一轮的会话历史。
     std::cout << agent.ask("What is 12 + 30? Please use a tool if available.") << "\n";

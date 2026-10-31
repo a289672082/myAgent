@@ -27,12 +27,14 @@ struct Config {
   bool append_responses_path = true;
   unsigned max_tool_rounds = 8;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
+  bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
+  bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
 };
 
 struct Skill {
   std::string name;
   std::string description;
-  std::string content;
+  std::string content; // Empty during discovery: full SKILL.md is read on demand.
   std::filesystem::path source;
 };
 
@@ -41,9 +43,16 @@ struct Skill {
 class SkillLibrary {
 public:
   void load(const std::filesystem::path& directory);
+  // Project: .agents/skills, .claude/skills, skills/ (CWD); user: ~/.agents/skills, ~/.claude/skills.
+  // Existing directory entries win when names collide; no automatic script execution.
+  void discover();
   const std::vector<Skill>& all() const { return skills_; }
   const Skill& get(const std::string& name) const;
+  std::string read(const std::string& name) const;
+  std::vector<std::string> supporting_files(const std::string& name) const;
+  std::string read_file(const std::string& name, const std::string& relative_path) const;
 private:
+  void load_directory(const std::filesystem::path& directory, bool ignore_duplicates);
   std::vector<Skill> skills_;
 };
 
@@ -148,7 +157,7 @@ private:
   Server local_;
   std::vector<Endpoint> endpoints_;
   SkillLibrary skills_;
-  std::vector<std::string> active_skills_;
+  std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   Json history_ = json::array{};
   Json last_response_ = nullptr;
 };
