@@ -236,6 +236,36 @@ static void test_failover_retry_and_priority() {
   assert(prioritized.status==TeamStatus::Completed);
   assert(order.size()==2 && order[0]=="high" && order[1]=="low");
 }
+static void test_workspace_atomic_write(const fs::path& root) {
+  const auto workspace=root/"workspaces"/"writer";
+  fs::create_directories(workspace);
+  const auto file=workspace/"target.txt";
+  {std::ofstream out(file);out<<"original";}
+  AgentTeam team(config(),std::make_shared<Mock>());
+  auto model=std::make_shared<Mock>();
+  model->handler=[](const Json& req) {
+    const auto* input=j::if_contains(req,"input");
+    bool tool_done=false;
+    if(input&&input->is_array())
+      for(const auto& item:input->array_range()) {
+        const auto* type=j::if_contains(item,"type");
+        if(type&&type->is_string()&&type->as_string()=="function_call_output")
+          tool_done=true;
+      }
+    if(tool_done)return response("write completed");
+    return j::object{{"status","completed"},{"output",j::array{
+      j::object{{"type","function_call"},{"call_id","write-1"},
+        {"name","local__workspace_write"},
+        {"arguments",R"({"relative":"target.txt","content":"replaced"})"}}}}};
+  };
+  AgentSpec spec;spec.name="writer";spec.description="safe workspace writer";
+  spec.config=config();spec.workspace=workspace;spec.allow_workspace_write=true;
+  team.add_agent(spec,model);
+  const auto result=team.delegate("writer","replace an existing test file");
+  assert(result.status==LoopStatus::Completed);
+  std::ifstream in(file);std::string text;std::getline(in,text);
+  assert(text=="replaced");
+}
 int main() {
   const auto root=fs::temp_directory_path()/"myagent-p1-p2-fixtures";
   fs::remove_all(root);
@@ -245,6 +275,7 @@ int main() {
   test_memory(root);
   test_chat_adapter();
   test_failover_retry_and_priority();
+  test_workspace_atomic_write(root);
   fs::remove_all(root);
   std::cout<<"P1/P2 integration tests OK\n";
 }
