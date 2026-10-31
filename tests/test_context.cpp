@@ -93,12 +93,15 @@ static void test_preserve_full_tool_turn() {
   int round=0;
   model->fn=[&](const Json& req)->Json {
     ++round;
+    const auto* instructions=j::if_contains(req,"instructions");
+    if(instructions && instructions->is_string() &&
+       std::string(instructions->as_string()).find("Summarize older conversation")!=std::string::npos)
+      return response("摘要：已调用 sum，结果 3。",10);
     if(round==1) {
       return j::object{{"status","completed"},{"output",j::array{j::object{
         {"type","function_call"},{"name","local__sum"},{"call_id","id1"},
         {"arguments",R"({"a":1,"b":2})"}}}}};
     }
-    if(round==4) return response("摘要：已调用 sum，结果 3。",10);
     return response("普通答复",10);
   };
   Agent with_tools(settings(),model);
