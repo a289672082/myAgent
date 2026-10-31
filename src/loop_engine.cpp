@@ -45,6 +45,7 @@ void trace_event(LoopResult& result, const LoopOptions& options,
 LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                            const LoopOptions& options) {
   LoopResult result;
+  last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
   Json latest_response = nullptr;
@@ -67,7 +68,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           tools_enabled, result.model_calls, result.tool_calls,
           options.max_model_calls, options.max_tool_calls, max_rounds,
           options.cancelled, &result.trace, options.on_event, phase,
-          step_tool_results);
+          step_tool_results, &result.usage, &result.usage_by_phase,
+          &result.usage_by_model);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -114,7 +116,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         {}, true, result.model_calls, result.tool_calls,
         options.max_model_calls, options.max_tool_calls,
         std::min(config_.max_tool_rounds, options.max_iterations - 1),
-        options.cancelled, &result.trace, options.on_event, "react");
+        options.cancelled, &result.trace, options.on_event, "react",
+        nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);

@@ -12,6 +12,7 @@
 - 音频输入：转写成文字后继续对话；音频输出：合成 MP3
 - 保存/加载对话历史，注入 Model mock 做离线测试
 - 四种循环 ReAct / Plan-and-Execute / Reflection / Evaluator-Optimizer（统一工具预算，支持多图及音频转写）
+- Token 用量统计：Responses 真实 usage、单次与累计、按循环阶段和模型分组、缓存与推理 Token
 
 ## 构建
 
@@ -116,6 +117,44 @@ std::string answer = agent.ask("帮我审查这段 C++ 代码");
 
 Skill 目录应为 `name/SKILL.md` 格式，`SKILL.md` 通过 yaml-cpp 完整解析 YAML frontmatter（含多行 `|`/`>`、引号、注释、嵌套 `metadata` 等），并严格校验 Agent Skills 规范：`name`（1–64，ASCII 小写字母/数字/单连字符，和文件夹同名），`description`（1–1024 Unicode 字符）、可选 `license`、`compatibility`（1–500 字符）、`metadata`（字符串映射）及 `allowed-tools`（字符串）。会拒绝无效 YAML、字段类型错误、重复 YAML 键及缺少 frontmatter，错误包含文件与字段/行号。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。支持 Claude `disable-model-invocation: true` 和 Codex `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`，这种 Skill 不会被模型自动激活，但仍可用 `use_skill()` 显式启用。**`allowed-tools` 仅作元数据，不代表授予执行权限。** 其他厂商扩展字段不会阻止加载。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能运行时行为或外部技能市场同步。
 
+## Token 消耗统计（Responses usage）
+
+Agent 直接读取每次 Responses API 返回的 `usage`，**不靠文字字符数估算**。支持普通 `ask()`、图片请求、工具调用后的模型轮次，以及全部四种 Agent Loop。每个 Loop 都会统计所有规划、执行、反思、评估阶段的用量。
+
+```cpp
+myagent::Agent agent(config);
+agent.ask("查找项目资料");
+auto last = agent.last_usage();     // 上一次 ask() 的所有模型轮次
+auto total = agent.total_usage();   // 当前 Agent 创建以来的累计用量
+
+auto result = agent.plan_and_execute("分析并修改 C++ 项目");
+auto usage = result.usage;                          // 本次 Loop 的总统计
+auto planner = result.usage_by_phase.at("plan");    // 规划阶段
+auto executor = result.usage_by_phase.at("execute"); // 执行阶段（含工具调用轮次）
+// result.usage_by_model 可按实际请求的模型名称汇总。
+std::cout << usage.input_tokens << ", " << usage.output_tokens
+          << ", " << usage.total_tokens << "\n";
+std::cout << usage.cached_input_tokens << ", "
+          << usage.reasoning_output_tokens << "\n";
+std::cout << usage.reported_calls << ", " << usage.unreported_calls << "\n";
+
+agent.clear_history(); // 不清除 Token 用量
+agent.reset_usage();   // 显式清空最近一次与累计统计（不会影响服务端账单）
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `input_tokens` / `output_tokens` / `total_tokens` | 输入、输出、总 Token |
+| `cached_input_tokens` | 输入缓存命中 Token，已包含在 input_tokens 内 |
+| `reasoning_output_tokens` | 推理 Token，已包含在 output_tokens 内 |
+| `reported_calls` | 包含有效 usage 的模型响应次数 |
+| `unreported_calls` | 未提供有效 usage 的模型响应次数 |
+
+若某次调用缺少 `usage` 或格式不合法，`unreported_calls` 会加一，**不会假装消耗为零，也不会按字数推算**。累计 Token 只能代表模型已报告的用量；即使任务最终失败，之前已收到的有效 usage 仍计入统计。`TokenUsage::complete()` 表示没有缺失统计的**已收到响应**，不保证网络失败后能取得服务端计费结果。
+
+本功能只计 Responses 模型调用。图片若进入 Responses 模型计费会出现在该模型的 usage 中；独立的音频转写/语音合成接口不在此统计范围内，也不自动计算 API 费用。不同模型和供应商的价格不相同，缓存和推理 Token 不得重复计数。
+
+独立的离线示例 `examples/run_token_usage_demo.cpp` 提供 `run_token_usage_demo()`；测试 `tests/test_token_usage.cpp` 模拟真实 usage、工具轮次、模型缺失统计以及失败任务的账本保留。
 ## 统一 Agent 循环（四种策略 + 图片和音频）
 
 新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供四种策略：

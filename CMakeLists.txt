@@ -53,7 +53,7 @@ if(WIN32)
 endif()
 add_library(myagent::mcp ALIAS myagent_mcp)
 
-add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp)
+add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -64,6 +64,10 @@ option(MYAGENT_BUILD_TESTS "Build offline Agent tests" ON)
 if(MYAGENT_BUILD_EXAMPLES)
   add_executable(run_agent_demo examples/run_agent_demo.cpp)
   target_link_libraries(run_agent_demo PRIVATE myagent)
+
+  # Token 用量统计：独立 C++ 源文件和 run_token_usage_demo()，离线 Mock 数据。
+  add_executable(run_token_usage_demo examples/run_token_usage_demo.cpp)
+  target_link_libraries(run_token_usage_demo PRIVATE myagent)
 
   # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
   add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)
@@ -108,6 +112,14 @@ if(MYAGENT_BUILD_TESTS)
     set_tests_properties(myagent_skill_yaml_demo PROPERTIES TIMEOUT 30)
   endif()
   set_tests_properties(myagent_skills PROPERTIES TIMEOUT 30)
+  add_executable(myagent_token_usage_tests tests/test_token_usage.cpp)
+  target_link_libraries(myagent_token_usage_tests PRIVATE myagent)
+  add_test(NAME myagent_token_usage COMMAND myagent_token_usage_tests)
+  set_tests_properties(myagent_token_usage PROPERTIES TIMEOUT 30)
+  if(MYAGENT_BUILD_EXAMPLES)
+    add_test(NAME myagent_token_usage_demo COMMAND run_token_usage_demo)
+    set_tests_properties(myagent_token_usage_demo PROPERTIES TIMEOUT 30)
+  endif()
   add_executable(myagent_loop_tests tests/test_loops.cpp)
   target_link_libraries(myagent_loop_tests PRIVATE myagent)
   target_compile_definitions(myagent_loop_tests PRIVATE
