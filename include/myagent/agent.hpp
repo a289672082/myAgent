@@ -2,6 +2,8 @@
 // C++20 OpenAI Responses Agent. MCP is provided by the existing mymcp SDK.
 #include "mymcp/mcp.hpp"
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,6 +77,22 @@ public:
   // Prefix makes remote tool names unique in the OpenAI tool namespace.
   void add_mcp(std::string prefix, std::shared_ptr<Client> client);
 
+  // Recommended API: Agent owns the MCP client and its transport lifetime.
+  // No need to construct mymcp::Client or shared_ptr in application code.
+  // All three use the existing myMcpTools SDK; discovery happens on ask().
+  void add_mcp_http(std::string prefix, std::string url,
+                    std::string bearer_token = {},
+                    std::function<void(const Json&)> on_notification = {});
+  // Starts an MCP stdio child process. Args are passed without shell expansion.
+  void add_mcp_stdio(std::string prefix, std::string executable,
+                     std::vector<std::string> args = {},
+                     std::function<void(const Json&)> on_notification = {});
+  // Session must already have a valid OAuth token, or be able to refresh one.
+  // Interactive OAuth authorization remains the host application's responsibility.
+  void add_mcp_oauth(std::string prefix, std::string url,
+                     std::shared_ptr<mymcp::oauth::Session> session,
+                     std::function<void(const Json&)> on_notification = {});
+
   // MCP tool definitions are registered on a private in-process Server.
   // This preserves mymcp JSON Schema validation and typed conversion.
   void tool(std::string name, std::string description,
@@ -115,6 +133,7 @@ private:
     std::shared_ptr<Client> client;
     std::string native_name;
   };
+  void validate_mcp_prefix(const std::string& prefix) const;
   Json tool_definitions(std::map<std::string, Route>& routes);
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
