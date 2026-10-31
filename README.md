@@ -138,6 +138,48 @@ agent.add_mcp_oauth("secured", oauth_url, session);
 
 需要自定义通知处理或进阶 MCP API 时，仍保留 `agent.add_mcp(prefix, std::shared_ptr<mymcp::Client>)`，供高级用户使用。`add_mcp_oauth` 不会自动打开浏览器进行 OAuth 登录，Session 必须能提供访问令牌。MCP 工具名自动添加 `prefix__` 前缀以避免冲突。HTTP 连接在 `ask()` 时发现，stdio 子进程在注册时启动；不要运行来源不可信的 MCP 可执行文件。
 
+## P0 Skill YAML 专项 Demo（完全离线）
+
+新增独立可执行文件 **`examples/run_skill_yaml_demo.cpp`**，入口函数为 **`int run_skill_yaml_demo()`**，不修改原来的 `run_agent_demo()`。示例使用内置 Mock Model，**无需 API Key、环境变量、命令行参数或联网调用**。所有 Skill 文件均随仓库提交，路径由 CMake 固定，无需手动复制。
+
+示例结构：
+
+```text
+examples/
+├── run_skill_yaml_demo.cpp
+└── skill_yaml_demo/
+    ├── config/
+    │   └── example.yaml            # 独立 YAML 文件，演示 yaml-cpp 数据读取
+    ├── skills/
+    │   ├── cpp-code-review/
+    │   │   ├── SKILL.md
+    │   │   ├── references/review-checklist.md
+    │   │   └── scripts/check.py
+    │   ├── claude-manual/SKILL.md
+    │   └── codex-manual/
+    │       ├── SKILL.md
+    │       └── agents/openai.yaml
+    └── invalid-skills/
+        └── invalid-skill/SKILL.md
+```
+
+运行示例：
+
+```sh
+cmake -S . -B build
+cmake --build build --target run_skill_yaml_demo --config Debug
+# Linux / macOS:
+./build/run_skill_yaml_demo
+# Windows（Visual Studio 多配置生成器）:
+# .\build\Debug\run_skill_yaml_demo.exe
+
+ctest --test-dir build --output-on-failure -C Debug
+```
+
+普通 YAML 文件示例位于 `examples/skill_yaml_demo/config/example.yaml`，包含 `application`、`model`、`skills` 的嵌套字段、布尔值、整数、列表，以及 `instructions: |` 多行文本。源码直接使用 `YAML::LoadFile(...)`、`as<std::string>()`、`as<bool>()`、`as<int>()` 和 `as<std::vector<std::string>>()` 读取并验证结果；不进行真实模型请求。
+
+`run_skill_yaml_demo()` 实际依次演示：**普通 example.yaml 文件读取；多行 YAML 与 license/compatibility/metadata/allowed-tools 解析；错误 frontmatter 校验；Claude/Codex 禁止自动激活策略；Mock Model 自动选择 Skill、按需读取 `SKILL.md` 和 `references`；显式 `use_skill()`；以及 `clear_history()` 后手动 Skill 保留**。例子中的 `scripts/check.py` 仅为资源文件，绝不会自动执行。CMake 同时将 Demo 注册为 `myagent_skill_yaml_demo` 离线回归测试。
+
 ## Demo 运行
 
 `examples/run_agent_demo.cpp` 已将所有配置集中在局部变量中，不读取任何环境变量，也不使用命令行参数。
@@ -151,7 +193,7 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 核心头文件：include/myagent/agent.hpp。
 核心实现：src/agent.cpp。
 测试：tests/test_agent.cpp。
-示例：examples/run_agent_demo.cpp。
+示例：examples/run_agent_demo.cpp、examples/run_skill_yaml_demo.cpp。
 
 ## 边界和安全
 
