@@ -198,6 +198,7 @@ auto result = team.collaborate(tasks, options);
 // result.usage、result.usage_by_agent、result.tasks 分别有用量、归属和任务状态。
 ```
 
+对于更复杂的协作，可以给某个 `TeamTask` 的 `context` 传入结构化的 `goal`、`relevant_context`、`artifacts` 和 `constraints`；任务委派只读取这些筛选过的资料及前置任务摘要，而非主 Agent 全部历史。`TeamOptions::validate_task` 是可选的宿主验收回调：接收 `TeamTask` 与 `DelegationResult`，返回 `TaskValidation{passed,reason,evidence}`。如果验收失败，任务变为 Failed，依赖它的下游任务会被 Skipped。没有设置时 `DelegationResult::verification` 为 `unverified`，模型完成声明不会自动视作真实编译/测试通过。
 没有依赖且属于不同子 Agent 的任务可以通过 `std::async` 同时运行；同一 Agent 的任务绝不会同时操作其会话，因为 `Agent` 本身不是线程安全的。依赖失败的后续任务将标记为跳过。`max_model_calls/max_tool_calls` 会在子任务阶段分配调用预算；协调器本身不拥有业务工具，不会向模型提供其他 Agent 的 API Key。`max_reported_tokens` 是服务端响应后才能确认的**软阈值**，不是零超额保证。子 Agent 不允许递归创建更多子 Agent：当前 `max_depth=1`；未来可以扩展为多级树，但需要更严格的递归预算与权限管理。
 
 ### 4. P2 工作区文件工具（受路径约束，不是沙箱）

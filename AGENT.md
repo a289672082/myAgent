@@ -57,6 +57,7 @@ myagent::Agent agent(config);
 - `AgentTeam` / `AgentSpec`：每个子 Agent 独立 Config（base_url/api_key/model），独立 MCP、Skills、历史和用量，不向协调器模型显示其他 Agent 的密钥或 URL；仍要求 Responses API 兼容。
 - `delegate` 显式委派任务；`collaborate` 基于任务 DAG（只依赖已声明的前序任务）运行；`run` 先由协调器生成严格 JSON 任务图再执行、完成后总结。
 - `TeamOptions` 包含任务数量限制、并行数量、深度=1、模型/工具调用预算、软 Token 上限和取消回调；子任务上下文只附必要的上游摘要，避免复制主 Agent 完整历史。
+- `TaskContext` 支持传目标、上下文、产物引用与约束；`DelegationResult::details` 包含 worker Loop 的 plan/evaluations；`TeamOptions::validate_task` 可检查真实证据并拒绝未通过的工作，阻断依赖任务。
 - 并发由 `std::async` 执行，不允许同一个非线程安全 Agent 在同一波次处理两个任务；子 Agent 的 workspace 路径不能重叠。
 - 工作区内建 `workspace_read`、`workspace_list`、可选 `workspace_write` 仅约束这些本地工具的路径和大小，其他 MCP/外部命令及目录竞态无法由此强制沙箱隔离。
 - 四个独立中文 Demo，离线 `test_context` / `test_multi_agent` 覆盖基本模型、预算、并行、依赖与隔离；所有依赖沿用本地 third_party 构建。
