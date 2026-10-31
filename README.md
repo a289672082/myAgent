@@ -31,16 +31,23 @@ ctest --test-dir build --output-on-failure
 ~~~cpp
 #include "myagent/agent.hpp"
 #include <iostream>
+#include <string>
 
 int main() {
   myagent::Config config;
+  // 模型地址和密钥都由应用代码显式传入，框架不会读取环境变量。
+  const std::string modelBaseUrl = "https://api.openai.com";
+  const std::string modelApiKey = "sk-example-replace-with-your-api-key"; // 示例密钥，不可用
+  config.base_url = modelBaseUrl;
+  config.api_key = modelApiKey;
   config.model = "gpt-4.1-mini";
   myagent::Agent agent(config);
 
   agent.tool("add", "计算两个整数的和", [](int a, int b) { return a + b; },
              mymcp::arg<int>("a"), mymcp::arg<int>("b"));
 
-  agent.add_mcp_http("remote", "http://127.0.0.1:3000/mcp");
+  // 可选：运行外部 MCP 服务后再取消注释
+  // agent.add_mcp_http("remote", "http://127.0.0.1:3000/mcp");
   agent.load_skills("./skills");
   agent.use_skill("brief-summary");
 
@@ -62,7 +69,7 @@ Agent 负责创建和保存客户端，无需显式构造 mymcp::Client、std::s
 // Streamable HTTP（无需认证）
 agent.add_mcp_http("github", "https://example.com/mcp");
 
-// HTTP Bearer Token（凭据请从环境变量或安全存储读取）
+// HTTP Bearer Token（由调用方直接传入，真实凭据勿提交到仓库）
 agent.add_mcp_http("private", "https://example.com/private/mcp", token);
 
 // stdio（可选的 argv 数组直接传递给进程；不使用 shell 拼接）
@@ -79,7 +86,13 @@ agent.add_mcp_oauth("secured", oauth_url, session);
 
 ## Demo 运行
 
-先设置 OPENAI_API_KEY 环境变量；直接运行 build/run_agent_demo（Windows：build/Debug/run_agent_demo.exe），无命令行参数。可选环境变量 OPENAI_MODEL、MYAGENT_MCP_URL、MYAGENT_MCP_STDIO、MYAGENT_IMAGE、MYAGENT_AUDIO、MYAGENT_SPEECH_OUTPUT；从仓库根目录运行才能自动找到示例 Skill。
+`examples/run_agent_demo.cpp` 已将所有配置集中在局部变量中，不读取任何环境变量，也不使用命令行参数。
+
+首先将 `modelBaseUrl`、`modelApiKey`、`modelName` 改为你的实际接口配置；示例中的 API Key 只是演示占位符，不能用于真实调用。
+
+HTTP / stdio MCP、图片、音频示例也使用可读的变量和 `enable...` 开关，默认关闭依赖外部服务或本地样例文件的功能。
+
+从仓库根目录运行 `build/run_agent_demo`（Windows：`build/Debug/run_agent_demo.exe`），即可加载示例 Skill。
 
 核心头文件：include/myagent/agent.hpp。
 核心实现：src/agent.cpp。
@@ -89,6 +102,6 @@ agent.add_mcp_oauth("secured", oauth_url, session);
 ## 边界和安全
 
 当前是同步的 Responses + MCP Agent，不支持流式 SSE 对话、Realtime 双向语音、直接分析音频声学特征、自动工具权限审批和上下文压缩。
-API Key 默认从 OPENAI_API_KEY 读取；历史文件可能包含敏感会话内容，勿提交到 Git。
+`Config::api_key` 和 `Config::base_url` 必须由调用方显式赋值。使用真实 API Key 时应由你的应用安全地取得并传入，**不要将真实密钥硬编码后提交到 Git**；历史文件可能包含敏感会话内容，也不要提交。
 技能文件作为提示词加载，不执行脚本；请核查 Skills 和远程 MCP 服务的来源。会改变文件或运行命令的工具应由调用方额外做权限控制与隔离。
 媒体上限为 20 MiB，工具返回上限为 256 KiB；不包含实际 OpenAI API 联网集成测试。

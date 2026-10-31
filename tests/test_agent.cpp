@@ -32,6 +32,30 @@ static bool contains(const std::string& text, const std::string& pattern) {
   return text.find(pattern) != std::string::npos;
 }
 int main() {
+  // Explicit credentials/endpoint: no environment-variable fallback.
+  {
+    Config missing_key;
+    missing_key.base_url = "https://api.openai.com";
+    try { OpenAIResponses backend(missing_key); assert(false); }
+    catch (const std::invalid_argument&) {}
+
+    Config missing_url;
+    missing_url.api_key = "sk-placeholder-for-offline-test";
+    try { OpenAIResponses backend(missing_url); assert(false); }
+    catch (const std::invalid_argument&) {}
+
+    Config invalid_url;
+    invalid_url.api_key = "sk-placeholder-for-offline-test";
+    invalid_url.base_url = "api.openai.com";
+    try { OpenAIResponses backend(invalid_url); assert(false); }
+    catch (const std::invalid_argument&) {}
+
+    Config explicit_config;
+    explicit_config.api_key = "sk-placeholder-for-offline-test";
+    explicit_config.base_url = "http://127.0.0.1:8765";
+    OpenAIResponses backend(explicit_config); // Does not contact network.
+    Agent configured(explicit_config);        // Explicit config reaches OpenAI backend.
+  }
   Config cfg;
   cfg.instructions = "offline test agent";
   auto mock = std::make_shared<MockModel>();
