@@ -243,7 +243,7 @@ static void test_workspace_atomic_write(const fs::path& root) {
   {std::ofstream out(file);out<<"original";}
   AgentTeam team(config(),std::make_shared<Mock>());
   auto model=std::make_shared<Mock>();
-  model->handler=[](const Json& req) {
+  model->handler=[](const Json& req)->Json {
     const auto* input=j::if_contains(req,"input");
     bool tool_done=false;
     if(input&&input->is_array())
