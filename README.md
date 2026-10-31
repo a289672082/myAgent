@@ -61,6 +61,31 @@ int main() {
 }
 ~~~
 
+## 模型 baseUrl：自动补全或使用完整地址
+
+两种模式都使用 `Config::base_url`，通过 `Config::append_responses_path` 切换，默认 `true`。如果自动模式下地址已以 `/v1/responses` 结尾，则不会重复追加。已有网关路径前缀与 URL 查询参数会保留。
+
+~~~cpp
+myagent::Config config;
+config.api_key = "sk-example-replace-with-your-api-key"; // 非真实密钥
+config.model = "gpt-4.1-mini";
+
+// 模式 1：自动追加 /v1/responses（默认）
+config.base_url = "https://api.openai.com";
+config.append_responses_path = true;
+// 请求目标：https://api.openai.com/v1/responses
+
+// 模式 2：使用完整请求地址，不追加任何路径
+config.base_url = "https://proxy.example.com/my/custom/responses?version=1";
+config.append_responses_path = false;
+// 请求目标：https://proxy.example.com/my/custom/responses?version=1
+
+myagent::Agent agent(config);
+~~~
+
+完整地址必须提供 **Responses API 兼容接口**；仅取消自动拼接并不意味着能够调用 Chat Completions 格式的 `/v1/chat/completions`。
+注意：`ask_audio` 和 `speak` 是独立 API，仍向相同域名下的 `/v1/audio/transcriptions` 和 `/v1/audio/speech` 请求，不使用自定义 Responses 路径。若第三方网关不支持音频接口，这些功能不可用。
+
 ## MCP 快捷接口（推荐）
 
 Agent 负责创建和保存客户端，无需显式构造 mymcp::Client、std::shared_ptr，也不必自行管理传输对象的生命周期。

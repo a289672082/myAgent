@@ -19,10 +19,17 @@ const std::string modelBaseUrl = "https://api.openai.com";
 const std::string modelApiKey = "sk-example-replace-with-your-api-key"; // 占位符
 myagent::Config config;
 config.base_url = modelBaseUrl;
+config.append_responses_path = true; // 默认添加 /v1/responses
+// 完整 Responses URL 时设置为 false，不进行任何路径拼接：
+// config.base_url = "https://proxy.example.com/custom/responses";
+// config.append_responses_path = false;
 config.api_key = modelApiKey;
 config.model = "gpt-4.1-mini";
 myagent::Agent agent(config);
 ~~~
+
+`append_responses_path=true`（默认）在基础 URL 末尾补 `/v1/responses`，已有该后缀时不会重复补全；设置为 `false` 时使用整个 `base_url` 作为 Responses HTTP POST 目标，保留查询参数。
+这是 Responses 请求 URL 的控制开关，不改变独立的音频 API：转写/合成仍向同域名的 `/v1/audio/...` 发送请求。
 
 真实密钥可由调用方自己的配置或安全存储获取后传入，**不要把真实 API Key 提交到仓库**。所有 Demo 的连接地址、路径和选项都以源码局部变量表示，不需要环境变量。
 

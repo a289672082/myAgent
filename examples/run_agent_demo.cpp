@@ -8,12 +8,18 @@
 int run_agent_demo() {
   try {
     // 1. 大模型配置：直接传入 baseUrl / apiKey / 模型名称。
+    // 模式 1（默认）：自动追加 /v1/responses。
     const std::string modelBaseUrl = "https://api.openai.com";
+    const bool appendResponsesPath = true;
+    // 模式 2：使用完整 URL，不自动拼接路径：
+    // const std::string modelBaseUrl = "https://example.com/custom/responses";
+    // const bool appendResponsesPath = false;
     const std::string modelApiKey = "sk-example-replace-with-your-api-key"; // 非真实密钥
     const std::string modelName = "gpt-4.1-mini";
 
     myagent::Config config;
     config.base_url = modelBaseUrl;
+    config.append_responses_path = appendResponsesPath;
     config.api_key = modelApiKey;
     config.model = modelName;
     config.instructions = "You are a helpful coding assistant. Prefer concise answers.";

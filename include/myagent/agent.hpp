@@ -21,7 +21,10 @@ struct Config {
   std::string api_key;  // Required for the OpenAI backend; supplied by the application.
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
-  std::string base_url; // Required for the OpenAI backend, e.g. https://api.openai.com
+  std::string base_url; // Required: base origin/path or an exact Responses URL.
+  // true: append /v1/responses (unless URL already ends with it).
+  // false: POST to base_url exactly, including its path/query.
+  bool append_responses_path = true;
   unsigned max_tool_rounds = 8;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
 };
