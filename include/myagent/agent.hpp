@@ -3,6 +3,10 @@
 #include "mymcp/mcp.hpp"
 #include "myagent/loop.hpp"
 #include "myagent/context.hpp"
+#include "myagent/tool_policy.hpp"
+#include "myagent/memory.hpp"
+#include <chrono>
+#include <mutex>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -19,19 +23,26 @@ namespace json = mymcp::json;
 
 // Supply API credentials and endpoint explicitly; no environment variable fallback.
 // Credentials are not written to conversation history or saved by save_history().
+enum class ModelProtocol { Responses, ChatCompletions };
 struct Config {
   std::string api_key;  // Required for the OpenAI backend; supplied by the application.
+  std::string agent_id; // 宿主用于日志/工具审批的标识，不能由模型修改。
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
   std::string base_url; // Required: base origin/path or an exact Responses URL.
   // true: append /v1/responses (unless URL already ends with it).
   // false: POST to base_url exactly, including its path/query.
   bool append_responses_path = true;
+  ModelProtocol model_protocol = ModelProtocol::Responses; // 其他协议通过 Model 注入扩展。
   unsigned max_tool_rounds = 8;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
   bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
   bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
   ContextOptions context; // 上下文压缩配置；默认禁用，需按模型填上下文容量。
+  ToolPolicy tool_policy; // MCP/Skill 工具权限。危险工具在调用前由宿主审批。
+  bool memory_retrieval = false; // 只有宿主明确开启才向模型提供检索出的记忆条目。
+  unsigned max_memory_hits = 3;
+  unsigned http_timeout_seconds = 60; // 模型 HTTP 请求读写/连接超时；不影响外部 MCP 自身超时。
 };
 
 struct Skill {
@@ -87,6 +98,15 @@ private:
   Config config_;
 };
 
+// 将 OpenAI Chat Completions 兼容接口适配到统一 Responses 结构。
+class ChatCompletionsModel final : public Model {
+public:
+  explicit ChatCompletionsModel(Config config);
+  Json create(const Json& request) override;
+private:
+  Config config_;
+};
+
 // Single-user, synchronous agent session. Not thread safe.
 // Externally supplied MCP clients must outlive the registration, via shared_ptr.
 class Agent {
@@ -121,6 +141,7 @@ public:
             Json schema, Server::ToolHandler handler);
   template<class F, class... Ts>
   void tool(std::string name, std::string description, F fn, Arg<Ts>... args) {
+    const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
   }
@@ -147,6 +168,8 @@ public:
   LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
 
   std::string ask(const std::string& text);
+  // 仅供协调器规划/汇总：不发现、不展示、不调用 MCP 或 Skill 工具。
+  std::string ask_without_tools(const std::string& text);
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
   std::string ask_image(const std::string& question, const std::filesystem::path& image);
@@ -167,6 +190,10 @@ public:
   // 对话摘要压缩：不删除孤立工具结果，也不推测实际 Token 消耗。
   CompressionResult compress_context();
   ContextStats context_stats() const { return context_.stats(history_); }
+  void remember(MemoryRecord record);
+  std::vector<MemoryRecord> recall(const std::string& query,std::size_t top_k=5) const;
+  void save_memory(const std::filesystem::path& file) const;
+  void load_memory(const std::filesystem::path& file);
   const Json& history() const { return history_; }
   const Json& last_response() const { return last_response_; }
   void clear_history();
@@ -186,7 +213,7 @@ private:
   Json tool_definitions(std::map<std::string, Route>& routes);
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
-  std::string run(Json user_content);
+  std::string run(Json user_content, bool allow_tools = true);
   struct TurnResult {
     std::string answer;
     Json response;
@@ -204,6 +231,7 @@ private:
 
   Config config_;
   ContextManager context_;
+  MemoryStore memory_;
   std::shared_ptr<Model> model_;
   Server local_;
   std::vector<Endpoint> endpoints_;
@@ -213,6 +241,7 @@ private:
   Json last_response_ = nullptr;
   TokenUsage last_usage_;
   TokenUsage total_usage_;
+  mutable std::recursive_mutex session_mutex_; // 保护同一 Agent 的对话与模型执行，避免并发冲突。
 };
 
 } // namespace myagent

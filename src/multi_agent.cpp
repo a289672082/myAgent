@@ -1,5 +1,10 @@
 #include "myagent/multi_agent.hpp"
+#include "team_checkpoint.hpp"
+#include "task_scheduler.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <chrono>
 #include <fstream>
 #include <future>
 #include <set>
@@ -112,10 +117,31 @@ void AgentTeam::register_workspace_tools(Worker& worker) {
         // 只允许写入已有目录内的文件，禁止通过符号链接跳出 root。
         if (!std::filesystem::is_directory(path.parent_path()))
           throw std::runtime_error("Destination directory missing");
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) throw std::runtime_error("Cannot write workspace file");
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out) throw std::runtime_error("Workspace write error");
+        // 不能直接 truncate 已存在文件：先写同目录暂存文件，成功后再重命名。
+        // 检查符号链接与路径的过程仍不构成 OS 沙箱；不可信多租户需容器隔离。
+        if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+          throw std::runtime_error("Writing through symbolic link denied");
+        static std::atomic<std::uint64_t> counter{0};
+        const auto nonce=counter.fetch_add(1);
+        auto temp=path;
+        temp+=".myagent-tmp-"+std::to_string(nonce)+"-"+
+              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        try {
+          {
+            std::ofstream out(temp,std::ios::binary|std::ios::trunc);
+            if(!out)throw std::runtime_error("Cannot create workspace temporary file");
+            out.write(content.data(),static_cast<std::streamsize>(content.size()));
+            out.flush();
+            if(!out)throw std::runtime_error("Workspace temporary file write failed");
+          }
+          if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+            throw std::runtime_error("Workspace target became symbolic link");
+          std::filesystem::rename(temp,path);
+        } catch (...) {
+          std::error_code error;
+          std::filesystem::remove(temp,error);
+          throw;
+        }
         return true;
       }, mymcp::arg<std::string>("relative"),mymcp::arg<std::string>("content"));
   }
@@ -137,9 +163,25 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
     }
   }
   auto worker = std::make_unique<Worker>();
+  spec.config.agent_id=spec.name; // 给宿主审批器提供可靠的子 Agent 身份。
   worker->spec = std::move(spec);
   worker->instance = std::make_unique<Agent>(worker->spec.config,std::move(model));
   if (!worker->spec.workspace.empty()) register_workspace_tools(*worker);
+  // AgentSpec 声明式配置：按角色加载 Skills 和 MCP；失败则整项注册回滚。
+  for (const auto& directory : worker->spec.skill_directories)
+    worker->instance->load_skills(directory);
+  for (const auto& name : worker->spec.explicit_skills)
+    worker->instance->use_skill(name);
+  for (const auto& mcp : worker->spec.mcp) {
+    switch (mcp.transport) {
+      case McpEndpointSpec::Transport::Http:
+        worker->instance->add_mcp_http(mcp.prefix,mcp.address,mcp.bearer_token); break;
+      case McpEndpointSpec::Transport::Stdio:
+        worker->instance->add_mcp_stdio(mcp.prefix,mcp.address,mcp.args); break;
+      case McpEndpointSpec::Transport::OAuth:
+        worker->instance->add_mcp_oauth(mcp.prefix,mcp.address,mcp.oauth_session); break;
+    }
+  }
   workers_.emplace(worker->spec.name,std::move(worker));
 }
 Agent& AgentTeam::agent(const std::string& name) {
@@ -174,6 +216,9 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     validate_name(t.id);
     if (!seen.insert(t.id).second) throw std::invalid_argument("Duplicate task ID");
     if (!workers_.count(t.agent)) throw std::invalid_argument("Unregistered worker: "+t.agent);
+    for(const auto& fallback:t.fallback_agents)
+      if(!workers_.count(fallback) || fallback==t.agent)
+        throw std::invalid_argument("Invalid fallback Agent: "+fallback);
     if (t.description.empty() || t.description.size() > 10000)
       throw std::invalid_argument("Invalid task description");
     std::set<std::string> deps;
@@ -182,11 +227,44 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         throw std::invalid_argument("Task dependencies must refer to earlier tasks");
   }
   TeamResult out;
+  const auto started_at=std::chrono::steady_clock::now();
+  const auto emit=[&](const std::string& action,const std::string& task,
+                      const std::string& worker) {
+    const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now()-started_at).count();
+    const Json event=json::object{
+      {"event",action},{"task",task},{"agent",worker},{"elapsed_ms",ms}};
+    out.events.push_back(event);
+    if(options.on_event) options.on_event(event);
+    if(!options.event_log_path.empty()) {
+      std::ofstream log(options.event_log_path,std::ios::binary|std::ios::app);
+      if(!log)throw std::runtime_error("Cannot open Team event log");
+      log<<json::serialize(event)<<"\n";
+      if(!log)throw std::runtime_error("Cannot write Team event log");
+    }
+  };
+  detail::TaskScheduler scheduler(std::min(64u, options.max_parallel_agents));
+  const auto deadline=options.timeout.count()>0
+      ? std::chrono::steady_clock::now()+options.timeout
+      : std::chrono::steady_clock::time_point::max();
+  const auto cancelled=[&]() {
+    return (options.cancelled && options.cancelled()) ||
+           std::chrono::steady_clock::now()>=deadline;
+  };
   std::map<std::string,DelegationResult> finished;
+  std::map<std::string,std::size_t> fallback_index;
+  if (options.resume_checkpoint) {
+    finished=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
+    for (const auto& [id,r]:finished) {
+      out.model_calls+=r.model_calls;
+      out.tool_calls+=r.tool_calls;
+      add_usage(out,r.agent,r.usage);
+    }
+  }
   std::set<std::string> pending;
-  for(const auto& t:tasks)pending.insert(t.id);
+  for(const auto& t:tasks) if(!finished.count(t.id))pending.insert(t.id);
   auto stop_reason = [&]() -> std::string {
-    if(options.cancelled && options.cancelled()) return "cancelled";
+    if(cancelled()) return "cancelled";
     if(out.model_calls >= options.max_model_calls) return "model calls";
     if(out.tool_calls >= options.max_tool_calls && options.max_tool_calls != 0) return "tool calls";
     if(options.max_reported_tokens && out.usage.total_tokens >= options.max_reported_tokens)
@@ -198,9 +276,11 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if (!reason.empty()) {
       out.status=reason=="cancelled"?TeamStatus::Cancelled:TeamStatus::LimitReached;
       out.error="Team budget/cancellation: "+reason;
+      emit("budget_stop","","");
       break;
     }
     std::vector<std::size_t> ready;
+    std::vector<std::size_t> candidates;
     std::set<std::string> selected_workers;
     bool advanced=false;
     for(std::size_t i=0;i<tasks.size();++i) {
@@ -217,14 +297,23 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         DelegationResult skipped;
         skipped.id=t.id;skipped.agent=t.agent;
         skipped.error="Skipped: dependency did not complete";
+        emit("task_skipped",t.id,t.agent);
         finished.emplace(t.id,std::move(skipped));
         pending.erase(t.id);
         advanced=true;
         continue;
       }
-      if(ready.size()<options.max_parallel_agents &&
-         selected_workers.insert(t.agent).second)
-        ready.push_back(i); // 任何两个并行任务都不能共用同一个非线程安全 Agent。
+      candidates.push_back(i);
+    }
+    std::stable_sort(candidates.begin(),candidates.end(),
+      [&](std::size_t a,std::size_t b){return tasks[a].priority>tasks[b].priority;});
+    for(const auto i:candidates) {
+      if(ready.size()>=options.max_parallel_agents)break;
+      const auto& task=tasks[i];
+      const auto progress=fallback_index[task.id];
+      const auto& chosen=progress==0?task.agent:task.fallback_agents[progress-1];
+      if(selected_workers.insert(chosen).second)
+        ready.push_back(i); // 同一个非线程安全 Agent 同时最多一个任务。
     }
     if(ready.empty()) {
       if(advanced)continue;
@@ -238,6 +327,11 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     const unsigned remaining_tools=options.max_tool_calls>out.tool_calls ?
         options.max_tool_calls-out.tool_calls:0;
     const unsigned tool_share=remaining_tools/static_cast<unsigned>(ready.size());
+    if(!options.checkpoint_path.empty()) {
+      std::set<std::string> in_flight;
+      for(const auto i:ready)in_flight.insert(tasks[i].id);
+      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,in_flight);
+    }
     std::vector<std::future<DelegationResult>> futures;
     futures.reserve(ready.size());
     for(const auto index:ready) {
@@ -266,13 +360,42 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       LoopOptions worker_options=options.worker_loop;
       worker_options.max_model_calls=std::min(share,worker_options.max_model_calls);
       worker_options.max_tool_calls=std::min(tool_share,worker_options.max_tool_calls);
-      worker_options.cancelled=options.cancelled;
+      worker_options.cancelled=cancelled;
+      // 子任务超时继承团队剩余期限，防止超时后继续启动新任务。
+      if (deadline != std::chrono::steady_clock::time_point::max()) {
+        const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline-std::chrono::steady_clock::now());
+        worker_options.timeout=remaining.count()>0?remaining:std::chrono::milliseconds(1);
+      }
       // 每个 Agent 都在自己的实例/历史/凭据里运行。主线程仅负责派工与收集结果。
-      futures.push_back(std::async(std::launch::async,
-        [this,name=t.agent,id=t.id,description=std::move(context),
-         mode=t.mode,worker_options]() mutable {
+      emit("task_started",t.id,fallback_index[t.id]==0?t.agent:
+           t.fallback_agents[fallback_index[t.id]-1]);
+      futures.push_back(scheduler.submit(
+        [this,name=(fallback_index[t.id]==0?t.agent:
+                       t.fallback_agents[fallback_index[t.id]-1]),
+         id=t.id,description=std::move(context),
+         mode=t.mode,worker_options,max_task_retries=options.max_task_retries]() mutable {
           auto result=delegate(name,description,mode,worker_options);
           result.id=id;
+          result.attempts=1;
+          // 失败恢复仅允许“未实际调用工具”的步骤自动重试：
+          // 避免二次执行文件写入、Git Push 或其他非幂等副作用。
+          for(unsigned retry=0;retry<max_task_retries;++retry) {
+            if(result.status==LoopStatus::Completed || result.tool_calls!=0 ||
+               (worker_options.cancelled && worker_options.cancelled()) ||
+               result.model_calls>=worker_options.max_model_calls) break;
+            LoopOptions again=worker_options;
+            again.max_model_calls-=result.model_calls;
+            auto subsequent=delegate(name,description,mode,again);
+            result.model_calls+=subsequent.model_calls;
+            result.tool_calls+=subsequent.tool_calls;
+            result.usage.add(subsequent.usage);
+            result.answer=std::move(subsequent.answer);
+            result.error=std::move(subsequent.error);
+            result.status=subsequent.status;
+            result.details=std::move(subsequent.details);
+            ++result.attempts;
+          }
           return result;
         }));
     }
@@ -298,14 +421,30 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
             result.error=std::string("Task validation threw: ")+e.what();
           }
         }
+        if(result.status!=LoopStatus::Completed && result.tool_calls==0 &&
+           fallback_index[t.id]<t.fallback_agents.size() &&
+           !cancelled()) {
+          // 当前 Agent 只做了模型调用，不涉及副作用工具；
+          // 下一轮将此任务委派给另一 Agent，保留本轮真实 Token/调用账本。
+          ++fallback_index[t.id];
+          emit("task_reassigned",t.id,t.fallback_agents[fallback_index[t.id]-1]);
+          advanced=true;
+          continue;
+        }
+        emit(result.status==LoopStatus::Completed?"task_completed":"task_failed",
+             t.id,result.agent);
         finished.emplace(t.id,std::move(result));
       } catch(const std::exception& e) {
         DelegationResult failure;
         failure.id=t.id;failure.agent=t.agent;failure.error=e.what();
+        emit("task_failed",t.id,t.agent);
         finished.emplace(t.id,std::move(failure));
       }
+      // fallback 分支在此之前 continue，保留 pending 并进入下一轮。
       pending.erase(t.id);
     }
+    if(!options.checkpoint_path.empty())
+      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,{});
   }
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
@@ -345,7 +484,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     const auto coordinator_call = [&](const std::string& prompt) {
       // 失败也必须统计已经返回 usage 的模型调用。
       try {
-        auto reply=coordinator_->ask(prompt);
+        auto reply=coordinator_->ask_without_tools(prompt);
         add_usage(result,"coordinator",coordinator_->last_usage());
         result.model_calls+=static_cast<unsigned>(
           coordinator_->last_usage().reported_calls+coordinator_->last_usage().unreported_calls);
@@ -403,6 +542,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     }
     auto delegated=execute_tasks(tasks,bounded);
     result.tasks=std::move(delegated.tasks);
+    result.events=std::move(delegated.events);
     result.tool_calls+=delegated.tool_calls;
     result.model_calls+=delegated.model_calls;
     result.usage.add(delegated.usage);

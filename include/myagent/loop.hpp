@@ -3,6 +3,7 @@
 #include "mymcp/mcp.hpp"
 #include "myagent/token_usage.hpp"
 #include <map>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -53,6 +54,7 @@ struct LoopOptions {
   std::string speech_voice = "alloy";
   // Both callbacks run synchronously on the calling thread. Not reentrant.
   std::function<bool()> cancelled;
+  std::chrono::milliseconds timeout{0}; // 0=无限；调用间检查；HTTP 在 Config 内设置传输超时。
   std::function<void(const Json&)> on_event;
 };
 

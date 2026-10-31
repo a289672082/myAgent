@@ -53,7 +53,9 @@ if(WIN32)
 endif()
 add_library(myagent::mcp ALIAS myagent_mcp)
 
-add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp)
+add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp src/tool_policy.cpp
+  src/chat_completions.cpp src/memory_store.cpp src/agent_team_config.cpp
+  src/team_checkpoint.cpp src/task_scheduler.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -77,6 +79,11 @@ if(MYAGENT_BUILD_EXAMPLES)
   target_compile_definitions(run_agent_delegation_demo PRIVATE
     MYAGENT_TEAM_DEMO_SKILLS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/agent_team_demo_skills")
 
+  # 新增运行时权限/断点恢复示例，均使用离线 Mock Model。
+  foreach(feature IN ITEMS runtime_hardening team_checkpoint)
+    add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
+    target_link_libraries(run_${feature}_demo PRIVATE myagent)
+  endforeach()
   # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
   add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)
   target_link_libraries(run_skill_yaml_demo PRIVATE myagent)
@@ -120,6 +127,20 @@ if(MYAGENT_BUILD_TESTS)
     set_tests_properties(myagent_skill_yaml_demo PROPERTIES TIMEOUT 30)
   endif()
   set_tests_properties(myagent_skills PROPERTIES TIMEOUT 30)
+  if(MYAGENT_BUILD_EXAMPLES)
+    foreach(feature IN ITEMS runtime_hardening team_checkpoint)
+      add_test(NAME myagent_${feature}_demo COMMAND run_${feature}_demo)
+      set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
+    endforeach()
+  endif()
+  add_executable(myagent_p1_p2_tests tests/test_p1_p2.cpp)
+  target_link_libraries(myagent_p1_p2_tests PRIVATE myagent)
+  add_test(NAME myagent_p1_p2 COMMAND myagent_p1_p2_tests)
+  set_tests_properties(myagent_p1_p2 PROPERTIES TIMEOUT 40)
+  add_executable(myagent_runtime_hardening_tests tests/test_runtime_hardening.cpp)
+  target_link_libraries(myagent_runtime_hardening_tests PRIVATE myagent)
+  add_test(NAME myagent_runtime_hardening COMMAND myagent_runtime_hardening_tests)
+  set_tests_properties(myagent_runtime_hardening PROPERTIES TIMEOUT 30)
   add_executable(myagent_context_tests tests/test_context.cpp)
   target_link_libraries(myagent_context_tests PRIVATE myagent)
   add_test(NAME myagent_context COMMAND myagent_context_tests)

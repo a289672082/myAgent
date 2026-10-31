@@ -37,7 +37,8 @@ public:
   explicit ContextManager(ContextOptions options = {});
   const ContextOptions& options() const { return options_; }
   ContextStats stats(const Json& history) const;
-  bool needs_compression(const Json& history) const;
+  // extra_tokens 用于工具 Schema 与系统指令等非 history 内容的预算保留。
+  bool needs_compression(const Json& history, std::size_t extra_tokens = 0) const;
   // 提供一个 callback：将完整摘要请求交给 Model，返回 Responses JSON。
   // 只删除完整的旧用户轮次，保留最近 N 轮（含其所有 tool call/output）。
   // 如果摘要失败，history 一字不改；不在工具调用与结果中间裁剪。

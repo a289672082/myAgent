@@ -44,10 +44,10 @@ ContextStats ContextManager::stats(const Json& history) const {
   result.estimated_tokens = estimate(history);
   return result;
 }
-bool ContextManager::needs_compression(const Json& history) const {
+bool ContextManager::needs_compression(const Json& history, std::size_t extra_tokens) const {
   if (!options_.auto_compress || !options_.max_context_tokens) return false;
   const auto available = options_.max_context_tokens - options_.reserve_output_tokens;
-  return static_cast<double>(estimate(history)) >=
+  return static_cast<double>(estimate(history) + extra_tokens) >=
          static_cast<double>(available) * options_.compress_threshold;
 }
 CompressionResult ContextManager::compress(Json& history,

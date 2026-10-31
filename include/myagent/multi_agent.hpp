@@ -4,12 +4,22 @@
 #include "myagent/agent.hpp"
 #include <cstddef>
 #include <filesystem>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace myagent {
+struct McpEndpointSpec {
+  enum class Transport { Http, Stdio, OAuth };
+  Transport transport = Transport::Http;
+  std::string prefix;
+  std::string address; // HTTP URL 或 stdio executable
+  std::string bearer_token;
+  std::vector<std::string> args;
+  std::shared_ptr<mymcp::oauth::Session> oauth_session;
+};
 struct AgentSpec {
   std::string name;
   std::string description;
@@ -18,6 +28,9 @@ struct AgentSpec {
   // 不等同于 OS 沙箱；调用方添加的任意 MCP 工具仍由调用方控制权限。
   std::filesystem::path workspace;
   bool allow_workspace_write = false;
+  std::vector<std::filesystem::path> skill_directories; // 构造后自动加载的专用目录
+  std::vector<std::string> explicit_skills;             // 加载后直接 use_skill
+  std::vector<McpEndpointSpec> mcp;                     // 子 Agent 独立 MCP 注册
 };
 // 交给子 Agent 的是任务相关的摘要和文件引用，而非主 Agent 的完整对话历史。
 struct TaskContext {
@@ -38,9 +51,12 @@ struct TeamTask {
   std::vector<std::string> depends_on; // 只能依赖计划中较早的任务。
   LoopMode mode = LoopMode::ReAct;
   TaskContext context; // 调用方传入的有限任务上下文；默认空。
+  int priority = 0; // 就绪任务优先级，数值大者先调度。
+  std::vector<std::string> fallback_agents; // 失败后可尝试的备选 Agent（仅原任务无工具副作用）。
 };
 struct DelegationResult;
 struct TeamOptions {
+  unsigned max_task_retries = 0; // 默认不重复调用；仅无工具副作用的失败可安全重试。
   unsigned max_delegations = 8;       // 主协调器最多可产生多少个子任务
   unsigned max_parallel_agents = 2;   // 同时运行的不同 Agent 数量，至少 1
   unsigned max_depth = 1;             // 当前架构只有 coordinator -> worker 这一层
@@ -50,6 +66,12 @@ struct TeamOptions {
   unsigned max_handoff_chars = 6000;  // 向子 Agent 仅传相关上游摘要
   LoopOptions worker_loop;
   std::function<bool()> cancelled;
+  // 团队运行事件（started/completed/failed/reassigned）；仅携带 ID/耗时，不记录密钥或工具正文。
+  std::function<void(const Json&)> on_event;
+  std::filesystem::path event_log_path; // 可选 JSONL 审计日志
+  std::chrono::milliseconds timeout{0}; // 任务队列取消及轮次间截止时间
+  std::filesystem::path checkpoint_path; // 任务图持久化：仅同一任务图可恢复
+  bool resume_checkpoint = false;
   // 任务完成后由宿主程序审查真实证据（例如测试退出码）。
   // 不设置时仅是模型报告完成，不能声称客观测试已通过。
   std::function<TaskValidation(const TeamTask&, const DelegationResult&)> validate_task;
@@ -64,6 +86,7 @@ struct DelegationResult {
   TokenUsage usage;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
+  unsigned attempts = 1;
   Json details = mymcp::json::object{}; // Worker Loop 的 plan/evaluations，包含实际工具证据。
   std::string verification = "unverified";
   Json verification_evidence = mymcp::json::object{};
@@ -77,6 +100,7 @@ struct TeamResult {
   std::map<std::string, TokenUsage> usage_by_agent;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
+  Json events = mymcp::json::array{}; // 团队调度事件，便于排查任务耗时和并行顺序。
 };
 
 class AgentTeam {
@@ -89,6 +113,9 @@ public:
   void add_agent(AgentSpec spec, std::shared_ptr<Model> model = {});
   Agent& agent(const std::string& name);
   const Agent& coordinator() const { return *coordinator_; }
+  // 从 YAML/JSON 加载声明式 Agent 配置，key_ref 由宿主解析，不在文件中储存明文。
+  void add_agents_from_file(const std::filesystem::path& file,
+      const std::function<std::string(const std::string& key_ref)>& credential_resolver);
   // 直接委派：单独执行指定 Agent 的一种已有 Loop。
   DelegationResult delegate(const std::string& name, const LoopInput& input,
                             LoopMode mode = LoopMode::ReAct,
