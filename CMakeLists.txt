@@ -67,7 +67,7 @@ if(MYAGENT_BUILD_EXAMPLES)
 
   # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
   add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)
-  target_link_libraries(run_skill_yaml_demo PRIVATE myagent yaml-cpp::yaml-cpp)
+  target_link_libraries(run_skill_yaml_demo PRIVATE myagent)
   # 固定示例资源目录，保证从 build 或任意工作目录启动时都能找到样例。
   target_compile_definitions(run_skill_yaml_demo PRIVATE
     MYAGENT_SKILL_YAML_DEMO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/skill_yaml_demo")
