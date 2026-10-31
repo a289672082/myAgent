@@ -11,7 +11,7 @@ int run_reflection_demo() {
       if (round == 2) {
         loop_demo::check(!myagent::json::if_contains(request, "tools"),
                          "反思阶段不得调用工具");
-        return loop_demo::answer(R"({"needs_revision":true,"feedback":"应当检查索引，或使用 at()"} )");
+        return loop_demo::answer(R"JSON({"needs_revision":true,"feedback":"应当检查索引，或使用 at()"} )JSON");
       }
       if (round == 3) return loop_demo::answer("C++ vector 可使用 at() 做边界检查。");
       return loop_demo::answer(R"({"needs_revision":false,"feedback":"边界检查建议已补充"} )");
