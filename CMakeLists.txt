@@ -64,6 +64,13 @@ option(MYAGENT_BUILD_TESTS "Build offline Agent tests" ON)
 if(MYAGENT_BUILD_EXAMPLES)
   add_executable(run_agent_demo examples/run_agent_demo.cpp)
   target_link_libraries(run_agent_demo PRIVATE myagent)
+
+  # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
+  add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)
+  target_link_libraries(run_skill_yaml_demo PRIVATE myagent yaml-cpp::yaml-cpp)
+  # 固定示例资源目录，保证从 build 或任意工作目录启动时都能找到样例。
+  target_compile_definitions(run_skill_yaml_demo PRIVATE
+    MYAGENT_SKILL_YAML_DEMO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/skill_yaml_demo")
 endif()
 if(MYAGENT_BUILD_TESTS)
   enable_testing()
@@ -88,6 +95,11 @@ if(MYAGENT_BUILD_TESTS)
   target_link_libraries(myagent_skill_yaml_tests PRIVATE myagent)
   add_test(NAME myagent_skills_yaml COMMAND myagent_skill_yaml_tests)
   set_tests_properties(myagent_skills_yaml PROPERTIES TIMEOUT 30)
+  if(MYAGENT_BUILD_EXAMPLES)
+    # 用真实样例文件执行独立 Demo，验证成功退出及完整的离线流程。
+    add_test(NAME myagent_skill_yaml_demo COMMAND run_skill_yaml_demo)
+    set_tests_properties(myagent_skill_yaml_demo PROPERTIES TIMEOUT 30)
+  endif()
   set_tests_properties(myagent_skills PROPERTIES TIMEOUT 30)
   add_test(NAME myagent COMMAND myagent_tests)
   set_tests_properties(myagent PROPERTIES TIMEOUT 30)
