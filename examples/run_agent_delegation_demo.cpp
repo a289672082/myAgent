@@ -153,7 +153,7 @@ int run_agent_delegation_demo() {
         return loop_demo::tool_call("review__audit", R"({"file":"src/demo.cpp"})");
       if (round == 2) {
         const std::string output(request.at("input")[2].at("output").as_string());
-        loop_demo::check(contains(output, "检查结果"),
+        loop_demo::check(contains(output, "REVIEW_OK"),
                          "审查 MCP 的结果未回传给 Reviewer");
         return loop_demo::answer("Reviewer 使用 cpp-review 和 review MCP 完成审查。");
       }
@@ -169,7 +169,7 @@ int run_agent_delegation_demo() {
 
     mymcp::Server review_mcp("review-server", "1.0.0");
     review_mcp.tool("audit", "进行代码审查，不执行写文件操作",
-      [](const std::string& file) { return "检查结果: " + file + " 通过"; },
+      [](const std::string& file) { return "REVIEW_OK: " + file; },
       mymcp::arg<std::string>("file"));
     auto review_client = std::make_shared<mymcp::Client>(
       [&review_mcp](const myagent::Json& request) {
