@@ -1,4 +1,5 @@
 #include "myagent/agent.hpp"
+#include "loop_internal.hpp"
 #include "httplib.h"
 #include "yaml-cpp/yaml.h"
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <set>
@@ -636,18 +638,51 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
   }
 }
 std::string Agent::run(Json user_content) {
-  Json proposed = history_; // Commit only after a completed model turn.
+  // Legacy ask() uses the same stage executor as all loop strategies.
+  Json working = history_;
+  unsigned model_calls = 0, tool_calls = 0;
+  const auto turn = run_stage(std::move(user_content), working, {}, {}, true,
+      model_calls, tool_calls, std::numeric_limits<unsigned>::max(),
+      std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
+      {}, nullptr, {}, "ask");
+  history_ = std::move(working);
+  last_response_ = turn.response;
+  return turn.answer;
+}
+
+Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
+    const std::string& phase_instructions, const std::string& model_override,
+    bool allow_tools, unsigned& model_calls, unsigned& tool_calls,
+    unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
+    const std::function<bool()>& cancelled, Json* trace,
+    const std::function<void(const Json&)>& on_event, const std::string& phase) {
+  // Transactional at turn granularity: unsuccessful turns do not modify working.
+  Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
   std::map<std::string, Route> routes;
-  const Json tools = tool_definitions(routes);
-  std::set<std::string> loaded_skills; // Per-request automatic selection.
-  for (unsigned round = 0; round <= config_.max_tool_rounds; ++round) {
+  const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
+  std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
+  const auto emit = [&](const Json& event) {
+    if (trace) trace->push_back(event);
+    if (on_event) on_event(event);
+  };
+  for (unsigned round = 0; round <= max_rounds; ++round) {
+    if (cancelled && cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
+    if (model_calls >= max_model_calls)
+      throw detail::LoopAbort(LoopStatus::LimitReached, "Model call budget exhausted");
     if (proposed.size() > config_.max_history_items)
       throw std::runtime_error("Conversation exceeded max_history_items; clear_history()");
-    Json request = json::object{{"model", config_.model}, {"instructions", instructions()},
-                                {"input", proposed}, {"store", false},
-                                {"parallel_tool_calls", false}};
+    Json request = json::object{
+      {"model", model_override.empty() ? config_.model : model_override},
+      {"instructions", instructions() + (phase_instructions.empty() ?
+          "" : "\n\n# Current execution phase\n" + phase_instructions)},
+      {"input", proposed},
+      {"store", false},
+      {"parallel_tool_calls", false}
+    };
     if (!tools.empty()) request["tools"] = tools;
+    ++model_calls; // Charge attempts, even when the request fails.
     const Json response = model_->create(request);
     const auto status = as_string(response, "status");
     if (!status.empty() && status != "completed")
@@ -661,19 +696,25 @@ std::string Agent::run(Json user_content) {
       if (as_string(item, "type") == "function_call") has_calls = true;
     }
     if (!has_calls) {
-      const auto answer = output_text(response);
-      history_ = std::move(proposed);
-      last_response_ = response;
-      return answer;
+      auto answer = output_text(response);
+      working = std::move(proposed);
+      return TurnResult{std::move(answer), response};
     }
-    if (round == config_.max_tool_rounds)
-      throw std::runtime_error("Agent reached max_tool_rounds");
+    if (!allow_tools)
+      throw std::runtime_error("Tools forbidden in this loop phase: " + phase);
+    if (round == max_rounds)
+      throw detail::LoopAbort(LoopStatus::LimitReached, "Tool round limit reached");
     for (const auto& item : output->array_range()) {
       if (as_string(item, "type") != "function_call") continue;
+      if (cancelled && cancelled())
+        throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
+      if (tool_calls >= max_tool_calls)
+        throw detail::LoopAbort(LoopStatus::LimitReached, "Tool call budget exhausted");
       const auto id = as_string(item, "call_id");
       const auto name = as_string(item, "name");
       if (id.empty()) throw std::runtime_error("Missing tool call ID");
-      std::string output;
+      ++tool_calls;
+      std::string tool_output;
       if (name == "agent_skill_load" || name == "agent_skill_read_file") {
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");
@@ -690,7 +731,7 @@ std::string Agent::run(Json user_content) {
             const auto files = skills_.supporting_files(skill_name);
             Json paths = json::array{};
             for (const auto& path : files) paths.push_back(path);
-            output = json::serialize(json::object{
+            tool_output = json::serialize(json::object{
               {"name", skill_name}, {"instructions", content}, {"supporting_files", paths},
               {"note", "Scripts are listed/read as text only; not executed"}
             });
@@ -698,27 +739,56 @@ std::string Agent::run(Json user_content) {
             if (!loaded_skills.count(skill_name) && !manual_skill_contents_.count(skill_name))
               throw std::invalid_argument("Load the Skill before reading supporting files");
             const auto path = as_string(args, "path");
-            output = json::serialize(json::object{
+            tool_output = json::serialize(json::object{
               {"name", skill_name}, {"path", path},
               {"content", skills_.read_file(skill_name, path)}
             });
           }
         } catch (const std::exception& e) {
-          output = json::serialize(json::object{{"isError", true}, {"message", e.what()}});
+          tool_output = json::serialize(json::object{{"isError", true}, {"message", e.what()}});
         }
       } else {
         const auto route = routes.find(name);
         if (route == routes.end())
           throw std::runtime_error("Unknown tool: " + name);
-        output = execute_tool(route->second, item);
+        tool_output = execute_tool(route->second, item);
       }
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
-        {"output", output}
+        {"output", tool_output}
       });
+      // Trace tool actions without copying potentially sensitive tool output.
+      emit(json::object{{"phase", phase}, {"event", "tool_call"},
+                        {"name", name}, {"call_id", id},
+                        {"result_bytes", tool_output.size()}});
     }
   }
-  throw std::runtime_error("Agent exceeded tool call limit");
+  throw detail::LoopAbort(LoopStatus::LimitReached, "Tool round limit reached");
+}
+
+Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript) {
+  std::string text = input.text;
+  if (!input.audio.empty()) {
+    const auto backend = std::dynamic_pointer_cast<OpenAIResponses>(model_);
+    if (!backend)
+      throw std::logic_error("Audio input requires OpenAIResponses transcription backend");
+    transcript = backend->transcribe(input.audio);
+    if (!text.empty()) text += "\n\n";
+    text += "Audio transcript:\n" + transcript;
+  }
+  if (text.empty() && input.images.empty())
+    throw std::invalid_argument("Loop input requires text, image or audio");
+  if (input.images.empty()) return text;
+  Json parts = json::array{};
+  if (!text.empty())
+    parts.push_back(json::object{{"type", "input_text"}, {"text", text}});
+  for (const auto& image : input.images) {
+    const auto mime = media_type(image);
+    const auto url = "data:" + mime + ";base64," +
+                     base64(read_bounded_file(image, MaxMediaBytes));
+    parts.push_back(json::object{{"type", "input_image"}, {"image_url", url}});
+  }
+  return parts;
 }
 std::string Agent::ask(const std::string& text) { return run(text); }
 std::string Agent::ask_parts(Json content) {

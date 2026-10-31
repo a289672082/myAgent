@@ -11,6 +11,7 @@
 - 图片输入：PNG / JPEG / WebP / GIF 转 base64 Data URL
 - 音频输入：转写成文字后继续对话；音频输出：合成 MP3
 - 保存/加载对话历史，注入 Model mock 做离线测试
+- 四种循环 ReAct / Plan-and-Execute / Reflection / Evaluator-Optimizer（统一工具预算，支持多图及音频转写）
 
 ## 构建
 
@@ -115,6 +116,66 @@ std::string answer = agent.ask("帮我审查这段 C++ 代码");
 
 Skill 目录应为 `name/SKILL.md` 格式，`SKILL.md` 通过 yaml-cpp 完整解析 YAML frontmatter（含多行 `|`/`>`、引号、注释、嵌套 `metadata` 等），并严格校验 Agent Skills 规范：`name`（1–64，ASCII 小写字母/数字/单连字符，和文件夹同名），`description`（1–1024 Unicode 字符）、可选 `license`、`compatibility`（1–500 字符）、`metadata`（字符串映射）及 `allowed-tools`（字符串）。会拒绝无效 YAML、字段类型错误、重复 YAML 键及缺少 frontmatter，错误包含文件与字段/行号。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。支持 Claude `disable-model-invocation: true` 和 Codex `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`，这种 Skill 不会被模型自动激活，但仍可用 `use_skill()` 显式启用。**`allowed-tools` 仅作元数据，不代表授予执行权限。** 其他厂商扩展字段不会阻止加载。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能运行时行为或外部技能市场同步。
 
+## 统一 Agent 循环（四种策略 + 图片和音频）
+
+新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供四种策略：
+- ReAct：决策 → 工具调用 → 观察 → 最终回答。
+- Plan-and-Execute：严格 JSON 规划 → 单步执行 → 阻塞时受限重规划 → 汇总。
+- Reflection：草稿 → JSON 自评 → 修订 → 检查完成。
+- Evaluator-Optimizer：生成 → JSON 评分与问题清单 → 优化 → 评估通过。
+
+~~~cpp
+myagent::Config config;
+config.base_url = "https://api.openai.com";
+config.api_key = "sk-example-replace-with-your-key"; // 非真实密钥
+config.model = "gpt-4.1-mini";
+myagent::Agent agent(config);
+
+myagent::LoopOptions options;
+options.max_iterations = 6;
+options.max_model_calls = 24;
+options.max_tool_calls = 20;
+options.max_replans = 1;
+options.max_revisions = 3;
+
+auto r1 = agent.react("调用工具查找信息", options);
+auto r2 = agent.plan_and_execute("分析 C++ 项目并给出实施步骤", options);
+auto r3 = agent.reflect("审查这段 C++ 实现", options);
+auto r4 = agent.evaluate_and_optimize("优化 C++ 代码", options);
+
+// 一个任务可以混合文本与多张图片；模型需要具备视觉输入能力。
+myagent::LoopInput image_task;
+image_task.text = "比较两张图片";
+image_task.images = {"before.png", "after.png"};
+auto image_result = agent.evaluate_and_optimize(image_task, options);
+
+// 音频先转写为文字后进入四种循环，不是原始音频声学推理。
+// 真实转写/语音合成需要兼容的独立 API 端点。
+myagent::LoopInput audio_task;
+audio_task.text = "总结录音";
+audio_task.audio = "meeting.wav";
+options.speech_output = "answer.mp3"; // 可选：把最终答案合成为音频文件
+auto audio_result = agent.reflect(audio_task, options);
+~~~
+
+所有策略复用 Agent 的 Model/MCP/Skill 工具通道和统一模型/工具调用预算。Planner、Reflector、Evaluator 和 Optimizer 阶段默认没有工具调用能力，只有执行/初稿阶段可以调用工具；planner_model、evaluator_model 可指定阶段模型名称，但仍使用同一个 baseUrl/API Key。
+
+LoopResult 包含 status、answer、error、audio_transcript、plan、evaluations、trace、model_calls、tool_calls、iterations。默认成功时主历史只增加原始用户任务和最终答案，内部草稿与反馈不进入主历史；设置 commit_to_history=false 不提交结果。取消通过同步 cancelled 回调在每次模型/工具调用前检查，on_event 可观察事件。失败、取消、调用预算耗尽不提交主历史；但已执行工具的外部副作用不能自动回滚。
+
+图片使用现有 PNG/JPEG/WebP/GIF Data URL 处理；音频调用现有转写接口，合成使用 speak()。这一版没有原生音频声学理解、流式输出、供应商间不同的 API Key 路由、任务断点续跑或任意时刻中断进行中的 HTTP 请求。对模型的计划/评估 JSON 进行结构校验，不宣称单凭自评分即可证明外部测试成功。
+
+四个独立 Demo 均使用带显式示例配置的离线 Mock Model，无需环境变量/命令行参数和付费 API：
+- examples/run_react_demo.cpp：run_react_demo()（图片 + MCP 工具）
+- examples/run_plan_execute_demo.cpp：run_plan_execute_demo()（规划 + 执行）
+- examples/run_reflection_demo.cpp：run_reflection_demo()（草稿 + 自检）
+- examples/run_evaluator_optimizer_demo.cpp：run_evaluator_optimizer_demo()（评分 + 优化）
+
+~~~sh
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+~~~
+
 ## MCP 快捷接口（推荐）
 
 Agent 负责创建和保存客户端，无需显式构造 mymcp::Client、std::shared_ptr，也不必自行管理传输对象的生命周期。
@@ -189,7 +250,7 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 核心头文件：include/myagent/agent.hpp。
 核心实现：src/agent.cpp。
 测试：tests/test_agent.cpp。
-示例：examples/run_agent_demo.cpp、examples/run_skill_yaml_demo.cpp。
+示例：examples/run_agent_demo.cpp、examples/run_skill_yaml_demo.cpp、examples/run_react_demo.cpp、examples/run_plan_execute_demo.cpp、examples/run_reflection_demo.cpp、examples/run_evaluator_optimizer_demo.cpp。
 
 ## 边界和安全
 

@@ -50,6 +50,16 @@ myagent::Agent agent(config);
 - `MYAGENT_SKILL_YAML_DEMO_DIR` 在 CMake 构建时定位示例资源根目录，避免依赖执行时的 cwd；`ctest` 中注册 `myagent_skill_yaml_demo`。
 - `allowed-tools` 仅作元数据展示；`scripts/check.py` 不会运行。
 
+## 统一 Agent 循环
+
+- include/myagent/loop.hpp 定义 LoopInput(text/images/audio)、LoopOptions、LoopResult 与四种策略类型；src/loop_engine.cpp 负责跨阶段调度。
+- Agent::run_stage 是原有 ask() 与四种 Loop 共用的唯一模型/MCP/Skill 工具执行器；支持工具隔离、全局调用计数、模型名称覆盖与取消回调。
+- Plan-and-Execute 使用可验证的 JSON steps，阻塞时可以有限重新规划；Reflection 使用 needs_revision/feedback；Evaluator-Optimizer 使用 score/passed/feedback/issues 和用户定义阈值。
+- 规划、反思、评估、优化等阶段不提供工具；执行/草稿阶段可以使用已有 MCP/Skill，任何外部工具副作用无法自动回滚。
+- 图片继续使用现有 Data URL；音频先转写文本，语音输出通过现有 speak()；多模态的后端限制依然存在。
+- Loop 维护隔离的 working conversation，只有成功的最终结果提交普通 Agent 历史。取消仅在阶段/调用边界生效，不会中断 HTTP 调用。
+- 四个独立离线 Demo 与 tests/test_loops.cpp 注册进 CTest；Demo 明确写出示例模型参数，不依赖环境变量和命令行参数。
+
 ## MCP 设计
 
 myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。

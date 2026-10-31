@@ -1,6 +1,7 @@
 #pragma once
 // C++20 OpenAI Responses Agent. MCP is provided by the existing mymcp SDK.
 #include "mymcp/mcp.hpp"
+#include "myagent/loop.hpp"
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -127,6 +128,22 @@ public:
   void use_skill(const std::string& name);
   const SkillLibrary& skills() const { return skills_; }
 
+  // Four synchronous loop strategies; input may mix text, images and audio.
+  // The loop owns transient phase history; on success only the task/final answer
+  // is committed to the normal conversation, if commit_to_history is true.
+  LoopResult run_loop(const LoopInput& input, LoopMode mode,
+                      const LoopOptions& options = {});
+  LoopResult run_loop(const std::string& task, LoopMode mode,
+                      const LoopOptions& options = {});
+  LoopResult react(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult react(const std::string& task, const LoopOptions& options = {});
+  LoopResult plan_and_execute(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult plan_and_execute(const std::string& task, const LoopOptions& options = {});
+  LoopResult reflect(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult reflect(const std::string& task, const LoopOptions& options = {});
+  LoopResult evaluate_and_optimize(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
+
   std::string ask(const std::string& text);
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
@@ -157,6 +174,17 @@ private:
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
   std::string run(Json user_content);
+  struct TurnResult {
+    std::string answer;
+    Json response;
+  };
+  TurnResult run_stage(Json user_content, Json& working,
+      const std::string& phase_instructions, const std::string& model_override,
+      bool allow_tools, unsigned& model_calls, unsigned& tool_calls,
+      unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
+      const std::function<bool()>& cancelled, Json* trace,
+      const std::function<void(const Json&)>& on_event, const std::string& phase);
+  Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
   std::shared_ptr<Model> model_;
