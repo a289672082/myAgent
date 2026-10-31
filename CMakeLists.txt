@@ -63,6 +63,11 @@ if(MYAGENT_BUILD_TESTS)
   add_dependencies(myagent_tests myagent_test_stdio_server)
   target_compile_definitions(myagent_tests PRIVATE
     MYAGENT_TEST_STDIO_SERVER="$<TARGET_FILE:myagent_test_stdio_server>")
+  # Actual localhost HTTP endpoint tests for append-vs-exact Responses URLs.
+  add_executable(myagent_url_tests tests/test_urls.cpp)
+  target_link_libraries(myagent_url_tests PRIVATE myagent)
+  add_test(NAME myagent_urls COMMAND myagent_url_tests)
+  set_tests_properties(myagent_urls PROPERTIES TIMEOUT 30)
   add_test(NAME myagent COMMAND myagent_tests)
   set_tests_properties(myagent PROPERTIES TIMEOUT 30)
 endif()

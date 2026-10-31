@@ -60,6 +60,41 @@ std::string base64(const std::string& input) {
   }
   return out;
 }
+// Split the origin from the HTTP request target. Passing a URL with a path
+// directly to httplib::Client can drop that path, so POST using the target.
+struct ParsedUrl {
+  std::string origin;
+  std::string path;
+  std::string query;
+};
+ParsedUrl parse_base_url(const std::string& url) {
+  std::size_t scheme_size = 0;
+  if (url.rfind("https://", 0) == 0) scheme_size = 8;
+  else if (url.rfind("http://", 0) == 0) scheme_size = 7;
+  else throw std::invalid_argument("OpenAI base URL must start with http:// or https://");
+  if (url.find('#') != std::string::npos)
+    throw std::invalid_argument("OpenAI base URL must not contain a fragment");
+  const auto authority_end = url.find_first_of("/?", scheme_size);
+  const std::string origin = url.substr(0, authority_end);
+  const auto authority = origin.substr(scheme_size);
+  if (authority.empty() || authority.find('@') != std::string::npos)
+    throw std::invalid_argument("OpenAI base URL requires a host without userinfo");
+  const auto query_pos = url.find('?', scheme_size);
+  const auto path_end = query_pos == std::string::npos ? url.size() : query_pos;
+  std::string path = "/";
+  if (authority_end != std::string::npos && url[authority_end] == '/')
+    path = url.substr(authority_end, path_end - authority_end);
+  return {origin, std::move(path),
+          query_pos == std::string::npos ? std::string{} : url.substr(query_pos)};
+}
+std::string responses_target(const Config& config, const ParsedUrl& url) {
+  if (!config.append_responses_path) return url.path + url.query;
+  std::string path = url.path;
+  while (path.size() > 1 && path.back() == '/') path.pop_back();
+  if (path.ends_with("/v1/responses")) return path + url.query;
+  return (path == "/" ? std::string{} : path) + "/v1/responses" + url.query;
+}
+
 httplib::Headers headers(const Config& config) {
   // Model backend validates explicit credentials at construction.
   return {{"Authorization", "Bearer " + config.api_key}};
@@ -169,22 +204,24 @@ OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
     throw std::invalid_argument("OpenAI API key is required: set Config::api_key explicitly");
   if (config_.base_url.empty())
     throw std::invalid_argument("OpenAI base URL is required: set Config::base_url explicitly");
-  if (config_.base_url.rfind("https://", 0) != 0 &&
-      config_.base_url.rfind("http://", 0) != 0)
-    throw std::invalid_argument("OpenAI base URL must start with http:// or https://");
+  (void)parse_base_url(config_.base_url);
 }
 Json OpenAIResponses::create(const Json& request) {
-  httplib::Client client(config_.base_url);
+  const auto url = parse_base_url(config_.base_url);
+  const auto target = responses_target(config_, url);
+  httplib::Client client(url.origin);
   configure(client);
-  auto result = client.Post("/v1/responses", headers(config_),
+  auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
-  check_http(result, "/v1/responses");
+  check_http(result, target);
   return json::parse(result->body);
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
                                         const std::string& model) const {
   const std::string bytes = read_file(file, MaxMediaBytes);
-  httplib::Client client(config_.base_url);
+  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
+  const auto url = parse_base_url(config_.base_url);
+  httplib::Client client(url.origin);
   configure(client);
   httplib::UploadFormDataItems items = {
     {"file", bytes, file.filename().string(), "application/octet-stream"},
@@ -200,7 +237,9 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
 void OpenAIResponses::speech(const std::string& text,
                              const std::filesystem::path& output,
                              const std::string& voice, const std::string& model) const {
-  httplib::Client client(config_.base_url);
+  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
+  const auto url = parse_base_url(config_.base_url);
+  httplib::Client client(url.origin);
   configure(client);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
