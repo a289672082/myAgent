@@ -55,6 +55,9 @@ myagent::Agent agent(config);
 - `Config::context` / `ContextManager`：自动或手动压缩旧的完整用户轮次，摘要替换后保留最近完整轮次，摘要失败不修改历史；触发预算是近似 Token 数，不视作真实 usage。`Agent::compress_context()` / `context_stats()` 提供手动 API 与统计。
 - 压缩逻辑放在 `run_stage()` 请求边界（所有 Loop 与 `ask()` 共用），摘要请求本身计入 `last_usage`/`total_usage`，Loop 计入 `usage_by_phase["context_compression"]`。没有可压缩的完整旧轮次时不破坏工具调用结果。
 - `AgentTeam` / `AgentSpec`：每个子 Agent 独立 Config（base_url/api_key/model），独立 MCP、Skills、历史和用量，不向协调器模型显示其他 Agent 的密钥或 URL；仍要求 Responses API 兼容。
+- 子 Agent 的 Skill/MCP 在 `team.add_agent(spec)` 后，通过 `team.agent(name)` 注册；`config.auto_discover_skills` 控制构造时自动搜索，`config.auto_skill_selection` 控制是否提供 `agent_skill_load`，`load_skills()` 明确限制目录，`use_skill()` 可手动固定指令。
+- 示例 `run_agent_delegation_demo.cpp` 通过真实 Skill fixture、离线 MCP Server/Client 演示 Coder 自动按需加载、Reviewer 手动启用、第三个 Agent 自动发现；检查各 Agent 的工具列表和调用隔离，附中文逐步说明。
+
 - `delegate` 显式委派任务；`collaborate` 基于任务 DAG（只依赖已声明的前序任务）运行；`run` 先由协调器生成严格 JSON 任务图再执行、完成后总结。
 - `TeamOptions` 包含任务数量限制、并行数量、深度=1、模型/工具调用预算、软 Token 上限和取消回调；子任务上下文只附必要的上游摘要，避免复制主 Agent 完整历史。
 - `TaskContext` 支持传目标、上下文、产物引用与约束；`DelegationResult::details` 包含 worker Loop 的 plan/evaluations；`TeamOptions::validate_task` 可检查真实证据并拒绝未通过的工作，阻断依赖任务。

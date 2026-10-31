@@ -73,6 +73,9 @@ if(MYAGENT_BUILD_EXAMPLES)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
     target_link_libraries(run_${feature}_demo PRIVATE myagent)
   endforeach()
+  # 子 Agent Skill/MCP 示范使用真实 SKILL.md 文件；无论从哪个目录运行均能找到资源。
+  target_compile_definitions(run_agent_delegation_demo PRIVATE
+    MYAGENT_TEAM_DEMO_SKILLS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/agent_team_demo_skills")
 
   # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
   add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)

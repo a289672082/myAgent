@@ -178,6 +178,48 @@ auto review = team.delegate("reviewer", "审查该组件的资源管理");
 auto result = team.run("开发并审查 C++ 组件");
 ```
 
+
+#### 子 Agent Skill 与 MCP 如何配置（可运行 Demo）
+
+子 Agent 创建后通过 `team.agent("名称")` 获取其独立的 `Agent` 对象；不需要额外的 `AgentTeam` MCP/Skill API。建议在执行 `delegate()`、`run()`、`collaborate()` **之前**注册对应工具和 Skill。
+
+```cpp
+myagent::AgentSpec coder;
+coder.name = "coder";
+coder.description = "负责 C++ 开发";
+coder.config.base_url = "https://model-a.example.com";
+coder.config.api_key = "example-coder-key";
+coder.config.model = "coder-model";
+coder.config.auto_discover_skills = false; // 不扫描全局项目/用户 Skill
+coder.config.auto_skill_selection = true; // 模型可通过 agent_skill_load 按需加载
+team.add_agent(coder);
+
+auto& coding = team.agent("coder");
+coding.load_skills("./skills/coder");  // 仅显式加载 Coder 的 Skill 目录
+coding.add_mcp_http("files", "https://files.example.com/mcp", "mcp-bearer-token");
+coding.add_mcp_stdio("git", "./git-mcp-server");
+// 也可调用 coding.add_mcp_oauth("github", url, authorized_session);
+
+myagent::AgentSpec reviewer;
+reviewer.name = "reviewer";
+reviewer.description = "只负责审查";
+reviewer.config.base_url = "https://model-b.example.com";
+reviewer.config.api_key = "example-reviewer-key";
+reviewer.config.model = "reviewer-model";
+reviewer.config.auto_discover_skills = false;
+reviewer.config.auto_skill_selection = false; // 禁止模型自主加载 Skill
+team.add_agent(reviewer);
+auto& review = team.agent("reviewer");
+review.load_skills("./skills/reviewer");
+review.use_skill("cpp-review");       // 显式固定某个 Skill 的完整指令
+review.add_mcp_http("readonly", "https://readonly.example.com/mcp", "readonly-token");
+```
+
+`auto_discover_skills=true` 会在 **Agent 构造时**扫描当前项目路径的 `.agents/skills`、`.claude/skills`、当前目录 `skills`，以及用户主目录中的 Skill；`false` 不自动扫描。`auto_skill_selection=true` 会向模型公开已注册的可自动调用 Skill 元数据与 `agent_skill_load`/`agent_skill_read_file` 工具，**不代表自动加载全部正文**；设为 `false` 后仍可手动 `use_skill()`。
+
+可直接运行 `run_agent_delegation_demo()`：里面包括三个真实示范场景（Coder 手动目录+自动 Skill 选择；Reviewer 手动目录+手动 Skill；第三个子 Agent 构造时自动发现项目 Skill），并使用内存 MCP Server/Client 模拟发现、工具调用、结果回传，验证 Coder/Reviewer 不互相继承工具。示例资源位于 `examples/agent_team_demo_skills/`，**离线运行且不连接示意 HTTP/MCP 地址**。如需实际网络 MCP，按需将演示的 `add_mcp()` 替换为 `add_mcp_http()`、`add_mcp_stdio()` 或 `add_mcp_oauth()`。
+
+**权限提示：** `auto_discover_skills` 控制自动发现，`auto_skill_selection` 控制向模型提供 Skill 调用能力，但都不是操作系统安全机制；Skill 的 `allowed-tools` 仅作为元数据，不会自动授权。真正的 MCP 读写权限应由服务端令牌、受限工具注册或工作区权限落实。不同子 Agent 需要真正隔离的 Skill 时推荐关闭自动发现，并分别调用 `load_skills()`。
 每个子 Agent 使用独立 `Agent`、模型 URL、API Key、模型名、MCP/Skill/上下文、历史和 Token 用量，不继承主 Agent 的凭据。现有实现使用 **OpenAI Responses 兼容协议**：不同 URL 可以独立配置，但不代表原生支持各家厂商不兼容的 Chat Completions 协议。建议对子 Agent 仅授予完成其任务所必需的工具权限。
 
 ### 3. 显式任务图、并行调度和团队预算
