@@ -33,11 +33,11 @@ int run_team_checkpoint_demo() {
     };
     const auto first=team.collaborate(tasks,options);
     loop_demo::check(first.status==myagent::TeamStatus::Completed,"first run");
-    const auto calls=mock->calls;
+    const auto calls=mock->round;
     options.resume_checkpoint=true;
     const auto restored=team.collaborate(tasks,options);
     loop_demo::check(restored.status==myagent::TeamStatus::Completed,"restored");
-    loop_demo::check(mock->calls==calls,"恢复不得重复执行完成步骤");
+    loop_demo::check(mock->round==calls,"恢复不得重复执行完成步骤");
     std::cout<<"恢复已完成任务，任务数="<<restored.tasks.size()
              <<"; 模型调用次数未增加。\n";
     fs::remove(path);
