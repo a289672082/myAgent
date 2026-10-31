@@ -12,10 +12,12 @@ Json task_graph(const std::vector<TeamTask>& tasks) {
   for(const auto& task:tasks) {
     Json deps=json::array{};
     for(const auto& name:task.depends_on)deps.push_back(name);
+    Json fallbacks=json::array{};
+    for(const auto& name:task.fallback_agents)fallbacks.push_back(name);
     graph.push_back(json::object{
       {"id",task.id},{"agent",task.agent},{"description",task.description},
       {"depends_on",deps},{"mode",static_cast<int>(task.mode)},
-      {"priority",task.priority},{"goal",task.context.goal},
+      {"priority",task.priority},{"fallback_agents",fallbacks},{"goal",task.context.goal},
       {"context",task.context.relevant_context},
       {"artifacts",task.context.artifacts},{"constraints",task.context.constraints}
     });
@@ -52,7 +54,7 @@ void save_team_checkpoint(const std::filesystem::path& path,
       {"status",static_cast<int>(r.status)},{"answer",r.answer},{"error",r.error},
       {"verification",r.verification},{"verification_evidence",r.verification_evidence},
       {"usage",usage_json(r.usage)},{"model_calls",r.model_calls},
-      {"tool_calls",r.tool_calls},{"details",r.details}});
+      {"tool_calls",r.tool_calls},{"attempts",r.attempts},{"details",r.details}});
   }
   Json running=json::array{};
   for(const auto& name:inflight)running.push_back(name);
@@ -100,10 +102,14 @@ std::map<std::string, DelegationResult> load_team_checkpoint(
     r.verification_evidence=item.at("verification_evidence");
     r.model_calls=item.at("model_calls").as<unsigned>();
     r.tool_calls=item.at("tool_calls").as<unsigned>();
+    r.attempts=item.at("attempts").as<unsigned>();
     r.usage=read_usage(item.at("usage"));
     r.details=item.at("details");
     auto t=std::find_if(tasks.begin(),tasks.end(),
-      [&](const TeamTask& x){return x.id==r.id && x.agent==r.agent;});
+      [&](const TeamTask& x){
+        return x.id==r.id && (x.agent==r.agent ||
+          std::find(x.fallback_agents.begin(),x.fallback_agents.end(),r.agent)!=x.fallback_agents.end());
+      });
     if(t==tasks.end()||!restored.emplace(r.id,r).second)
       throw std::runtime_error("Checkpoint task invalid or duplicate");
     if(r.status!=LoopStatus::Completed || r.verification!="verified")

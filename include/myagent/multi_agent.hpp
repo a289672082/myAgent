@@ -52,9 +52,11 @@ struct TeamTask {
   LoopMode mode = LoopMode::ReAct;
   TaskContext context; // 调用方传入的有限任务上下文；默认空。
   int priority = 0; // 就绪任务优先级，数值大者先调度。
+  std::vector<std::string> fallback_agents; // 失败后可尝试的备选 Agent（仅原任务无工具副作用）。
 };
 struct DelegationResult;
 struct TeamOptions {
+  unsigned max_task_retries = 0; // 默认不重复调用；仅无工具副作用的失败可安全重试。
   unsigned max_delegations = 8;       // 主协调器最多可产生多少个子任务
   unsigned max_parallel_agents = 2;   // 同时运行的不同 Agent 数量，至少 1
   unsigned max_depth = 1;             // 当前架构只有 coordinator -> worker 这一层
@@ -81,6 +83,7 @@ struct DelegationResult {
   TokenUsage usage;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
+  unsigned attempts = 1;
   Json details = mymcp::json::object{}; // Worker Loop 的 plan/evaluations，包含实际工具证据。
   std::string verification = "unverified";
   Json verification_evidence = mymcp::json::object{};

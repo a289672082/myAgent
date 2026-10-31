@@ -43,6 +43,12 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     reject_inline_secret(cfg,"api_key");
     spec.config.base_url=scalar(cfg,"base_url",true);
     spec.config.model=scalar(cfg,"model",true);
+    const auto protocol=scalar(cfg,"model_protocol");
+    if(protocol.empty()||protocol=="responses")
+      spec.config.model_protocol=ModelProtocol::Responses;
+    else if(protocol=="chat_completions")
+      spec.config.model_protocol=ModelProtocol::ChatCompletions;
+    else throw std::invalid_argument("Unknown model_protocol: "+protocol);
     spec.config.append_responses_path=flag(cfg,"append_responses_path",true);
     spec.config.auto_discover_skills=flag(cfg,"auto_discover_skills",false);
     spec.config.auto_skill_selection=flag(cfg,"auto_skill_selection",true);

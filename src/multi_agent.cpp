@@ -2,6 +2,8 @@
 #include "team_checkpoint.hpp"
 #include "task_scheduler.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <chrono>
 #include <fstream>
 #include <future>
@@ -115,10 +117,31 @@ void AgentTeam::register_workspace_tools(Worker& worker) {
         // 只允许写入已有目录内的文件，禁止通过符号链接跳出 root。
         if (!std::filesystem::is_directory(path.parent_path()))
           throw std::runtime_error("Destination directory missing");
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) throw std::runtime_error("Cannot write workspace file");
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out) throw std::runtime_error("Workspace write error");
+        // 不能直接 truncate 已存在文件：先写同目录暂存文件，成功后再重命名。
+        // 检查符号链接与路径的过程仍不构成 OS 沙箱；不可信多租户需容器隔离。
+        if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+          throw std::runtime_error("Writing through symbolic link denied");
+        static std::atomic<std::uint64_t> counter{0};
+        const auto nonce=counter.fetch_add(1);
+        auto temp=path;
+        temp+=".myagent-tmp-"+std::to_string(nonce)+"-"+
+              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        try {
+          {
+            std::ofstream out(temp,std::ios::binary|std::ios::trunc);
+            if(!out)throw std::runtime_error("Cannot create workspace temporary file");
+            out.write(content.data(),static_cast<std::streamsize>(content.size()));
+            out.flush();
+            if(!out)throw std::runtime_error("Workspace temporary file write failed");
+          }
+          if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+            throw std::runtime_error("Workspace target became symbolic link");
+          std::filesystem::rename(temp,path);
+        } catch (...) {
+          std::error_code error;
+          std::filesystem::remove(temp,error);
+          throw;
+        }
         return true;
       }, mymcp::arg<std::string>("relative"),mymcp::arg<std::string>("content"));
   }
@@ -192,6 +215,9 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     validate_name(t.id);
     if (!seen.insert(t.id).second) throw std::invalid_argument("Duplicate task ID");
     if (!workers_.count(t.agent)) throw std::invalid_argument("Unregistered worker: "+t.agent);
+    for(const auto& fallback:t.fallback_agents)
+      if(!workers_.count(fallback) || fallback==t.agent)
+        throw std::invalid_argument("Invalid fallback Agent: "+fallback);
     if (t.description.empty() || t.description.size() > 10000)
       throw std::invalid_argument("Invalid task description");
     std::set<std::string> deps;
@@ -209,6 +235,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
            std::chrono::steady_clock::now()>=deadline;
   };
   std::map<std::string,DelegationResult> finished;
+  std::map<std::string,std::size_t> fallback_index;
   if (options.resume_checkpoint) {
     finished=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
     for (const auto& [id,r]:finished) {
@@ -263,7 +290,10 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       [&](std::size_t a,std::size_t b){return tasks[a].priority>tasks[b].priority;});
     for(const auto i:candidates) {
       if(ready.size()>=options.max_parallel_agents)break;
-      if(selected_workers.insert(tasks[i].agent).second)
+      const auto& task=tasks[i];
+      const auto progress=fallback_index[task.id];
+      const auto& chosen=progress==0?task.agent:task.fallback_agents[progress-1];
+      if(selected_workers.insert(chosen).second)
         ready.push_back(i); // 同一个非线程安全 Agent 同时最多一个任务。
     }
     if(ready.empty()) {
@@ -320,10 +350,31 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       }
       // 每个 Agent 都在自己的实例/历史/凭据里运行。主线程仅负责派工与收集结果。
       futures.push_back(scheduler.submit(
-        [this,name=t.agent,id=t.id,description=std::move(context),
-         mode=t.mode,worker_options]() mutable {
+        [this,name=(fallback_index[t.id]==0?t.agent:
+                       t.fallback_agents[fallback_index[t.id]-1]),
+         id=t.id,description=std::move(context),
+         mode=t.mode,worker_options,max_task_retries=options.max_task_retries]() mutable {
           auto result=delegate(name,description,mode,worker_options);
           result.id=id;
+          result.attempts=1;
+          // 失败恢复仅允许“未实际调用工具”的步骤自动重试：
+          // 避免二次执行文件写入、Git Push 或其他非幂等副作用。
+          for(unsigned retry=0;retry<max_task_retries;++retry) {
+            if(result.status==LoopStatus::Completed || result.tool_calls!=0 ||
+               (worker_options.cancelled && worker_options.cancelled()) ||
+               result.model_calls>=worker_options.max_model_calls) break;
+            LoopOptions again=worker_options;
+            again.max_model_calls-=result.model_calls;
+            auto subsequent=delegate(name,description,mode,again);
+            result.model_calls+=subsequent.model_calls;
+            result.tool_calls+=subsequent.tool_calls;
+            result.usage.add(subsequent.usage);
+            result.answer=std::move(subsequent.answer);
+            result.error=std::move(subsequent.error);
+            result.status=subsequent.status;
+            result.details=std::move(subsequent.details);
+            ++result.attempts;
+          }
           return result;
         }));
     }
@@ -349,12 +400,22 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
             result.error=std::string("Task validation threw: ")+e.what();
           }
         }
+        if(result.status!=LoopStatus::Completed && result.tool_calls==0 &&
+           fallback_index[t.id]<t.fallback_agents.size() &&
+           !cancelled()) {
+          // 当前 Agent 只做了模型调用，不涉及副作用工具；
+          // 下一轮将此任务委派给另一 Agent，保留本轮真实 Token/调用账本。
+          ++fallback_index[t.id];
+          advanced=true;
+          continue;
+        }
         finished.emplace(t.id,std::move(result));
       } catch(const std::exception& e) {
         DelegationResult failure;
         failure.id=t.id;failure.agent=t.agent;failure.error=e.what();
         finished.emplace(t.id,std::move(failure));
       }
+      // fallback 分支在此之前 continue，保留 pending 并进入下一轮。
       pending.erase(t.id);
     }
     if(!options.checkpoint_path.empty())
