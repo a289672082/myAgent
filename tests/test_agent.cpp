@@ -57,6 +57,8 @@ int main() {
     Agent configured(explicit_config);        // Explicit config reaches OpenAI backend.
   }
   Config cfg;
+  cfg.auto_discover_skills = false; // Keep legacy MCP tests deterministic.
+  cfg.auto_skill_selection = false;
   cfg.instructions = "offline test agent";
   auto mock = std::make_shared<MockModel>();
   Agent agent(cfg, mock);

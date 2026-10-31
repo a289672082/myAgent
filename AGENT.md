@@ -5,7 +5,7 @@
 - myagent::Config：model、api_key、base_url、instructions、max_tool_rounds、max_history_items
 - myagent::Model：模型抽象接口，可注入 Mock，避免测试时调用付费 API
 - myagent::OpenAIResponses：调用 OpenAI Responses 和音频转写/合成 API
-- myagent::Agent：ask、ask_parts、ask_image、ask_audio、speak、add_mcp、tool、load_skills、use_skill、save_history、load_history、clear_history
+- myagent::Agent：ask、ask_parts、ask_image、ask_audio、speak、add_mcp、tool、load_skills、use_skill、save_history、load_history、clear_history。默认自动发现并按需调用 Skills。
 - myagent::SkillLibrary：加载指定目录下的 SKILL.md（name/description 基础 frontmatter），按名称选取
 
 ## 模型地址 / API Key 配置
@@ -32,6 +32,15 @@ myagent::Agent agent(config);
 这是 Responses 请求 URL 的控制开关，不改变独立的音频 API：转写/合成仍向同域名的 `/v1/audio/...` 发送请求。
 
 真实密钥可由调用方自己的配置或安全存储获取后传入，**不要把真实 API Key 提交到仓库**。所有 Demo 的连接地址、路径和选项都以源码局部变量表示，不需要环境变量。
+
+## Skill 自动发现与渐进式披露
+
+- 默认自动扫描项目 `.agents/skills/`、`.claude/skills/`、当前 `skills/` 及用户的 `~/.agents/skills/`、`~/.claude/skills/`（`Config::auto_discover_skills` 可以关闭）。
+- 发现仅解析 YAML frontmatter 的 `name` / `description`；`Skill.content` 在目录阶段留空，完整正文按需从 SKILL.md 读取。
+- 模型收到 Skill 元数据而不是正文；可调用内部工具 `agent_skill_load(name)` 获取完整指令，必要时再调用 `agent_skill_read_file(name,path)` 读取选中 Skill 的 references/scripts/assets 文本材料。
+- 自动 Skill 激活与辅助文件读取权限是本轮调用范围，避免无关任务之间持续注入。显式 `use_skill(name)` 则在该 Agent 会话内持续生效。
+- 支持 `Config::auto_skill_selection = false` 只用显式激活机制；`clear_history()` 保留目录注册和手动激活状态。
+- 禁止目录穿越和目录内软链接、拒绝二进制文本读取；不自动执行 scripts/。目前使用基础 YAML 解析和有限目录大小，不具备 Codex/Claude 全部特殊机制。
 
 ## MCP 设计
 
@@ -63,7 +72,7 @@ OpenAI function names 是 prefix__native_name，并通过路由表映射回原 M
 - ask_image：读本地图片（png/jpg/jpeg/webp/gif），转为 input_image data URL。
 - ask_audio：通过 Transcriptions API 转写后作为文本消息执行 ask，并非实时音频、声学理解或直接语音模型推理。
 - speak：调用音频语音合成 API 并写入 MP3 文件。
-- Skill 不是代码执行器；仅把加载的 SKILL.md 内容追加到 instructions。加载的内容可能包含不可信指令，应进行信任审查。
+- Skill 不是代码执行器。手动激活内容加到 instructions；自动激活内容通过受控工具结果提供给模型。加载的内容可能包含不可信指令，应进行信任审查。
 
 ## 生产化差距
 
