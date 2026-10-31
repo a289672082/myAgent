@@ -118,6 +118,111 @@ std::string answer = agent.ask("帮我审查这段 C++ 代码");
 
 Skill 目录应为 `name/SKILL.md` 格式，`SKILL.md` 通过 yaml-cpp 完整解析 YAML frontmatter（含多行 `|`/`>`、引号、注释、嵌套 `metadata` 等），并严格校验 Agent Skills 规范：`name`（1–64，ASCII 小写字母/数字/单连字符，和文件夹同名），`description`（1–1024 Unicode 字符）、可选 `license`、`compatibility`（1–500 字符）、`metadata`（字符串映射）及 `allowed-tools`（字符串）。会拒绝无效 YAML、字段类型错误、重复 YAML 键及缺少 frontmatter，错误包含文件与字段/行号。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。支持 Claude `disable-model-invocation: true` 和 Codex `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`，这种 Skill 不会被模型自动激活，但仍可用 `use_skill()` 显式启用。**`allowed-tools` 仅作元数据，不代表授予执行权限。** 其他厂商扩展字段不会阻止加载。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能运行时行为或外部技能市场同步。
 
+## P0/P1/P2 工程化加固：权限、恢复、Provider、记忆
+
+### 工具安全与截止时间（P0）
+
+\`\`\`cpp
+myagent::Config cfg;
+cfg.agent_id = "coder";
+cfg.http_timeout_seconds = 45;
+cfg.tool_policy.default_access = myagent::ToolAccess::Deny;
+cfg.tool_policy.allow("local__read");
+cfg.tool_policy.require_approval("git__push");
+cfg.tool_policy.deny("shell__*");
+cfg.tool_policy.approve = [](const myagent::ToolRequest& request) {
+    // 宿主应按真实用户授权决策，不能让模型自行批准。
+    return false;
+};
+myagent::Agent agent(cfg);
+agent.ask_without_tools("仅规划，不开放工具");
+
+myagent::LoopOptions loop_options;
+loop_options.timeout = std::chrono::seconds(30);
+auto answer = agent.react("分析代码", loop_options);
+\`\`\`
+
+工具权限是执行器强制检查：Deny 从工具列表移除并拒绝执行，RequireApproval 在实际调用前询问宿主；通配符只支持末尾 * 前缀匹配。默认 default_access=Allow 是为兼容旧代码，生产环境建议显式切换 Deny。Coordinator 自动计划与最终汇总使用无工具请求。相同 Agent 的模型/对话/Skill 和 MCP 注册有会话互斥；不同子 Agent 仍可并发。
+
+**限制**：Loop/Team timeout 是轮次间检查的协作式取消，不会强制中止正在阻塞的第三方 MCP；HTTP 模型有可配置网络超时。工作区写入采用临时文件及重命名以避免部分截断，但路径校验仍不是 OS 级沙箱，执行不可信程序需要进程或容器隔离。
+
+### 任务 Checkpoint、重试、备用 Agent 和事件（P1）
+
+\`\`\`cpp
+myagent::TeamTask task{"compile", "coder", "编译并测试项目"};
+task.priority = 10;
+task.fallback_agents = {"backup-coder"};
+
+myagent::TeamOptions opts;
+opts.max_parallel_agents = 2;
+opts.max_task_retries = 1;             // 仅无工具调用的失败任务可自动重试
+opts.checkpoint_path = "team-state.json";
+opts.event_log_path = "team-events.jsonl";
+opts.validate_task = [](const myagent::TeamTask& task,
+                        const myagent::DelegationResult& result) {
+    // 应检查真实文件/编译/测试证据，不可只信任模型文字。
+    return myagent::TaskValidation{false, "Replace with real validator"};
+};
+auto first = team.collaborate({task}, opts);
+// 恢复时必须使用相同任务图；检查已完成结果，拒绝回放不明 in-flight 副作用。
+opts.resume_checkpoint = true;
+auto restored = team.collaborate({task}, opts);
+\`\`\`
+
+Checkpoint 只记录任务图、执行结果、已知 in-flight 状态和用量，不存模型凭据。恢复必须提供宿主验证器重新确认完成任务；若崩溃时任务正在执行则默认拒绝盲目重放。这里展示的是调用方式，示例验证器返回 false，须由实际项目替换。优先在固定任务图 collaborate() 上恢复；team.run() 会重新请求 Coordinator 生成任务图。失败时可以有限重试或委派给已注册的备用 Agent，但只在**未执行工具**时自动重试/重新委派。调度事件可经 TeamOptions.on_event、event_log_path 和 TeamResult.events 查看，事件不含 API Key 和工具正文。
+
+### YAML/JSON 声明式 Agent 配置（P1/P2）
+
+\`\`\`yaml
+agents:
+  - name: coder
+    description: C++ 开发
+    config:
+      base_url: https://provider.example.com
+      model: coder-model
+      model_protocol: responses
+      api_key_ref: coder-key
+      auto_discover_skills: false
+      auto_skill_selection: true
+    skills: [./skills/coder]
+    use_skills: []
+    mcp:
+      - prefix: files
+        transport: http
+        url: http://127.0.0.1:3000/mcp
+        bearer_token_ref: files-key
+\`\`\`
+
+\`\`\`cpp
+team.add_agents_from_file("./agents.yaml",
+    [](const std::string& key_ref) {
+        return read_secret_from_host(key_ref); // 宿主自定义的密钥解析方法
+    });
+\`\`\`
+
+配置文件不允许内联 api_key 或 bearer_token；密钥由宿主回调按引用查找。AgentSpec 也支持直接声明 skill_directories、explicit_skills、mcp（HTTP、stdio、已有 OAuth Session）。YAML 的 OAuth 会话仍须由 C++ 宿主交互授权后注册。
+
+### Provider、并行调度和记忆（P2）
+
+\`\`\`cpp
+myagent::Config cfg;
+cfg.model_protocol = myagent::ModelProtocol::ChatCompletions;
+cfg.base_url = "https://provider.example.com";
+cfg.api_key = "example-key";
+cfg.model = "chat-model";
+myagent::Agent agent(cfg);
+
+myagent::MemoryStore memory;
+memory.remember({"coding", "Use C++20 and RAII."});
+auto hits = memory.search("C++20 RAII");
+memory.save("./memory.json");
+\`\`\`
+
+支持 Responses 和部分 **OpenAI 兼容 Chat Completions** 的文本/图像/函数调用映射；原生 Anthropic、Gemini 等协议需注入自定义 Model，尚无全面能力探测。AgentTeam 使用固定大小线程池和优先级调度，避免反复建线程；同一 Agent 在同一批任务中不会并发运行。MemoryStore 是本地**关键词检索**，并非向量语义检索；只有配置 memory_retrieval=true 才向模型提供命中的记忆条目。记忆和 Checkpoint 文件可能含任务内容，宿主应控制访问权限。
+
+离线示例：run_runtime_hardening_demo()、run_team_checkpoint_demo()。测试：myagent_runtime_hardening、myagent_p1_p2，覆盖审批、恢复、YAML 配置、Chat Provider、内存、备选 Agent、优先级。
+
+
 ## P0/P1/P2：上下文自动压缩与多 Agent 协作
 
 ### 1. 上下文压缩 ContextManager

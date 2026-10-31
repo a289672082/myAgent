@@ -50,6 +50,18 @@ myagent::Agent agent(config);
 - `MYAGENT_SKILL_YAML_DEMO_DIR` 在 CMake 构建时定位示例资源根目录，避免依赖执行时的 cwd；`ctest` 中注册 `myagent_skill_yaml_demo`。
 - `allowed-tools` 仅作元数据展示；`scripts/check.py` 不会运行。
 
+## P0/P1/P2 运行时加固和扩展
+
+- ToolPolicy：在 tool_definitions 隐藏 Deny 工具，run_stage 在调用 Skill/MCP 前强制执行 allow/deny/require_approval；审批由宿主完成。Agent::ask_without_tools() 专供 Coordinator 无工具的规划/汇总。
+- 同一 Agent 使用 recursive_mutex 保护会话与动态注册；Config::http_timeout_seconds 设置模型 HTTP 超时，LoopOptions::timeout / TeamOptions::timeout 仅协作式取消，不保证即时终止外部阻塞工具。
+- Workspace 写入临时文件再 rename，尽量防止部分覆盖；不提供操作系统安全沙箱或严格 TOCTOU 防护。危险 MCP 需最小权限和独立进程隔离。
+- TeamTask 支持 priority、fallback_agents；TeamOptions 支持 max_task_retries、checkpoint_path、resume_checkpoint、on_event、event_log_path；备用/重试默认只允许失败轮次没有工具调用。
+- Team Checkpoint 保存任务图、已完成状态、in-flight 和使用量；必须由宿主重新 validate_task，发现 in-flight 副作用不明时拒绝回放。仅固定 collaborate 任务图支持明确的安全恢复。
+- AgentSpec 可一次性声明 skill_directories、explicit_skills 和 mcp。AgentTeam::add_agents_from_file() 从 YAML/JSON 读取 Agents，使用 api_key_ref/bearer_token_ref 的宿主密钥解析器，拒绝明文密钥。
+- ModelProtocol 提供 Responses 和 ChatCompletions 两种 OpenAI 兼容协议，后者在 src/chat_completions.cpp 映射文本/工具/图片和 usage，其他供应商仍可注入自定义 Model。
+- detail::TaskScheduler 使用固定线程池、优先级就绪队列和不同 Agent 隔离；MemoryStore 支持本地关键词检索及手动持久化，通过 Config::memory_retrieval 显式开启请求内召回。
+- 可运行 Demo：run_runtime_hardening_demo、run_team_checkpoint_demo；独立 CTest：myagent_runtime_hardening、myagent_p1_p2，含本地 HTTP Provider 兼容测试。
+
 ## ContextManager / AgentTeam （P0/P1/P2）
 
 - `Config::context` / `ContextManager`：自动或手动压缩旧的完整用户轮次，摘要替换后保留最近完整轮次，摘要失败不修改历史；触发预算是近似 Token 数，不视作真实 usage。`Agent::compress_context()` / `context_stats()` 提供手动 API 与统计。

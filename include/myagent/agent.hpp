@@ -26,6 +26,7 @@ namespace json = mymcp::json;
 enum class ModelProtocol { Responses, ChatCompletions };
 struct Config {
   std::string api_key;  // Required for the OpenAI backend; supplied by the application.
+  std::string agent_id; // 宿主用于日志/工具审批的标识，不能由模型修改。
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
   std::string base_url; // Required: base origin/path or an exact Responses URL.
@@ -140,6 +141,7 @@ public:
             Json schema, Server::ToolHandler handler);
   template<class F, class... Ts>
   void tool(std::string name, std::string description, F fn, Arg<Ts>... args) {
+    const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
   }

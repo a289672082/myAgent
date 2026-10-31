@@ -144,24 +144,25 @@ static void test_chat_adapter() {
     const auto body=j::parse(req.body);
     assert(body.at("model").as_string()=="chat-model");
     const int call=++hit;
+    Json msg=j::object{};
+    Json choice=j::object{};
     if(call==1) {
       assert(!body.at("tools").empty());
-      res.set_content(j::serialize(j::object{
-        {"choices",j::array{j::object{
-          {"finish_reason","tool_calls"},{"message",j::object{
-            {"content",nullptr},{"tool_calls",j::array{j::object{
-              {"id","chat-call-1"},{"type","function"},{"function",j::object{
-                {"name","local__plus"},{"arguments",R"({"a":2,"b":3})"}}}}}}}}}},
-        {"usage",j::object{{"prompt_tokens",12},{"completion_tokens",8},{"total_tokens",20}}}
-      }),"application/json");
+      Json fn=j::object{{"name","local__plus"},{"arguments",R"({"a":2,"b":3})"}};
+      Json invocation=j::object{{"id","chat-call-1"},{"type","function"},{"function",fn}};
+      msg["content"]=nullptr;
+      msg["tool_calls"]=j::array{invocation};
+      choice["finish_reason"]="tool_calls";
     } else {
       assert(body.at("messages")[body.at("messages").size()-1].at("role").as_string()=="tool");
-      res.set_content(j::serialize(j::object{
-        {"choices",j::array{j::object{{"finish_reason","stop"},
-          {"message",j::object{{"content","5"}}}}}},
-        {"usage",j::object{{"prompt_tokens",14},{"completion_tokens",6},{"total_tokens",20}}}
-      }),"application/json");
+      msg["content"]="5";
+      choice["finish_reason"]="stop";
     }
+    choice["message"]=msg;
+    Json use=j::object{{"prompt_tokens",call==1?12:14},
+                       {"completion_tokens",call==1?8:6},{"total_tokens",20}};
+    res.set_content(j::serialize(j::object{{"choices",j::array{choice}},{"usage",use}}),
+                    "application/json");
   });
   const auto port=server.bind_to_any_port("127.0.0.1");
   assert(port>0);
@@ -185,13 +186,65 @@ static void test_chat_adapter() {
   }
   server.stop();worker.join();
 }
+static void test_failover_retry_and_priority() {
+  // 重分配仅在没有工具调用时允许，避免重复写文件、推送或发布。
+  AgentTeam team(config(),std::make_shared<Mock>());
+  auto failed=std::make_shared<Mock>();
+  failed->handler=[](const Json&){
+    auto r=response("failed worker");
+    r["status"]="incomplete";
+    return r;
+  };
+  AgentSpec spec;spec.name="primary";spec.description="original";spec.config=config();
+  team.add_agent(spec,failed);
+  auto fallback=std::make_shared<Mock>();
+  fallback->handler=[](const Json&){return response("fallback completed");};
+  spec.name="backup";spec.description="backup";team.add_agent(spec,fallback);
+  TeamTask task{"x","primary","delegate this"};
+  task.fallback_agents={"backup"};
+  TeamOptions options;
+  const auto reassigned=team.collaborate({task},options);
+  assert(reassigned.status==TeamStatus::Completed);
+  assert(reassigned.tasks[0].agent=="backup");
+  assert(failed->count==1 && fallback->count==1);
+  assert(reassigned.model_calls==2);
+
+  auto retry_model=std::make_shared<Mock>();
+  std::atomic<int> attempts{0};
+  retry_model->handler=[&](const Json&) {
+    if(++attempts==1){auto r=response("temporary");r["status"]="incomplete";return r;}
+    return response("recovered without tools");
+  };
+  spec.name="retry";spec.description="retry";team.add_agent(spec,retry_model);
+  TeamOptions retries;retries.max_task_retries=1;
+  const auto retried=team.collaborate({TeamTask{"r","retry","try twice"}},retries);
+  assert(retried.status==TeamStatus::Completed);
+  assert(retried.tasks[0].attempts==2 && retried.tasks[0].model_calls==2);
+
+  std::vector<std::string> order;
+  auto low=std::make_shared<Mock>();
+  low->handler=[&](const Json&){order.push_back("low");return response("low");};
+  spec.name="low";spec.description="low";team.add_agent(spec,low);
+  auto high=std::make_shared<Mock>();
+  high->handler=[&](const Json&){order.push_back("high");return response("high");};
+  spec.name="high";spec.description="high";team.add_agent(spec,high);
+  TeamTask low_task{"lowid","low","low priority"};
+  TeamTask high_task{"highid","high","high priority"};
+  low_task.priority=1;high_task.priority=10;
+  TeamOptions serial;serial.max_parallel_agents=1;
+  const auto prioritized=team.collaborate({low_task,high_task},serial);
+  assert(prioritized.status==TeamStatus::Completed);
+  assert(order.size()==2 && order[0]=="high" && order[1]=="low");
+}
 int main() {
   const auto root=fs::temp_directory_path()/"myagent-p1-p2-fixtures";
+  fs::remove_all(root);
   fs::create_directories(root);
   test_yaml_config(root);
   test_checkpoint(root);
   test_memory(root);
   test_chat_adapter();
+  test_failover_retry_and_priority();
   fs::remove_all(root);
   std::cout<<"P1/P2 integration tests OK\n";
 }

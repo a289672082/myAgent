@@ -521,6 +521,7 @@ void Agent::validate_mcp_prefix(const std::string& prefix) const {
   }
 }
 void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   if (!client) throw std::invalid_argument("MCP client is null");
   validate_mcp_prefix(prefix);
   endpoints_.push_back({std::move(prefix), std::move(client)});
@@ -528,6 +529,7 @@ void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
 void Agent::add_mcp_http(std::string prefix, std::string url,
                          std::string bearer_token,
                          std::function<void(const Json&)> on_notification) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
   if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
   add_mcp(std::move(prefix), std::make_shared<Client>(
@@ -536,6 +538,7 @@ void Agent::add_mcp_http(std::string prefix, std::string url,
 void Agent::add_mcp_stdio(std::string prefix, std::string executable,
                           std::vector<std::string> args,
                           std::function<void(const Json&)> on_notification) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Reject collisions before starting a process.
   if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
   add_mcp(std::move(prefix), std::make_shared<Client>(
@@ -544,6 +547,7 @@ void Agent::add_mcp_stdio(std::string prefix, std::string executable,
 void Agent::add_mcp_oauth(std::string prefix, std::string url,
                           std::shared_ptr<mymcp::oauth::Session> session,
                           std::function<void(const Json&)> on_notification) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix);
   if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
   if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
@@ -552,11 +556,16 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
 }
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   local_.add_tool(std::move(name), std::move(description),
                   std::move(schema), std::move(handler));
 }
-void Agent::load_skills(const std::filesystem::path& directory) { skills_.load(directory); }
+void Agent::load_skills(const std::filesystem::path& directory) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  skills_.load(directory);
+}
 void Agent::use_skill(const std::string& name) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Explicit activation stays pinned until the caller changes the Agent.
   if (!manual_skill_contents_.count(name))
     manual_skill_contents_.emplace(name, skills_.read(name));
@@ -799,7 +808,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       try {
         const auto args = json::parse(as_string(item, "arguments", "{}"));
         if (!args.is_object()) throw std::invalid_argument("Tool arguments must be object");
-        permitted = config_.tool_policy.authorize(ToolRequest{"", name, args, phase});
+        permitted = config_.tool_policy.authorize(ToolRequest{config_.agent_id, name, args, phase});
       } catch (const std::exception&) { permitted = false; }
       if (!permitted) {
         tool_output = R"({"isError":true,"message":"Tool permission denied or approval missing"})";

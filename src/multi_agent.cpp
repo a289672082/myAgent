@@ -163,6 +163,7 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
     }
   }
   auto worker = std::make_unique<Worker>();
+  spec.config.agent_id=spec.name; // 给宿主审批器提供可靠的子 Agent 身份。
   worker->spec = std::move(spec);
   worker->instance = std::make_unique<Agent>(worker->spec.config,std::move(model));
   if (!worker->spec.workspace.empty()) register_workspace_tools(*worker);
@@ -226,6 +227,22 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         throw std::invalid_argument("Task dependencies must refer to earlier tasks");
   }
   TeamResult out;
+  const auto started_at=std::chrono::steady_clock::now();
+  const auto emit=[&](const std::string& action,const std::string& task,
+                      const std::string& worker) {
+    const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now()-started_at).count();
+    const Json event=json::object{
+      {"event",action},{"task",task},{"agent",worker},{"elapsed_ms",ms}};
+    out.events.push_back(event);
+    if(options.on_event) options.on_event(event);
+    if(!options.event_log_path.empty()) {
+      std::ofstream log(options.event_log_path,std::ios::binary|std::ios::app);
+      if(!log)throw std::runtime_error("Cannot open Team event log");
+      log<<json::serialize(event)<<"\n";
+      if(!log)throw std::runtime_error("Cannot write Team event log");
+    }
+  };
   detail::TaskScheduler scheduler(std::min(64u, options.max_parallel_agents));
   const auto deadline=options.timeout.count()>0
       ? std::chrono::steady_clock::now()+options.timeout
@@ -259,6 +276,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if (!reason.empty()) {
       out.status=reason=="cancelled"?TeamStatus::Cancelled:TeamStatus::LimitReached;
       out.error="Team budget/cancellation: "+reason;
+      emit("budget_stop","","");
       break;
     }
     std::vector<std::size_t> ready;
@@ -279,6 +297,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         DelegationResult skipped;
         skipped.id=t.id;skipped.agent=t.agent;
         skipped.error="Skipped: dependency did not complete";
+        emit("task_skipped",t.id,t.agent);
         finished.emplace(t.id,std::move(skipped));
         pending.erase(t.id);
         advanced=true;
@@ -349,6 +368,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         worker_options.timeout=remaining.count()>0?remaining:std::chrono::milliseconds(1);
       }
       // 每个 Agent 都在自己的实例/历史/凭据里运行。主线程仅负责派工与收集结果。
+      emit("task_started",t.id,fallback_index[t.id]==0?t.agent:
+           t.fallback_agents[fallback_index[t.id]-1]);
       futures.push_back(scheduler.submit(
         [this,name=(fallback_index[t.id]==0?t.agent:
                        t.fallback_agents[fallback_index[t.id]-1]),
@@ -406,13 +427,17 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
           // 当前 Agent 只做了模型调用，不涉及副作用工具；
           // 下一轮将此任务委派给另一 Agent，保留本轮真实 Token/调用账本。
           ++fallback_index[t.id];
+          emit("task_reassigned",t.id,t.fallback_agents[fallback_index[t.id]-1]);
           advanced=true;
           continue;
         }
+        emit(result.status==LoopStatus::Completed?"task_completed":"task_failed",
+             t.id,result.agent);
         finished.emplace(t.id,std::move(result));
       } catch(const std::exception& e) {
         DelegationResult failure;
         failure.id=t.id;failure.agent=t.agent;failure.error=e.what();
+        emit("task_failed",t.id,t.agent);
         finished.emplace(t.id,std::move(failure));
       }
       // fallback 分支在此之前 continue，保留 pending 并进入下一轮。
@@ -517,6 +542,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     }
     auto delegated=execute_tasks(tasks,bounded);
     result.tasks=std::move(delegated.tasks);
+    result.events=std::move(delegated.events);
     result.tool_calls+=delegated.tool_calls;
     result.model_calls+=delegated.model_calls;
     result.usage.add(delegated.usage);
