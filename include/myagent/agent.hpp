@@ -4,6 +4,7 @@
 #include "myagent/loop.hpp"
 #include "myagent/context.hpp"
 #include "myagent/tool_policy.hpp"
+#include "myagent/memory.hpp"
 #include <chrono>
 #include <mutex>
 #include <filesystem>
@@ -22,6 +23,7 @@ namespace json = mymcp::json;
 
 // Supply API credentials and endpoint explicitly; no environment variable fallback.
 // Credentials are not written to conversation history or saved by save_history().
+enum class ModelProtocol { Responses, ChatCompletions };
 struct Config {
   std::string api_key;  // Required for the OpenAI backend; supplied by the application.
   std::string model = "gpt-4.1-mini";
@@ -30,12 +32,15 @@ struct Config {
   // true: append /v1/responses (unless URL already ends with it).
   // false: POST to base_url exactly, including its path/query.
   bool append_responses_path = true;
+  ModelProtocol model_protocol = ModelProtocol::Responses; // 其他协议通过 Model 注入扩展。
   unsigned max_tool_rounds = 8;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
   bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
   bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
   ContextOptions context; // 上下文压缩配置；默认禁用，需按模型填上下文容量。
   ToolPolicy tool_policy; // MCP/Skill 工具权限。危险工具在调用前由宿主审批。
+  bool memory_retrieval = false; // 只有宿主明确开启才向模型提供检索出的记忆条目。
+  unsigned max_memory_hits = 3;
   unsigned http_timeout_seconds = 60; // 模型 HTTP 请求读写/连接超时；不影响外部 MCP 自身超时。
 };
 
@@ -88,6 +93,15 @@ public:
   void speech(const std::string& text, const std::filesystem::path& output,
               const std::string& voice = "alloy",
               const std::string& model = "gpt-4o-mini-tts") const;
+private:
+  Config config_;
+};
+
+// 将 OpenAI Chat Completions 兼容接口适配到统一 Responses 结构。
+class ChatCompletionsModel final : public Model {
+public:
+  explicit ChatCompletionsModel(Config config);
+  Json create(const Json& request) override;
 private:
   Config config_;
 };
@@ -174,6 +188,10 @@ public:
   // 对话摘要压缩：不删除孤立工具结果，也不推测实际 Token 消耗。
   CompressionResult compress_context();
   ContextStats context_stats() const { return context_.stats(history_); }
+  void remember(MemoryRecord record);
+  std::vector<MemoryRecord> recall(const std::string& query,std::size_t top_k=5) const;
+  void save_memory(const std::filesystem::path& file) const;
+  void load_memory(const std::filesystem::path& file);
   const Json& history() const { return history_; }
   const Json& last_response() const { return last_response_; }
   void clear_history();
@@ -211,6 +229,7 @@ private:
 
   Config config_;
   ContextManager context_;
+  MemoryStore memory_;
   std::shared_ptr<Model> model_;
   Server local_;
   std::vector<Endpoint> endpoints_;
