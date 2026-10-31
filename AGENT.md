@@ -60,6 +60,16 @@ myagent::Agent agent(config);
 - Loop 维护隔离的 working conversation，只有成功的最终结果提交普通 Agent 历史。取消仅在阶段/调用边界生效，不会中断 HTTP 调用。
 - 四个独立离线 Demo 与 tests/test_loops.cpp 注册进 CTest；Demo 明确写出示例模型参数，不依赖环境变量和命令行参数。
 
+## Plan-and-Execute P1 行为与验收接口
+
+- Planner 创建可验证的顺序计划，步骤 ID 全局唯一、可以声明 depends_on（只允许指向更早的新步骤或已经完成的步骤）和 success_criteria。
+- Executor 每一步都返回 JSON：status=completed/failed/blocked、summary，以及可选 evidence。任意纯文本不再默认为成功，返回格式无效则失败。
+- src/plan_manager.hpp / src/plan_manager.cpp 负责结构校验、计划状态、依赖、尝试次数和重规划；已完成的步骤只保留历史，过时 pending/ready 改为 superseded，后续不再执行。
+- 可使用 LoopOptions::validate_step(step,execution,tool_results) 给出 StepValidation(passed/reason/evidence)，让应用根据真实编译退出码、单测结果、文件状态等完成客观验收；不配置时 completed 只是 unverified。
+- 工具返回 isError=true 会覆盖模型自述的 completed，步骤被标记 failed。
+- 默认 max_step_retries=0 且 retry_steps_with_tools=false；即使设置重试次数，有工具操作时也不会自动执行第二遍，除非宿主明确允许。
+- ReAct 的观察驱动决策、Reflection 的自检修订、Evaluator-Optimizer 的独立评分优化继续复用 run_stage()；四类 Loop 都附完整中文执行流程注释。
+
 ## MCP 设计
 
 myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。

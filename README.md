@@ -164,6 +164,41 @@ LoopResult 包含 status、answer、error、audio_transcript、plan、evaluation
 
 图片使用现有 PNG/JPEG/WebP/GIF Data URL 处理；音频调用现有转写接口，合成使用 speak()。这一版没有原生音频声学理解、流式输出、供应商间不同的 API Key 路由、任务断点续跑或任意时刻中断进行中的 HTTP 请求。对模型的计划/评估 JSON 进行结构校验，不宣称单凭自评分即可证明外部测试成功。
 
+### P1 Plan-and-Execute：结构化验收、安全重试与真正替换剩余计划
+
+此模式的真实运行流程是：**规划步骤及依赖 → 调用工具执行一个步骤 → 验证器检查执行结果 → 成功执行下一步；失败/阻塞则受控重试或替换未执行的计划 → 汇总审计记录**。例如在 C++ 项目中执行“读取文件 → 修改源码 → 编译 → 单元测试”：当编译失败时，不能因为模型说“完成”就把步骤设为成功；应根据编译工具的退出码决定是否重规划或修复。
+
+Planner 只返回严格 JSON，包含步骤 `id`、`description` 和可选 `depends_on`（只能依赖已完成或之前的步骤）、`success_criteria`；Executor **必须**返回如下格式，否则本次循环会失败（而不是默认为已完成）：
+
+```json
+{"status":"completed","summary":"编译完成","evidence":{"reported_exit_code":0}}
+```
+
+`status` 必须为 `completed`、`failed` 或 `blocked`，`summary` 必须是非空字符串。模型生成的 `evidence` 只是声明，不代表已验证；工具如果报告 `isError=true`，框架强制将步骤标记失败。可选宿主验证器由 C++ 应用根据真实工具证据判定通过，并将验证状态写入 `result.plan`：
+
+```cpp
+myagent::LoopOptions options;
+options.max_plan_steps = 10;
+options.max_replans = 2;
+options.max_step_retries = 0; // 默认不自动重复工具操作
+options.validate_step = [](const myagent::Json& step,
+                           const myagent::Json& execution,
+                           const myagent::Json& tool_results) {
+    myagent::StepValidation check;
+    // 演示：这里应根据自己的编译/测试工具返回内容检查真实退出码，
+    // 而不是信任 execution 中模型报告的 "completed"。
+    check.passed = !tool_results.empty();
+    check.reason = check.passed ? "已拿到工具执行记录" : "缺少工具执行记录";
+    check.evidence = myagent::json::object{{"tool_count", tool_results.size()}};
+    return check;
+};
+auto result = agent.plan_and_execute("编译项目并运行测试", options);
+```
+
+上例只展示回调 API：**存在工具记录并不等于编译通过**。生产环境中必须读取该工具结果的明确退出码、测试统计或由独立编译/测试流程验证，并在失败时返回 `passed=false`。未配置宿主验证器的成功步骤会被标记为 `verification: "unverified"`，不会伪称实际测试已通过。
+
+重新规划保留已完成/失败步骤的审计信息，旧的未执行步骤被标记为 `superseded`，新步骤替代它们，不再自动运行过时计划。可通过 `attempts`、`status`、`verification`、`evidence` 查看执行结果。默认**不会重试已经调用过工具的步骤**，避免重复写文件、提交或执行其他有副作用的操作；只有明确设置 `retry_steps_with_tools=true` 才允许此类重试。所有模型与工具调用仍受共享预算约束。
+
 四个独立 Demo 均使用带显式示例配置的离线 Mock Model，无需环境变量/命令行参数和付费 API：
 - examples/run_react_demo.cpp：run_react_demo()（图片 + MCP 工具）
 - examples/run_plan_execute_demo.cpp：run_plan_execute_demo()（规划 + 执行）
