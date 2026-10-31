@@ -1,4 +1,10 @@
-// Evaluator-Optimizer：生成候选、独立评分、反馈优化并重新评估。
+// Evaluator-Optimizer — 评估优化循环
+//
+// 生成候选 → 按明确标准评分（score/passed/issues）→ 优化候选 → 再次评估。
+// 与 Reflection 的一般自我检查不同：这里必须有结构化评价条件，
+// 只有 passed=true、分数达到阈值、问题清单为空时才结束。
+// 可以让一个模型负责生成，另一个模型负责评价；但模型评分不是客观测试结果。
+// 这个离线示例用 Mock 模型实现逐轮打分和优化，无真实 API 请求。
 #include "loop_demo_support.hpp"
 #include <iostream>
 #include <memory>

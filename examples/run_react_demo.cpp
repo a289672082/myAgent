@@ -1,4 +1,12 @@
-// ReAct：模型根据图片和任务选择工具、观察结果并回答（离线 Mock）。
+// ReAct Loop — 推理行动循环
+//
+// 判断下一步 → 执行动作 → 观察工具结果 → 再次判断。
+// 例如 Agent 修改 C++ 项目时，先查看目录、读取源代码、修改文件、运行测试，
+// 再根据错误信息选择下一步，而不是机械执行预先写死的计划。
+//
+// 与 Tool Calling Loop 的区别：ReAct 是“根据观察动态选下一步”的策略，
+// Tool Calling Loop 是模型调用工具/回传结果的通用执行器。本框架共用 run_stage()。
+// 这个离线例子用一张 PNG 和本地加法工具演示“工具返回后再作答”，不连接模型服务。
 #include "loop_demo_support.hpp"
 #include <filesystem>
 #include <iostream>

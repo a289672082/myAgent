@@ -655,7 +655,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     bool allow_tools, unsigned& model_calls, unsigned& tool_calls,
     unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
     const std::function<bool()>& cancelled, Json* trace,
-    const std::function<void(const Json&)>& on_event, const std::string& phase) {
+    const std::function<void(const Json&)>& on_event, const std::string& phase,
+    Json* step_tool_results) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
@@ -757,6 +758,12 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         {"type", "function_call_output"}, {"call_id", id},
         {"output", tool_output}
       });
+      // 仅当前计划步骤的宿主验收器可查看原始工具返回。
+      // 不把潜在敏感信息自动加入公共 trace；普通 ask() 行为不受影响。
+      if (step_tool_results)
+        step_tool_results->push_back(json::object{
+          {"name", name}, {"output", tool_output}
+        });
       // Trace tool actions without copying potentially sensitive tool output.
       emit(json::object{{"phase", phase}, {"event", "tool_call"},
                         {"name", name}, {"call_id", id},

@@ -12,6 +12,14 @@ using mymcp::Json;
 enum class LoopMode { ReAct, PlanAndExecute, Reflection, EvaluatorOptimizer };
 enum class LoopStatus { Completed, LimitReached, Cancelled, Failed };
 
+// 宿主可用真实工具证据验收一步，例如验证编译 exit_code == 0。
+// passed 由应用代码产生；不能把模型自述的“成功”当成客观验证。
+struct StepValidation {
+  bool passed = false;
+  std::string reason;
+  Json evidence = mymcp::json::object{};
+};
+
 // Audio is transcribed once before entering the loop. Images are kept as
 // Responses input_image parts, subject to the model's vision capabilities.
 struct LoopInput {
@@ -26,10 +34,17 @@ struct LoopOptions {
   unsigned max_tool_calls = 32;  // Total across all phases.
   unsigned max_plan_steps = 8;
   unsigned max_replans = 1;
+  unsigned max_step_retries = 0; // 默认不重试，避免重复执行写文件/提交等有副作用的工具。
+  bool retry_steps_with_tools = false; // 仅明确授权后才允许自动重复调用工具的步骤。
   unsigned max_revisions = 3;
   double acceptance_score = 0.85;
   std::string planner_model;   // Empty uses Config::model on the same backend.
   std::string evaluator_model; // Empty uses Config::model on the same backend.
+  // Executor 必须返回明确的 status/summary。可选宿主验证器能查看
+  // 本步骤工具原始返回（不会默认泄露到 trace）；返回 false 即进入失败恢复。
+  // 不设置时，完成的步骤标记为 unverified（模型报告完成，但未经客观验证）。
+  std::function<StepValidation(const Json& step, const Json& execution,
+                               const Json& tool_results)> validate_step;
   bool commit_to_history = true;
   // Optional. Requires an OpenAIResponses backend and a speech-capable gateway.
   std::filesystem::path speech_output;

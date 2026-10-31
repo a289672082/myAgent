@@ -53,7 +53,7 @@ if(WIN32)
 endif()
 add_library(myagent::mcp ALIAS myagent_mcp)
 
-add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp)
+add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
