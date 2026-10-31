@@ -1,0 +1,61 @@
+cmake_minimum_required(VERSION 3.20)
+project(myAgent VERSION 0.1.0 LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+# Shared third-party sources come from the pinned myMcpTools Git submodule.
+# No FetchContent or network downloads during configuration/build.
+set(MYAGENT_MCP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/myMcpTools" CACHE PATH "Local myMcpTools source directory")
+foreach(required IN ITEMS
+  "include/mymcp/mcp.hpp"
+  "src/mcp.cpp"
+  "src/oauth.cpp"
+  "src/oauth_client.cpp"
+  "src/schema.cpp"
+  "third_party/jsoncons/include/jsoncons/json.hpp"
+  "third_party/jsoncons/LICENSE"
+  "third_party/cpp-httplib/httplib.h"
+  "third_party/cpp-httplib/LICENSE")
+  if(NOT EXISTS "${MYAGENT_MCP_DIR}/${required}")
+    message(FATAL_ERROR "Missing ${MYAGENT_MCP_DIR}/${required}. Use: git submodule update --init --recursive")
+  endif()
+endforeach()
+
+# Compile only the MCP runtime, not myMcpTools' demos and tests.
+add_library(myagent_mcp STATIC
+  "${MYAGENT_MCP_DIR}/src/mcp.cpp"
+  "${MYAGENT_MCP_DIR}/src/oauth.cpp"
+  "${MYAGENT_MCP_DIR}/src/oauth_client.cpp"
+  "${MYAGENT_MCP_DIR}/src/schema.cpp")
+target_compile_definitions(myagent_mcp PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
+target_include_directories(myagent_mcp PUBLIC
+  "${MYAGENT_MCP_DIR}/include"
+  "${MYAGENT_MCP_DIR}/third_party/jsoncons/include"
+  "${MYAGENT_MCP_DIR}/third_party/cpp-httplib")
+target_link_libraries(myagent_mcp PUBLIC Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(WIN32)
+  target_link_libraries(myagent_mcp PUBLIC ws2_32 crypt32)
+endif()
+add_library(myagent::mcp ALIAS myagent_mcp)
+
+add_library(myagent STATIC src/agent.cpp)
+add_library(myagent::agent ALIAS myagent)
+target_include_directories(myagent PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(myagent PUBLIC myagent_mcp)
+
+option(MYAGENT_BUILD_EXAMPLES "Build the standalone Agent examples" ON)
+option(MYAGENT_BUILD_TESTS "Build offline Agent tests" ON)
+if(MYAGENT_BUILD_EXAMPLES)
+  add_executable(run_agent_demo examples/run_agent_demo.cpp)
+  target_link_libraries(run_agent_demo PRIVATE myagent)
+endif()
+if(MYAGENT_BUILD_TESTS)
+  enable_testing()
+  add_executable(myagent_tests tests/test_agent.cpp)
+  target_link_libraries(myagent_tests PRIVATE myagent)
+  add_test(NAME myagent COMMAND myagent_tests)
+  set_tests_properties(myagent PROPERTIES TIMEOUT 30)
+endif()

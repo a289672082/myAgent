@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+.vs/
+.idea/
+*.exe
+*.obj
+*.o
+*.pdb
+agent_history.json

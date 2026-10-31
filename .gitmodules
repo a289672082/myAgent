@@ -1,0 +1,3 @@
+[submodule "third_party/myMcpTools"]
+	path = third_party/myMcpTools
+	url = https://github.com/a289672082/myMcpTools.git
