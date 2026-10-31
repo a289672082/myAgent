@@ -44,6 +44,7 @@ void trace_event(LoopResult& result, const LoopOptions& options,
 
 LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                            const LoopOptions& options) {
+  const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   Json working = history_; // All phases share an isolated working history.
@@ -51,7 +52,14 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   Json latest_response = nullptr;
   try {
     validate_options(options);
-    if (options.cancelled && options.cancelled())
+    const auto deadline = options.timeout.count() > 0
+        ? std::chrono::steady_clock::now() + options.timeout
+        : std::chrono::steady_clock::time_point::max();
+    const auto cancelled = [&]() {
+      return (options.cancelled && options.cancelled()) ||
+             std::chrono::steady_clock::now() >= deadline;
+    };
+    if (cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
     original_input = prepare_loop_input(input, result.audio_transcript);
     const std::string task = input.text.empty()
@@ -67,7 +75,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       const auto turn = run_stage(std::move(content), working, prompt, override_model,
           tools_enabled, result.model_calls, result.tool_calls,
           options.max_model_calls, options.max_tool_calls, max_rounds,
-          options.cancelled, &result.trace, options.on_event, phase,
+          cancelled, &result.trace, options.on_event, phase,
           step_tool_results, &result.usage, &result.usage_by_phase,
           &result.usage_by_model);
       latest_response = turn.response;
@@ -116,7 +124,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         {}, true, result.model_calls, result.tool_calls,
         options.max_model_calls, options.max_tool_calls,
         std::min(config_.max_tool_rounds, options.max_iterations - 1),
-        options.cancelled, &result.trace, options.on_event, "react",
+        cancelled, &result.trace, options.on_event, "react",
         nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model);
       latest_response = turn.response;
       result.answer = turn.answer;

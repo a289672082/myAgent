@@ -113,10 +113,11 @@ void check_http(const httplib::Result& result, const std::string& endpoint) {
     throw std::runtime_error(endpoint + " HTTP " + std::to_string(result->status) + ": " + body);
   }
 }
-void configure(httplib::Client& client) {
-  client.set_connection_timeout(10);
-  client.set_read_timeout(120);
-  client.set_write_timeout(120);
+void configure(httplib::Client& client, unsigned timeout_seconds = 60) {
+  if (!timeout_seconds) throw std::invalid_argument("HTTP timeout must be positive");
+  client.set_connection_timeout(std::min(timeout_seconds, 10u));
+  client.set_read_timeout(timeout_seconds);
+  client.set_write_timeout(timeout_seconds);
   client.set_follow_location(false); // Never forward a bearer token on redirects.
 }
 std::string media_type(const std::filesystem::path& file) {
@@ -459,7 +460,7 @@ Json OpenAIResponses::create(const Json& request) {
   const auto url = parse_base_url(config_.base_url);
   const auto target = responses_target(config_, url);
   httplib::Client client(url.origin);
-  configure(client);
+  configure(client, config_.http_timeout_seconds);
   auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
   check_http(result, target);
@@ -471,7 +472,7 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
   // Audio APIs are separate endpoints on the same origin, not Responses URLs.
   const auto url = parse_base_url(config_.base_url);
   httplib::Client client(url.origin);
-  configure(client);
+  configure(client, config_.http_timeout_seconds);
   httplib::UploadFormDataItems items = {
     {"file", bytes, file.filename().string(), "application/octet-stream"},
     {"model", model, "", ""}
@@ -489,7 +490,7 @@ void OpenAIResponses::speech(const std::string& text,
   // Audio APIs are separate endpoints on the same origin, not Responses URLs.
   const auto url = parse_base_url(config_.base_url);
   httplib::Client client(url.origin);
-  configure(client);
+  configure(client, config_.http_timeout_seconds);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
   auto result = client.Post("/v1/audio/speech", headers(config_),
@@ -590,6 +591,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
       const auto qualified = endpoint.prefix + "__" + safe_tool_name(name);
       if (qualified.size() > 64 || routes.count(qualified))
         throw std::runtime_error("MCP tool name too long or colliding: " + qualified);
+      // 拒绝的工具不出现在模型可见目录中；执行前仍会再次做权限检查。
+      if (config_.tool_policy.access(qualified) == ToolAccess::Deny) continue;
       routes.emplace(qualified, Route{endpoint.client, name});
       const Json* schema = json::if_contains(tool, "inputSchema");
       tools.push_back(json::object{{"type", "function"}, {"name", qualified},
@@ -603,6 +606,7 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
     // Keep built-in Skill tools separate from externally registered MCP routes.
     if (routes.count("agent_skill_load") || routes.count("agent_skill_read_file"))
       throw std::runtime_error("An MCP tool collides with an internal Skill tool");
+    if (config_.tool_policy.access("agent_skill_load") != ToolAccess::Deny)
     tools.push_back(json::object{
       {"type", "function"}, {"name", "agent_skill_load"},
       {"description", "Load one relevant Skill's complete SKILL.md on demand; no script execution."},
@@ -612,6 +616,7 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
         }}, {"required", json::array{"name"}}, {"additionalProperties", false}
       }}, {"strict", false}
     });
+    if (config_.tool_policy.access("agent_skill_read_file") != ToolAccess::Deny)
     tools.push_back(json::object{
       {"type", "function"}, {"name", "agent_skill_read_file"},
       {"description", "Read a UTF-8 text file under a previously loaded Skill's references/, scripts/ or assets/ folder; never executes a script."},
@@ -638,12 +643,13 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
     return json::serialize(json::object{{"isError", true}, {"message", e.what()}});
   }
 }
-std::string Agent::run(Json user_content) {
+std::string Agent::run(Json user_content, bool allow_tools) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
-  const auto turn = run_stage(std::move(user_content), working, {}, {}, true,
+  const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
       model_calls, tool_calls, std::numeric_limits<unsigned>::max(),
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
       {}, nullptr, {}, "ask");
@@ -765,7 +771,16 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       if (id.empty()) throw std::runtime_error("Missing tool call ID");
       ++tool_calls;
       std::string tool_output;
-      if (name == "agent_skill_load" || name == "agent_skill_read_file") {
+      bool permitted = false;
+      try {
+        const auto args = json::parse(as_string(item, "arguments", "{}"));
+        if (!args.is_object()) throw std::invalid_argument("Tool arguments must be object");
+        permitted = config_.tool_policy.authorize(ToolRequest{"", name, args, phase});
+      } catch (const std::exception&) { permitted = false; }
+      if (!permitted) {
+        tool_output = R"({"isError":true,"message":"Tool permission denied or approval missing"})";
+        emit(json::object{{"phase",phase},{"event","tool_denied"},{"name",name}});
+      } else if (name == "agent_skill_load" || name == "agent_skill_read_file") {
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");
         try {
@@ -847,6 +862,7 @@ Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript) 
   return parts;
 }
 std::string Agent::ask(const std::string& text) { return run(text); }
+std::string Agent::ask_without_tools(const std::string& text) { return run(text, false); }
 std::string Agent::ask_parts(Json content) {
   if (!content.is_array() || content.empty())
     throw std::invalid_argument("ask_parts requires a nonempty array of content parts");
@@ -874,6 +890,7 @@ void Agent::speak(const std::string& text, const std::filesystem::path& output,
   openai->speech(text, output, voice);
 }
 CompressionResult Agent::compress_context() {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // 手动压缩：先准备完整候选，摘要模型失败时不修改原历史。
   last_usage_ = {};
   return context_.compress(history_, [&](Json request) {
@@ -887,19 +904,23 @@ CompressionResult Agent::compress_context() {
   }, true);
 }
 void Agent::reset_usage() {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // 清空统计不影响模型会话和历史，也不会修改服务端账单。
   last_usage_ = {};
   total_usage_ = {};
 }
 void Agent::clear_history() {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   history_ = json::array{};
   last_response_ = nullptr;
   context_.clear_stats();
 }
 void Agent::save_history(const std::filesystem::path& file) const {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   write_file(file, json::serialize(history_));
 }
 void Agent::load_history(const std::filesystem::path& file) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   Json data = json::parse(read_bounded_file(file, 8 * 1024 * 1024));
   if (!data.is_array() || data.size() > config_.max_history_items)
     throw std::runtime_error("Invalid history file");

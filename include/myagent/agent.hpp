@@ -3,6 +3,9 @@
 #include "mymcp/mcp.hpp"
 #include "myagent/loop.hpp"
 #include "myagent/context.hpp"
+#include "myagent/tool_policy.hpp"
+#include <chrono>
+#include <mutex>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -32,6 +35,8 @@ struct Config {
   bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
   bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
   ContextOptions context; // 上下文压缩配置；默认禁用，需按模型填上下文容量。
+  ToolPolicy tool_policy; // MCP/Skill 工具权限。危险工具在调用前由宿主审批。
+  unsigned http_timeout_seconds = 60; // 模型 HTTP 请求读写/连接超时；不影响外部 MCP 自身超时。
 };
 
 struct Skill {
@@ -147,6 +152,8 @@ public:
   LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
 
   std::string ask(const std::string& text);
+  // 仅供协调器规划/汇总：不发现、不展示、不调用 MCP 或 Skill 工具。
+  std::string ask_without_tools(const std::string& text);
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
   std::string ask_image(const std::string& question, const std::filesystem::path& image);
@@ -186,7 +193,7 @@ private:
   Json tool_definitions(std::map<std::string, Route>& routes);
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
-  std::string run(Json user_content);
+  std::string run(Json user_content, bool allow_tools = true);
   struct TurnResult {
     std::string answer;
     Json response;
@@ -213,6 +220,7 @@ private:
   Json last_response_ = nullptr;
   TokenUsage last_usage_;
   TokenUsage total_usage_;
+  mutable std::recursive_mutex session_mutex_; // 保护同一 Agent 的对话与模型执行，避免并发冲突。
 };
 
 } // namespace myagent
