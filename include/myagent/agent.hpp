@@ -154,6 +154,14 @@ public:
   void speak(const std::string& text, const std::filesystem::path& output,
              const std::string& voice = "alloy");
 
+  // 统计全部从 Responses API 的 usage 字段读取；不进行文本字符估算。
+  // last_usage()：上一次 ask()/Loop 的调用（即便最终失败，也保留已收到的用量）。
+  // total_usage()：本 Agent 构造以来累计用量，包含失败任务中的已返回响应。
+  // clear_history() 不清除 Token 用量，避免统计口径与实际账单不一致。
+  const TokenUsage& last_usage() const { return last_usage_; }
+  const TokenUsage& total_usage() const { return total_usage_; }
+  void reset_usage(); // 仅手动清除统计，不修改对话历史。
+
   const Json& history() const { return history_; }
   const Json& last_response() const { return last_response_; }
   void clear_history();
@@ -184,7 +192,9 @@ private:
       unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
       const std::function<bool()>& cancelled, Json* trace,
       const std::function<void(const Json&)>& on_event, const std::string& phase,
-      Json* step_tool_results = nullptr);
+      Json* step_tool_results = nullptr, TokenUsage* run_usage = nullptr,
+      std::map<std::string, TokenUsage>* usage_by_phase = nullptr,
+      std::map<std::string, TokenUsage>* usage_by_model = nullptr);
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
@@ -195,6 +205,8 @@ private:
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   Json history_ = json::array{};
   Json last_response_ = nullptr;
+  TokenUsage last_usage_;
+  TokenUsage total_usage_;
 };
 
 } // namespace myagent

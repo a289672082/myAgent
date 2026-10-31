@@ -50,6 +50,14 @@ myagent::Agent agent(config);
 - `MYAGENT_SKILL_YAML_DEMO_DIR` 在 CMake 构建时定位示例资源根目录，避免依赖执行时的 cwd；`ctest` 中注册 `myagent_skill_yaml_demo`。
 - `allowed-tools` 仅作元数据展示；`scripts/check.py` 不会运行。
 
+## Token 消耗统计
+
+- `include/myagent/token_usage.hpp` / `src/token_usage.cpp`：解析 Responses API 的 input/output/total、cached input 与 reasoning output。后二者属于前两者的子集，不能重复求和。
+- `Agent::run_stage()` 每次收到模型响应后马上累计用量（先于状态检查），所以 MCP 工具轮次、四种 Loop 以及最终失败的请求只要返回 usage 都可以统计。
+- `Agent::last_usage()` 为最近一次 ask 或 Loop 的统计，`Agent::total_usage()` 为构造以来的累计用量；`reset_usage()` 明确清零，`clear_history()` 不清零。
+- `LoopResult::usage`、`usage_by_phase`、`usage_by_model` 分别记录本次循环总量、按执行阶段和模型名称的用量；`trace` 和 `on_event` 会发出不含原始请求的 `model_usage` 事件。
+- 缺少 `usage` 记为 `unreported_calls`，不估算；失败/超时无响应时，无法核算的调用也不能假装为零成本。
+- 音频转写/合成是不同的 API，当前未纳入 Responses Token 统计；没有内置动态价格估算。独立 Demo `run_token_usage_demo()` 和 CTest `myagent_token_usage` 完全离线。
 ## 统一 Agent 循环
 
 - include/myagent/loop.hpp 定义 LoopInput(text/images/audio)、LoopOptions、LoopResult 与四种策略类型；src/loop_engine.cpp 负责跨阶段调度。

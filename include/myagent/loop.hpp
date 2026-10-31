@@ -1,6 +1,8 @@
 #pragma once
 // Unified, synchronous Agent loops. Uses one Model/MCP/Skills runtime.
 #include "mymcp/mcp.hpp"
+#include "myagent/token_usage.hpp"
+#include <map>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -66,5 +68,10 @@ struct LoopResult {
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
   unsigned iterations = 0;
+  // 本次循环所有模型响应的真实 Token 消耗，含 Planner/Executor/Evaluator。
+  // 缺失 usage 的调用计入 unreported_calls，可能低估实际费用。
+  TokenUsage usage;
+  std::map<std::string, TokenUsage> usage_by_phase; // plan/execute/reflect/evaluate...
+  std::map<std::string, TokenUsage> usage_by_model; // 按实际请求的模型名汇总
 };
 } // namespace myagent

@@ -639,6 +639,7 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
 }
 std::string Agent::run(Json user_content) {
   // Legacy ask() uses the same stage executor as all loop strategies.
+  last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
   const auto turn = run_stage(std::move(user_content), working, {}, {}, true,
@@ -656,7 +657,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
     const std::function<bool()>& cancelled, Json* trace,
     const std::function<void(const Json&)>& on_event, const std::string& phase,
-    Json* step_tool_results) {
+    Json* step_tool_results, TokenUsage* run_usage,
+    std::map<std::string, TokenUsage>* usage_by_phase,
+    std::map<std::string, TokenUsage>* usage_by_model) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
@@ -685,6 +688,27 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     if (!tools.empty()) request["tools"] = tools;
     ++model_calls; // Charge attempts, even when the request fails.
     const Json response = model_->create(request);
+    // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
+    // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
+    // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
+    const TokenUsage received = parse_token_usage(response);
+    total_usage_.add(received);
+    last_usage_.add(received);
+    if (run_usage) run_usage->add(received);
+    if (usage_by_phase) (*usage_by_phase)[phase].add(received);
+    if (usage_by_model) {
+      const std::string requested_model = model_override.empty() ? config_.model : model_override;
+      (*usage_by_model)[requested_model].add(received);
+    }
+    if (trace || on_event) {
+      emit(json::object{{"phase", phase}, {"event", "model_usage"},
+        {"model", model_override.empty() ? config_.model : model_override},
+        {"input_tokens", received.input_tokens}, {"output_tokens", received.output_tokens},
+        {"total_tokens", received.total_tokens}, {"cached_input_tokens", received.cached_input_tokens},
+        {"reasoning_output_tokens", received.reasoning_output_tokens},
+        {"reported_calls", received.reported_calls},
+        {"unreported_calls", received.unreported_calls}}); 
+    }
     const auto status = as_string(response, "status");
     if (!status.empty() && status != "completed")
       throw std::runtime_error("Model response status: " + status);
@@ -823,6 +847,11 @@ void Agent::speak(const std::string& text, const std::filesystem::path& output,
   auto openai = std::dynamic_pointer_cast<OpenAIResponses>(model_);
   if (!openai) throw std::logic_error("speak requires OpenAIResponses model backend");
   openai->speech(text, output, voice);
+}
+void Agent::reset_usage() {
+  // 清空统计不影响模型会话和历史，也不会修改服务端账单。
+  last_usage_ = {};
+  total_usage_ = {};
 }
 void Agent::clear_history() {
   history_ = json::array{};
