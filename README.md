@@ -31,7 +31,6 @@ ctest --test-dir build --output-on-failure
 ~~~cpp
 #include "myagent/agent.hpp"
 #include <iostream>
-#include <memory>
 
 int main() {
   myagent::Config config;
@@ -41,9 +40,7 @@ int main() {
   agent.tool("add", "计算两个整数的和", [](int a, int b) { return a + b; },
              mymcp::arg<int>("a"), mymcp::arg<int>("b"));
 
-  auto remote = std::make_shared<mymcp::Client>(
-      mymcp::Client::http("http://127.0.0.1:3000/mcp"));
-  agent.add_mcp("remote", remote);
+  agent.add_mcp_http("remote", "http://127.0.0.1:3000/mcp");
   agent.load_skills("./skills");
   agent.use_skill("brief-summary");
 
@@ -57,9 +54,32 @@ int main() {
 }
 ~~~
 
+## MCP 快捷接口（推荐）
+
+Agent 负责创建和保存客户端，无需显式构造 mymcp::Client、std::shared_ptr，也不必自行管理传输对象的生命周期。
+
+~~~cpp
+// Streamable HTTP（无需认证）
+agent.add_mcp_http("github", "https://example.com/mcp");
+
+// HTTP Bearer Token（凭据请从环境变量或安全存储读取）
+agent.add_mcp_http("private", "https://example.com/private/mcp", token);
+
+// stdio（可选的 argv 数组直接传递给进程；不使用 shell 拼接）
+agent.add_mcp_stdio("files", "./filesystem-mcp-server");
+agent.add_mcp_stdio("git", "./git-mcp-server", {"--workspace", "./project"});
+
+// OAuth：Session 由宿主程序先完成 OAuth 授权及令牌获取
+// auto session = std::make_shared<mymcp::oauth::Session>(oauth_url);
+// ... session->discover(), begin_authorization(), exchange_callback_url() ...
+agent.add_mcp_oauth("secured", oauth_url, session);
+~~~
+
+需要自定义通知处理或进阶 MCP API 时，仍保留 `agent.add_mcp(prefix, std::shared_ptr<mymcp::Client>)`，供高级用户使用。`add_mcp_oauth` 不会自动打开浏览器进行 OAuth 登录，Session 必须能提供访问令牌。MCP 工具名自动添加 `prefix__` 前缀以避免冲突。HTTP 连接在 `ask()` 时发现，stdio 子进程在注册时启动；不要运行来源不可信的 MCP 可执行文件。
+
 ## Demo 运行
 
-先设置 OPENAI_API_KEY 环境变量；直接运行 build/run_agent_demo（Windows：build/Debug/run_agent_demo.exe），无命令行参数。可选环境变量 OPENAI_MODEL、MYAGENT_MCP_URL、MYAGENT_IMAGE、MYAGENT_AUDIO、MYAGENT_SPEECH_OUTPUT；从仓库根目录运行才能自动找到示例 Skill。
+先设置 OPENAI_API_KEY 环境变量；直接运行 build/run_agent_demo（Windows：build/Debug/run_agent_demo.exe），无命令行参数。可选环境变量 OPENAI_MODEL、MYAGENT_MCP_URL、MYAGENT_MCP_STDIO、MYAGENT_IMAGE、MYAGENT_AUDIO、MYAGENT_SPEECH_OUTPUT；从仓库根目录运行才能自动找到示例 Skill。
 
 核心头文件：include/myagent/agent.hpp。
 核心实现：src/agent.cpp。

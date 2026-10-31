@@ -1,11 +1,10 @@
 // OpenAI + MCP + Skills + 多轮 / 图片 / 音频 Demo：不使用命令行参数。
 // Requires OPENAI_API_KEY. Optional: OPENAI_MODEL, MYAGENT_MCP_URL,
-// MYAGENT_IMAGE, MYAGENT_AUDIO, MYAGENT_SPEECH_OUTPUT.
+// MYAGENT_MCP_STDIO, MYAGENT_IMAGE, MYAGENT_AUDIO, MYAGENT_SPEECH_OUTPUT.
 #include "myagent/agent.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
-#include <memory>
 #include <string>
 
 int run_agent_demo() {
@@ -25,11 +24,14 @@ int run_agent_demo() {
                mymcp::arg<int>("a", "First integer"),
                mymcp::arg<int>("b", "Second integer"));
 
-    // 可以连接现有 HTTP/stdio/OAuth MCP 客户端，工具自动传递给 OpenAI。
-    if (const char* url = std::getenv("MYAGENT_MCP_URL")) {
-      auto remote = std::make_shared<mymcp::Client>(mymcp::Client::http(url));
-      agent.add_mcp("external", remote);
-    }
+    // Agent 自动创建 MCP 客户端并管理生命周期，不需要 shared_ptr。
+    if (const char* url = std::getenv("MYAGENT_MCP_URL"))
+      agent.add_mcp_http("external", url);
+    // stdio 会启动指定程序，无需 shell 字符串。
+    if (const char* executable = std::getenv("MYAGENT_MCP_STDIO"))
+      agent.add_mcp_stdio("stdio", executable);
+    // OAuth：宿主程序先完成授权，再传入已登录的 Session：
+    // agent.add_mcp_oauth("oauth", url, authenticated_session);
     if (std::filesystem::is_directory("skills")) {
       agent.load_skills("skills");
       agent.use_skill("brief-summary");

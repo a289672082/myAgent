@@ -12,7 +12,16 @@
 
 myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。
 项目直接编译 SDK 的现有 mcp.cpp、schema.cpp、oauth.cpp 和 oauth_client.cpp，复用 jsoncons、cpp-httplib；不复制或维护第二套 MCP 协议实现。
-通过 mymcp::Client::http、Client::process、Client::http_oauth 接入外部 MCP；
+普通调用方使用 Agent 快捷接口，Client 生命周期由 Agent 管理：
+
+- add_mcp_http(prefix, url, bearer_token = {})：复用 Client::http，HTTP Server 通过 HTTPS 验证证书。
+- add_mcp_stdio(prefix, executable, args = {})：复用 Client::process，启动子进程并传递 args（不使用 shell）。
+- add_mcp_oauth(prefix, url, session)：复用 Client::http_oauth，授权/换取 Token 由应用事先通过 mymcp::oauth::Session 完成。
+- add_mcp(prefix, shared_ptr<Client>)：保留给需自定义 Client 行为、通知或扩展的高级用户。
+
+连接名称（prefix）在创建客户端前校验，避免重复 stdio 进程启动。HTTP / OAuth 注册时不做网络请求，首次 ask() 会执行工具发现。
+
+底层通过 mymcp::Client::http、Client::process、Client::http_oauth 接入外部 MCP；
 Agent 自定义 tool 注册到底层 mymcp::Server 并通过内部 Client 调用，沿用相同 JSON Schema 参数校验。
 OpenAI function names 是 prefix__native_name，并通过路由表映射回原 MCP 工具名。
 

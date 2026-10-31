@@ -1,5 +1,6 @@
 // Fully offline regression tests for Responses orchestration and existing MCP reuse.
 #include "myagent/agent.hpp"
+#include "mymcp/oauth_client.hpp"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -118,6 +119,60 @@ int main() {
   catch (const std::out_of_range&) {}
   try { agent.add_mcp("remote", remote_client); assert(false); }
   catch (const std::invalid_argument&) {}
+  // Friendly transport APIs require no explicit Client / shared_ptr construction.
+  // HTTP registration is lazy, so these tests do not contact the network.
+  {
+    auto mocked_transport_model = std::make_shared<MockModel>();
+    Agent transports(cfg, mocked_transport_model);
+    transports.add_mcp_http("public", "http://127.0.0.1:1/mcp");
+    transports.add_mcp_http("bearer", "http://127.0.0.1:2/mcp", "test-only-token");
+    auto oauth_session = std::make_shared<oauth::Session>("http://127.0.0.1:3/mcp");
+    transports.add_mcp_oauth("secured", "http://127.0.0.1:3/mcp", oauth_session);
+
+    // Duplicate name must be rejected before attempting a connection.
+    try { transports.add_mcp_http("public", "http://127.0.0.1:4/mcp"); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_stdio("public", "nonexistent"); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_oauth("public", "http://127.0.0.1:5/mcp", oauth_session); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_http("bad prefix", "http://127.0.0.1:6/mcp"); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_http("empty_url", ""); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_stdio("empty_binary", ""); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_oauth("missing_session", "http://127.0.0.1:7/mcp", {}); assert(false); }
+    catch (const std::invalid_argument&) {}
+    try { transports.add_mcp_oauth("missing_url", "", oauth_session); assert(false); }
+    catch (const std::invalid_argument&) {}
+  }
+
+  // Real child-process integration: tool discovery, invocation, and response
+  // are exercised against the vendored myMcpTools stdio server executable.
+  {
+    auto stdio_model = std::make_shared<MockModel>();
+    Agent stdio_agent(cfg, stdio_model);
+    stdio_agent.add_mcp_stdio("worker", MYAGENT_TEST_STDIO_SERVER);
+    stdio_model->handler = [&](const Json& request) -> Json {
+      const Json& defs = request.at("tools");
+      bool found_multiply = false;
+      for (const auto& definition : defs.array_range()) {
+        if (definition.at("name").as_string() == "worker__multiply")
+          found_multiply = true;
+      }
+      assert(found_multiply);
+      const auto& input = request.at("input");
+      if (stdio_model->count == 1)
+        return call("worker__multiply", R"({"lhs":6,"rhs":7})");
+      assert(input.size() == 3);
+      assert(contains(std::string(input[2].at("output").as_string()), "42"));
+      return assistant("MCP stdio worked.");
+    };
+    assert(stdio_agent.ask("Multiply 6 by 7") == "MCP stdio worked.");
+    assert(stdio_model->count == 2);
+  }
+
   fs::remove_all(tmp);
   std::cout << "agent tests OK\n";
 }

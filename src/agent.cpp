@@ -216,14 +216,43 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
 }
-void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
-  if (!client) throw std::invalid_argument("MCP client is null");
+void Agent::validate_mcp_prefix(const std::string& prefix) const {
   if (prefix.empty() || safe_tool_name(prefix) != prefix)
     throw std::invalid_argument("MCP prefix must contain only A-Z, a-z, 0-9, _ or -");
   for (const auto& endpoint : endpoints_) {
-    if (endpoint.prefix == prefix) throw std::invalid_argument("Duplicate MCP prefix: " + prefix);
+    if (endpoint.prefix == prefix)
+      throw std::invalid_argument("Duplicate MCP prefix: " + prefix);
   }
+}
+void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
+  if (!client) throw std::invalid_argument("MCP client is null");
+  validate_mcp_prefix(prefix);
   endpoints_.push_back({std::move(prefix), std::move(client)});
+}
+void Agent::add_mcp_http(std::string prefix, std::string url,
+                         std::string bearer_token,
+                         std::function<void(const Json&)> on_notification) {
+  validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
+  if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
+  add_mcp(std::move(prefix), std::make_shared<Client>(
+    Client::http(url, std::move(bearer_token), std::move(on_notification))));
+}
+void Agent::add_mcp_stdio(std::string prefix, std::string executable,
+                          std::vector<std::string> args,
+                          std::function<void(const Json&)> on_notification) {
+  validate_mcp_prefix(prefix); // Reject collisions before starting a process.
+  if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
+  add_mcp(std::move(prefix), std::make_shared<Client>(
+    Client::process(executable, std::move(args), std::move(on_notification))));
+}
+void Agent::add_mcp_oauth(std::string prefix, std::string url,
+                          std::shared_ptr<mymcp::oauth::Session> session,
+                          std::function<void(const Json&)> on_notification) {
+  validate_mcp_prefix(prefix);
+  if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
+  if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
+  add_mcp(std::move(prefix), std::make_shared<Client>(
+    Client::http_oauth(url, std::move(session), std::move(on_notification))));
 }
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
