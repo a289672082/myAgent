@@ -15,12 +15,13 @@ using mymcp::Server;
 using mymcp::Arg;
 namespace json = mymcp::json;
 
-// API credentials are never written to history or persisted to disk.
+// Supply API credentials and endpoint explicitly; no environment variable fallback.
+// Credentials are not written to conversation history or saved by save_history().
 struct Config {
-  std::string api_key; // Empty: read OPENAI_API_KEY at request time.
+  std::string api_key;  // Required for the OpenAI backend; supplied by the application.
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
-  std::string base_url = "https://api.openai.com";
+  std::string base_url; // Required for the OpenAI backend, e.g. https://api.openai.com
   unsigned max_tool_rounds = 8;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
 };

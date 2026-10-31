@@ -8,6 +8,24 @@
 - myagent::Agent：ask、ask_parts、ask_image、ask_audio、speak、add_mcp、tool、load_skills、use_skill、save_history、load_history、clear_history
 - myagent::SkillLibrary：加载指定目录下的 SKILL.md（name/description 基础 frontmatter），按名称选取
 
+## 模型地址 / API Key 配置
+
+OpenAIResponses 仅使用应用显式传入的 `Config::base_url` 和 `Config::api_key`，不再读取 OPENAI_API_KEY 等环境变量。
+两者都为必填，创建真实 OpenAIResponses 后端时缺失会立即抛出 `std::invalid_argument`；base_url 必须以 http:// 或 https:// 开头。
+对于注入自定义 Mock Model 的单元测试，可不设置真实模型连接信息。
+
+~~~cpp
+const std::string modelBaseUrl = "https://api.openai.com";
+const std::string modelApiKey = "sk-example-replace-with-your-api-key"; // 占位符
+myagent::Config config;
+config.base_url = modelBaseUrl;
+config.api_key = modelApiKey;
+config.model = "gpt-4.1-mini";
+myagent::Agent agent(config);
+~~~
+
+真实密钥可由调用方自己的配置或安全存储获取后传入，**不要把真实 API Key 提交到仓库**。所有 Demo 的连接地址、路径和选项都以源码局部变量表示，不需要环境变量。
+
 ## MCP 设计
 
 myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。

@@ -2,7 +2,6 @@
 #include "httplib.h"
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -61,14 +60,9 @@ std::string base64(const std::string& input) {
   }
   return out;
 }
-std::string api_key(const Config& config) {
-  if (!config.api_key.empty()) return config.api_key;
-  const char* env = std::getenv("OPENAI_API_KEY");
-  if (!env || !*env) throw std::runtime_error("OPENAI_API_KEY is not configured");
-  return env;
-}
 httplib::Headers headers(const Config& config) {
-  return {{"Authorization", "Bearer " + api_key(config)}};
+  // Model backend validates explicit credentials at construction.
+  return {{"Authorization", "Bearer " + config.api_key}};
 }
 void check_http(const httplib::Result& result, const std::string& endpoint) {
   if (!result) throw std::runtime_error("HTTP transport failed at " + endpoint + ": " +
@@ -170,7 +164,15 @@ const Skill& SkillLibrary::get(const std::string& name) const {
   throw std::out_of_range("Unknown skill: " + name);
 }
 
-OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {}
+OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
+  if (config_.api_key.empty())
+    throw std::invalid_argument("OpenAI API key is required: set Config::api_key explicitly");
+  if (config_.base_url.empty())
+    throw std::invalid_argument("OpenAI base URL is required: set Config::base_url explicitly");
+  if (config_.base_url.rfind("https://", 0) != 0 &&
+      config_.base_url.rfind("http://", 0) != 0)
+    throw std::invalid_argument("OpenAI base URL must start with http:// or https://");
+}
 Json OpenAIResponses::create(const Json& request) {
   httplib::Client client(config_.base_url);
   configure(client);
