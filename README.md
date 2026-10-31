@@ -13,6 +13,7 @@
 - 保存/加载对话历史，注入 Model mock 做离线测试
 - 四种循环 ReAct / Plan-and-Execute / Reflection / Evaluator-Optimizer（统一工具预算，支持多图及音频转写）
 - Token 用量统计：Responses 真实 usage、单次与累计、按循环阶段和模型分组、缓存与推理 Token
+- P0/P1/P2：完整轮次上下文压缩、独立模型配置的 AgentTeam、任务委派、顺序及并行协作、工作区受限文件工具
 
 ## 构建
 
@@ -116,6 +117,107 @@ std::string answer = agent.ask("帮我审查这段 C++ 代码");
 ~~~
 
 Skill 目录应为 `name/SKILL.md` 格式，`SKILL.md` 通过 yaml-cpp 完整解析 YAML frontmatter（含多行 `|`/`>`、引号、注释、嵌套 `metadata` 等），并严格校验 Agent Skills 规范：`name`（1–64，ASCII 小写字母/数字/单连字符，和文件夹同名），`description`（1–1024 Unicode 字符）、可选 `license`、`compatibility`（1–500 字符）、`metadata`（字符串映射）及 `allowed-tools`（字符串）。会拒绝无效 YAML、字段类型错误、重复 YAML 键及缺少 frontmatter，错误包含文件与字段/行号。每个 SKILL.md 最大 128 KiB；总数最多 64，目录提示信息总长度限制为 8,000 字节。同名 Skill 自动发现以先发现的项目级为准。支持 Claude `disable-model-invocation: true` 和 Codex `agents/openai.yaml` 的 `policy.allow_implicit_invocation: false`，这种 Skill 不会被模型自动激活，但仍可用 `use_skill()` 显式启用。**`allowed-tools` 仅作元数据，不代表授予执行权限。** 其他厂商扩展字段不会阻止加载。使用项目 Skill 前应审查其来源；本项目尚不提供自动执行脚本、shell 执行隔离、Skill 文件变更监视、完整 Codex/Claude 技能运行时行为或外部技能市场同步。
+
+## P0/P1/P2：上下文自动压缩与多 Agent 协作
+
+### 1. 上下文压缩 ContextManager
+
+历史增长时不应按消息条数强制截断。`ContextManager` 将完整的旧用户轮次压缩为结构化摘要，并保留最近完整轮次和所有成对的 MCP 工具调用/结果。摘要模型由调用方配置；压缩请求本身的 `usage` 会计入 Agent 的 Token 统计。压缩失败时不会破坏原历史。
+
+```cpp
+myagent::Config config;
+config.base_url = "https://api.openai.com";
+config.api_key = "sk-example-only"; // 非真实密钥
+config.model = "gpt-4.1-mini";
+config.context.max_context_tokens = 128000; // 必须按实际模型容量填写
+config.context.reserve_output_tokens = 8192;
+config.context.compress_threshold = 0.80;
+config.context.keep_recent_turns = 4;
+config.context.auto_compress = true;
+myagent::Agent agent(config);
+
+agent.ask("检查 C++ 项目");
+auto manual = agent.compress_context(); // 即使未达到阈值，也尝试手动压缩
+auto stats = agent.context_stats();      // estimated_tokens、compression_count、compression_usage
+```
+
+**注意**：用于触发压缩的 `estimated_tokens` 是近似值，图片、音频转写、工具定义、中文和不同模型的实际 Token 分布可能有偏差；服务端 `usage` 仍是成本统计依据。默认 `auto_compress=false`，因为不同模型上下文上限不相同，框架不会凭空猜测。`ContextOptions::summary_model` 可指定同一模型后端下的摘要模型名称。自动压缩是在已有完整轮次之间进行，不会拆断一组调用/结果；如果没有足够旧轮次可压缩，会保留历史并由原有模型上限保护继续处理。总结仍可能损失细节；关键事实应由宿主保留原始文件或独立审计记录。`save_history()` 与 `load_history()` 会保存/恢复压缩后的消息，但不会保存 API Key。
+
+### 2. 子 Agent 独立配置与手动委派
+
+```cpp
+#include "myagent/multi_agent.hpp"
+
+myagent::Config leader;
+leader.base_url = "https://api.openai.com";
+leader.api_key = "sk-example-leader";
+leader.model = "leader-model";
+myagent::AgentTeam team(leader);
+
+myagent::AgentSpec coder;
+coder.name = "coder";
+coder.description = "C++ 代码实现";
+coder.config.base_url = "https://provider-a.example.com";
+coder.config.api_key = "coder-example-key";
+coder.config.model = "coder-model";
+team.add_agent(coder);
+
+myagent::AgentSpec reviewer;
+reviewer.name = "reviewer";
+reviewer.description = "C++ 代码审查";
+reviewer.config.base_url = "https://provider-b.example.com";
+reviewer.config.api_key = "reviewer-example-key";
+reviewer.config.model = "reviewer-model";
+team.add_agent(reviewer);
+
+// 明确指定子 Agent 与 Loop 模式，不需要命令行参数或环境变量
+auto code = team.delegate("coder", "编写一个线程安全的 C++ 组件");
+auto review = team.delegate("reviewer", "审查该组件的资源管理");
+
+// 主 Agent 自动形成任务图，并选择注册过的子 Agent
+auto result = team.run("开发并审查 C++ 组件");
+```
+
+每个子 Agent 使用独立 `Agent`、模型 URL、API Key、模型名、MCP/Skill/上下文、历史和 Token 用量，不继承主 Agent 的凭据。现有实现使用 **OpenAI Responses 兼容协议**：不同 URL 可以独立配置，但不代表原生支持各家厂商不兼容的 Chat Completions 协议。建议对子 Agent 仅授予完成其任务所必需的工具权限。
+
+### 3. 显式任务图、并行调度和团队预算
+
+```cpp
+std::vector<myagent::TeamTask> tasks = {
+    {"read", "coder", "阅读并分析文件"},
+    {"check", "reviewer", "独立审查安全性"},
+    {"combine", "coder", "整合分析结论", {"read", "check"}}
+};
+myagent::TeamOptions options;
+options.max_parallel_agents = 2;
+options.max_delegations = 8;
+options.max_model_calls = 64;
+options.max_tool_calls = 64;
+options.max_depth = 1;
+auto result = team.collaborate(tasks, options);
+// result.usage、result.usage_by_agent、result.tasks 分别有用量、归属和任务状态。
+```
+
+对于更复杂的协作，可以给某个 `TeamTask` 的 `context` 传入结构化的 `goal`、`relevant_context`、`artifacts` 和 `constraints`；任务委派只读取这些筛选过的资料及前置任务摘要，而非主 Agent 全部历史。`TeamOptions::validate_task` 是可选的宿主验收回调：接收 `TeamTask` 与 `DelegationResult`，返回 `TaskValidation{passed,reason,evidence}`。如果验收失败，任务变为 Failed，依赖它的下游任务会被 Skipped。没有设置时 `DelegationResult::verification` 为 `unverified`，模型完成声明不会自动视作真实编译/测试通过。
+没有依赖且属于不同子 Agent 的任务可以通过 `std::async` 同时运行；同一 Agent 的任务绝不会同时操作其会话，因为 `Agent` 本身不是线程安全的。依赖失败的后续任务将标记为跳过。`max_model_calls/max_tool_calls` 会在子任务阶段分配调用预算；协调器本身不拥有业务工具，不会向模型提供其他 Agent 的 API Key。`max_reported_tokens` 是服务端响应后才能确认的**软阈值**，不是零超额保证。子 Agent 不允许递归创建更多子 Agent：当前 `max_depth=1`；未来可以扩展为多级树，但需要更严格的递归预算与权限管理。
+
+### 4. P2 工作区文件工具（受路径约束，不是沙箱）
+
+```cpp
+myagent::AgentSpec worker;
+worker.name = "worker";
+worker.description = "分析与修改独立工作树";
+worker.config = coder.config;
+worker.workspace = "./worktrees/worker";
+worker.allow_workspace_write = true;
+team.add_agent(worker);
+```
+
+指定工作区后，框架只注册 `workspace_read`、`workspace_list`，可选 `workspace_write`；操作路径必须位于该子 Agent 的规范化工作区下，拒绝明显的越界与符号链接逃逸。不同 Agent 不允许配置重叠工作区。这是**内建文件工具的约束**，不提供 OS 容器级隔离、强制隔离任意外部 MCP 工具、也不能避免文件系统 TOCTOU 竞争。执行不可信代码、使用任意 shell 或需要安全租户隔离时仍需独立进程/容器、权限限制和专门工作树。
+
+### Demo 与测试
+
+`run_context_compression_demo()`、`run_agent_delegation_demo()`、`run_agent_collaboration_demo()`、`run_parallel_agents_demo()` 均为独立文件与独立 CMake 目标，包含中文说明、离线 Mock Model；`tests/test_context.cpp`、`tests/test_multi_agent.cpp` 集成到 CTest，验证上下文压缩、Token 统计、不同模型、自动委派、依赖、并发、预算和越界路径。
 
 ## Token 消耗统计（Responses usage）
 

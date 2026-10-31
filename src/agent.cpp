@@ -500,6 +500,7 @@ void OpenAIResponses::speech(const std::string& text,
 
 Agent::Agent(Config config, std::shared_ptr<Model> model)
   : config_(std::move(config)),
+    context_(config_.context),
     model_(model ? std::move(model) : std::make_shared<OpenAIResponses>(config_)),
     local_("agent-local", "1.0.0") {
   auto loopback = std::make_shared<Client>(
@@ -675,8 +676,32 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
     if (model_calls >= max_model_calls)
       throw detail::LoopAbort(LoopStatus::LimitReached, "Model call budget exhausted");
+    // 自动压缩：只在完整轮次边界处理，并将压缩模型本身的 usage 记入总账。
+    // 配额不足时禁止启动新的压缩请求；否则会越过 Loop 的模型调用预算。
+    if (context_.needs_compression(proposed)) {
+      context_.compress(proposed, [&](Json summary_request) {
+        if (cancelled && cancelled())
+          throw detail::LoopAbort(LoopStatus::Cancelled, "Context compression cancelled");
+        if (model_calls >= max_model_calls)
+          throw detail::LoopAbort(LoopStatus::LimitReached, "Context compression budget exhausted");
+        summary_request["model"] = config_.context.summary_model.empty()
+            ? config_.model : config_.context.summary_model;
+        ++model_calls;
+        const Json summary_response = model_->create(summary_request);
+        const auto usage = parse_token_usage(summary_response);
+        total_usage_.add(usage);
+        last_usage_.add(usage);
+        if (run_usage) run_usage->add(usage);
+        if (usage_by_phase) (*usage_by_phase)["context_compression"].add(usage);
+        if (usage_by_model) (*usage_by_model)[std::string(summary_request.at("model").as_string())].add(usage);
+        emit(json::object{{"phase","context_compression"},{"event","model_usage"},
+          {"total_tokens",usage.total_tokens},{"reported_calls",usage.reported_calls},
+          {"unreported_calls",usage.unreported_calls}});
+        return summary_response;
+      });
+    }
     if (proposed.size() > config_.max_history_items)
-      throw std::runtime_error("Conversation exceeded max_history_items; clear_history()");
+      throw std::runtime_error("Conversation exceeded max_history_items; compact or clear history");
     Json request = json::object{
       {"model", model_override.empty() ? config_.model : model_override},
       {"instructions", instructions() + (phase_instructions.empty() ?
@@ -848,6 +873,19 @@ void Agent::speak(const std::string& text, const std::filesystem::path& output,
   if (!openai) throw std::logic_error("speak requires OpenAIResponses model backend");
   openai->speech(text, output, voice);
 }
+CompressionResult Agent::compress_context() {
+  // 手动压缩：先准备完整候选，摘要模型失败时不修改原历史。
+  last_usage_ = {};
+  return context_.compress(history_, [&](Json request) {
+    request["model"] = config_.context.summary_model.empty()
+        ? config_.model : config_.context.summary_model;
+    const Json response = model_->create(request);
+    const auto usage = parse_token_usage(response);
+    last_usage_.add(usage);
+    total_usage_.add(usage);
+    return response;
+  }, true);
+}
 void Agent::reset_usage() {
   // 清空统计不影响模型会话和历史，也不会修改服务端账单。
   last_usage_ = {};
@@ -856,6 +894,7 @@ void Agent::reset_usage() {
 void Agent::clear_history() {
   history_ = json::array{};
   last_response_ = nullptr;
+  context_.clear_stats();
 }
 void Agent::save_history(const std::filesystem::path& file) const {
   write_file(file, json::serialize(history_));
@@ -868,5 +907,6 @@ void Agent::load_history(const std::filesystem::path& file) {
     if (!entry.is_object()) throw std::runtime_error("Invalid history entry");
   history_ = std::move(data);
   last_response_ = nullptr;
+  context_.clear_stats();
 }
 } // namespace myagent

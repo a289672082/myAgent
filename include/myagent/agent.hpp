@@ -2,6 +2,7 @@
 // C++20 OpenAI Responses Agent. MCP is provided by the existing mymcp SDK.
 #include "mymcp/mcp.hpp"
 #include "myagent/loop.hpp"
+#include "myagent/context.hpp"
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -30,6 +31,7 @@ struct Config {
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
   bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
   bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
+  ContextOptions context; // 上下文压缩配置；默认禁用，需按模型填上下文容量。
 };
 
 struct Skill {
@@ -162,6 +164,9 @@ public:
   const TokenUsage& total_usage() const { return total_usage_; }
   void reset_usage(); // 仅手动清除统计，不修改对话历史。
 
+  // 对话摘要压缩：不删除孤立工具结果，也不推测实际 Token 消耗。
+  CompressionResult compress_context();
+  ContextStats context_stats() const { return context_.stats(history_); }
   const Json& history() const { return history_; }
   const Json& last_response() const { return last_response_; }
   void clear_history();
@@ -198,6 +203,7 @@ private:
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
+  ContextManager context_;
   std::shared_ptr<Model> model_;
   Server local_;
   std::vector<Endpoint> endpoints_;

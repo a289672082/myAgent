@@ -50,6 +50,17 @@ myagent::Agent agent(config);
 - `MYAGENT_SKILL_YAML_DEMO_DIR` 在 CMake 构建时定位示例资源根目录，避免依赖执行时的 cwd；`ctest` 中注册 `myagent_skill_yaml_demo`。
 - `allowed-tools` 仅作元数据展示；`scripts/check.py` 不会运行。
 
+## ContextManager / AgentTeam （P0/P1/P2）
+
+- `Config::context` / `ContextManager`：自动或手动压缩旧的完整用户轮次，摘要替换后保留最近完整轮次，摘要失败不修改历史；触发预算是近似 Token 数，不视作真实 usage。`Agent::compress_context()` / `context_stats()` 提供手动 API 与统计。
+- 压缩逻辑放在 `run_stage()` 请求边界（所有 Loop 与 `ask()` 共用），摘要请求本身计入 `last_usage`/`total_usage`，Loop 计入 `usage_by_phase["context_compression"]`。没有可压缩的完整旧轮次时不破坏工具调用结果。
+- `AgentTeam` / `AgentSpec`：每个子 Agent 独立 Config（base_url/api_key/model），独立 MCP、Skills、历史和用量，不向协调器模型显示其他 Agent 的密钥或 URL；仍要求 Responses API 兼容。
+- `delegate` 显式委派任务；`collaborate` 基于任务 DAG（只依赖已声明的前序任务）运行；`run` 先由协调器生成严格 JSON 任务图再执行、完成后总结。
+- `TeamOptions` 包含任务数量限制、并行数量、深度=1、模型/工具调用预算、软 Token 上限和取消回调；子任务上下文只附必要的上游摘要，避免复制主 Agent 完整历史。
+- `TaskContext` 支持传目标、上下文、产物引用与约束；`DelegationResult::details` 包含 worker Loop 的 plan/evaluations；`TeamOptions::validate_task` 可检查真实证据并拒绝未通过的工作，阻断依赖任务。
+- 并发由 `std::async` 执行，不允许同一个非线程安全 Agent 在同一波次处理两个任务；子 Agent 的 workspace 路径不能重叠。
+- 工作区内建 `workspace_read`、`workspace_list`、可选 `workspace_write` 仅约束这些本地工具的路径和大小，其他 MCP/外部命令及目录竞态无法由此强制沙箱隔离。
+- 四个独立中文 Demo，离线 `test_context` / `test_multi_agent` 覆盖基本模型、预算、并行、依赖与隔离；所有依赖沿用本地 third_party 构建。
 ## Token 消耗统计
 
 - `include/myagent/token_usage.hpp` / `src/token_usage.cpp`：解析 Responses API 的 input/output/total、cached input 与 reasoning output。后二者属于前两者的子集，不能重复求和。
