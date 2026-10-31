@@ -183,7 +183,8 @@ private:
       bool allow_tools, unsigned& model_calls, unsigned& tool_calls,
       unsigned max_model_calls, unsigned max_tool_calls, unsigned max_rounds,
       const std::function<bool()>& cancelled, Json* trace,
-      const std::function<void(const Json&)>& on_event, const std::string& phase);
+      const std::function<void(const Json&)>& on_event, const std::string& phase,
+      Json* step_tool_results = nullptr);
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
