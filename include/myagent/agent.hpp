@@ -52,6 +52,9 @@ struct Config {
   std::size_t max_mcp_tools = 128;
   std::size_t max_mcp_tool_bytes = 32 * 1024;
   std::size_t max_mcp_catalog_bytes = 512 * 1024;
+  // SDK-level limits: enforced while receiving MCP traffic, before JSON parsing.
+  unsigned mcp_timeout_seconds = 30;
+  std::size_t max_mcp_wire_bytes = 4 * 1024 * 1024;
 };
 
 struct Skill {
@@ -233,6 +236,7 @@ private:
   struct Endpoint {
     std::string prefix;
     std::shared_ptr<Client> client;
+    bool managed_transport = false;
   };
   struct Route {
     std::shared_ptr<Client> client;
