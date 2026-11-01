@@ -116,7 +116,7 @@ void configure(httplib::Client& client, unsigned timeout_seconds = 60,
     const auto actual=std::min(remaining,max_transport);
     const auto seconds=static_cast<time_t>(actual.count()/1000);
     const auto micros=static_cast<time_t>((actual.count()%1000)*1000);
-    const auto connection=std::min(actual,std::chrono::seconds(10));
+    const auto connection=std::min(actual,std::chrono::milliseconds(10000));
     client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
                                   static_cast<time_t>((connection.count()%1000)*1000));
     client.set_read_timeout(seconds,micros);
