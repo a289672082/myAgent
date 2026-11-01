@@ -1113,7 +1113,10 @@ void Agent::load_history(const std::filesystem::path& file) {
        data.at("protocol").as<int>()!=static_cast<int>(config_.model_protocol) ||
        !json::if_contains(data,"messages"))
       throw std::runtime_error("History format, model or protocol mismatch");
-    data=data.at("messages");
+    // Copy the nested array before replacing its parent JSON object.
+    // Assigning directly from data.at("messages") invalidates the source.
+    Json messages=data.at("messages");
+    data=std::move(messages);
   }
   // Legacy array-only histories are allowed after strict structural validation.
   if (!data.is_array() || data.size() > config_.max_history_items)
