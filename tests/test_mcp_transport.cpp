@@ -59,5 +59,27 @@ int main(int argc,char** argv){
   assert(second.status!=LoopStatus::Completed);
   assert(std::chrono::steady_clock::now()-start<5s);
   assert(model->calls==0);
+  // 严格模式不允许将任意 C++ lambda 当作可强制终止的工具。
+  auto strict=make_config();
+  strict.strict_process_isolation=true;
+  strict.api_key="offline-test-key";
+  strict.base_url="http://127.0.0.1:1";
+  bool rejected=false;
+  try {Agent invalid(strict,model);assert(false);}
+  catch(const std::invalid_argument&){rejected=true;}
+  assert(rejected); // 普通 Mock 不声明 deadline guarantee。
+
+  Agent guarded(strict); // 内置 HTTP Model 有有界传输。
+  rejected=false;
+  try{guarded.tool("unsafe","C++ callback",[] {return true;});}
+  catch(const std::invalid_argument&){rejected=true;}
+  assert(rejected);
+  rejected=false;
+  try {
+    guarded.add_mcp("unbounded",std::make_shared<mymcp::Client>(
+       [](const Json&){return mymcp::json::object{};}));
+  } catch(const std::invalid_argument&){rejected=true;}
+  assert(rejected);
+  guarded.add_mcp_stdio("safe_child",path,{"stubborn"});
   std::cout<<"Agent MCP transport deadline and predecode limit tests OK\n";
 }
