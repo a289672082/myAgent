@@ -737,7 +737,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     std::map<std::string, TokenUsage>* usage_by_model,
     Json* compacted_history_prefix,
     std::set<std::string>* executed_effects,
-    const std::set<std::string>* protected_tools) {
+    const std::set<std::string>* protected_tools,
+    const std::set<std::string>* idempotent_tools,
+    bool protect_unclassified_tools) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
@@ -913,8 +915,12 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         permitted = config_.tool_policy.authorize(ToolRequest{config_.agent_id, name, args, phase});
       } catch (const std::exception&) { permitted = false; }
       bool duplicate_effect=false;
-      if(permitted && executed_effects && protected_tools &&
-         protected_tools->count(name)) {
+      const bool read_only=(name=="agent_skill_load" ||
+           name=="agent_skill_read_file" ||
+           (idempotent_tools && idempotent_tools->count(name)));
+      const bool protect_effect=(protected_tools && protected_tools->count(name)) ||
+           (protect_unclassified_tools && !read_only);
+      if(permitted && executed_effects && protect_effect) {
         // Persist the intent before making the tool call. Even if the call's
         // result is unknown, an automatic replan must not replay that intent.
         const auto canonical=json::serialize(

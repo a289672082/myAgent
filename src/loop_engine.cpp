@@ -80,7 +80,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           cancelled, &result.trace, options.on_event, phase,
           step_tool_results, &result.usage, &result.usage_by_phase,
           &result.usage_by_model, &compacted_history_prefix,
-          &executed_effects, &options.non_idempotent_tools);
+          &executed_effects, &options.non_idempotent_tools,
+          &options.idempotent_tools, options.protect_unclassified_tools);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -130,7 +131,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         cancelled, &result.trace, options.on_event, "react",
         nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model,
         &compacted_history_prefix, &executed_effects,
-        &options.non_idempotent_tools);
+        &options.non_idempotent_tools, &options.idempotent_tools,
+        options.protect_unclassified_tools);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);

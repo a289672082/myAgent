@@ -1,6 +1,7 @@
 #include "myagent/multi_agent.hpp"
 #include <yaml-cpp/yaml.h>
 #include <stdexcept>
+#include <vector>
 
 namespace myagent {
 namespace {
@@ -106,16 +107,30 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     specs.push_back(std::move(spec));
   }
   std::vector<std::string> inserted;
+  std::vector<std::filesystem::path> created_directories;
   try {
     for(auto& spec:specs) {
       const auto name=spec.name;
+      // Record ONLY previously missing directories; never delete user data
+      // when an unrelated later agent fails validation or startup.
+      std::vector<std::filesystem::path> newly_created;
+      for(auto dir=std::filesystem::absolute(spec.workspace);
+          !spec.workspace.empty() && !dir.empty() && !std::filesystem::exists(dir);
+          dir=dir.parent_path()) {
+        newly_created.push_back(dir);
+        if(dir==dir.parent_path())break;
+      }
       add_agent(std::move(spec));
       inserted.push_back(name);
+      created_directories.insert(created_directories.end(),
+                                  newly_created.begin(),newly_created.end());
     }
   } catch(...) {
-    // Atomic from the caller's perspective: no partially registered team.
-    // A started stdio connection is shut down when its Worker is destroyed.
     for(const auto& name:inserted)workers_.erase(name);
+    for(const auto& directory:created_directories) {
+      std::error_code ec;
+      std::filesystem::remove(directory,ec); // Only succeeds for empty directories.
+    }
     throw;
   }
 }

@@ -133,12 +133,30 @@ void AgentTeam::register_workspace_tools(Worker& worker) {
       },mymcp::arg<std::string>("relative"),mymcp::arg<std::string>("content"));
 }
 void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
+  // Only remove directories created by this operation, and only if empty.
+  // The guard also covers failure after an MCP client has been initialized.
+  struct DirectoryRollback {
+    std::vector<std::filesystem::path> created;
+    bool committed=false;
+    ~DirectoryRollback() {
+      if(committed)return;
+      for(const auto& path:created) {
+        std::error_code ec;
+        std::filesystem::remove(path,ec);
+      }
+    }
+  } rollback;
   validate_name(spec.name);
   if (spec.name == "coordinator" || workers_.count(spec.name))
     throw std::invalid_argument("Duplicate/reserved Agent name");
   if (spec.description.empty() || spec.description.size() > 2048)
     throw std::invalid_argument("Agent description required (<= 2048 bytes)");
   if (!spec.workspace.empty()) {
+    for(auto dir=std::filesystem::absolute(spec.workspace);
+        !dir.empty() && !std::filesystem::exists(dir);dir=dir.parent_path()) {
+      rollback.created.push_back(dir);
+      if(dir==dir.parent_path())break;
+    }
     std::filesystem::create_directories(spec.workspace);
     spec.workspace = std::filesystem::canonical(spec.workspace);
     for (const auto& [name, other] : workers_) {
@@ -169,6 +187,7 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
     }
   }
   workers_.emplace(worker->spec.name,std::move(worker));
+  rollback.committed=true;
 }
 Agent& AgentTeam::agent(const std::string& name) {
   const auto it = workers_.find(name);
@@ -508,12 +527,14 @@ TeamResult AgentTeam::collaborate(const std::vector<TeamTask>& tasks,
 }
 TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
   TeamResult result;
+  // Keep the deadline available to error handling; classifying cancellation
+  // by exception-message text is not reliable across HTTP backends.
+  const auto deadline=options.timeout.count()>0
+      ? std::chrono::steady_clock::now()+options.timeout
+      : std::chrono::steady_clock::time_point::max();
   try {
     validate_options(options);
     if(workers_.empty())throw std::invalid_argument("No registered sub Agents");
-    const auto deadline=options.timeout.count()>0
-        ? std::chrono::steady_clock::now()+options.timeout
-        : std::chrono::steady_clock::time_point::max();
     const auto cancelled=[&]() {
       return (options.cancelled && options.cancelled()) ||
              std::chrono::steady_clock::now()>=deadline;
@@ -625,6 +646,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
   } catch(const std::exception& e) {
     const std::string reason=e.what();
     result.status=((options.cancelled && options.cancelled()) ||
+        std::chrono::steady_clock::now()>=deadline ||
         reason.find("cancelled or timed out")!=std::string::npos ||
         reason.find("deadline exceeded")!=std::string::npos)?
         TeamStatus::Cancelled:TeamStatus::Failed;

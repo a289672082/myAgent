@@ -238,7 +238,9 @@ private:
       std::map<std::string, TokenUsage>* usage_by_model = nullptr,
       Json* compacted_history_prefix = nullptr,
       std::set<std::string>* executed_effects = nullptr,
-      const std::set<std::string>* protected_tools = nullptr);
+      const std::set<std::string>* protected_tools = nullptr,
+      const std::set<std::string>* idempotent_tools = nullptr,
+      bool protect_unclassified_tools = false);
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;

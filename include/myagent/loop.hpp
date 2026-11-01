@@ -43,6 +43,11 @@ struct LoopOptions {
   // Dedupe identical non-idempotent tool calls across replans/revisions.
   // Register external MCP write tools here; the built-in workspace_write is protected.
   std::set<std::string> non_idempotent_tools{"local__workspace_write"};
+  // Fail closed: an unknown MCP tool might write, delete, purchase or commit.
+  // Explicitly opt read-only tools out, after verifying their semantics.
+  bool protect_unclassified_tools = true;
+  std::set<std::string> idempotent_tools{
+      "local__workspace_read","local__workspace_list"};
   unsigned max_revisions = 3;
   double acceptance_score = 0.85;
   std::string planner_model;   // Empty uses Config::model on the same backend.
