@@ -181,7 +181,37 @@ static void test_workspaces(const fs::path& root) {
   fs::create_symlink(outside/"secret.txt",workspace/"sub"/"link.txt");
   try{detail::workspace_read(workspace,"sub/link.txt");assert(false);}
   catch(const std::exception&){}
+  try{detail::workspace_write(workspace,"sub/link.txt","escaped");assert(false);}
+  catch(const std::exception&){}
+#else
+  // Windows directory junctions/symlinks must not escape even after path checks.
+  // Symlink creation may require Developer Mode on the CI host; verify when available.
+  std::error_code ec;
+  fs::create_directory_symlink(outside,workspace/"jump",ec);
+  if(!ec) {
+    try{detail::workspace_read(workspace,"jump/secret.txt");assert(false);}
+    catch(const std::exception&){}
+    try{detail::workspace_write(workspace,"jump/new.txt","escaped");assert(false);}
+    catch(const std::exception&){}
+    assert(!fs::exists(outside/"new.txt"));
+  }
+  ec.clear();
+  fs::create_symlink(outside/"secret.txt",workspace/"sub"/"link.txt",ec);
+  if(!ec) {
+    try{detail::workspace_read(workspace,"sub/link.txt");assert(false);}
+    catch(const std::exception&){}
+    try{detail::workspace_write(workspace,"sub/link.txt","escaped");assert(false);}
+    catch(const std::exception&){}
+  }
+  try{detail::workspace_read(workspace,"sub/ok.txt:secret");assert(false);}
+  catch(const std::invalid_argument&){}
+  try{detail::workspace_write(workspace,"sub/ok.txt:secret","escaped");assert(false);}
+  catch(const std::invalid_argument&){}
 #endif
+  // A directory must never be silently replaced by a temporary regular file.
+  try{detail::workspace_write(workspace,"sub","escaped");assert(false);}
+  catch(const std::exception&){}
+  assert(detail::workspace_read(outside,"secret.txt")=="TOP_SECRET");
 }
 static void test_loop_compaction_history_and_hard_limit() {
   auto model=std::make_shared<Mock>();
