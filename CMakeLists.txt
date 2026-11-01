@@ -135,6 +135,10 @@ if(MYAGENT_BUILD_TESTS)
   endif()
   # 静态审计回归：Checkpoint、上下文压缩、Chat 多工具调用、
   # Coordinator 模型预算与工作区路径安全。
+  add_executable(myagent_full_audit_tests tests/test_full_audit.cpp)
+  target_link_libraries(myagent_full_audit_tests PRIVATE myagent)
+  add_test(NAME myagent_full_audit COMMAND myagent_full_audit_tests)
+  set_tests_properties(myagent_full_audit PROPERTIES TIMEOUT 75)
   add_executable(myagent_audit_tests tests/test_audit_fixes.cpp)
   target_link_libraries(myagent_audit_tests PRIVATE myagent)
   target_include_directories(myagent_audit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
