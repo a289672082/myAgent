@@ -52,6 +52,13 @@ struct Config {
   std::size_t max_mcp_tools = 128;
   std::size_t max_mcp_tool_bytes = 32 * 1024;
   std::size_t max_mcp_catalog_bytes = 512 * 1024;
+  // SDK 接收/解析 JSON 之前执行的 MCP 限额：每个请求都设置独立的整体截止时间。
+  // 0 非法，以避免不可信 MCP 服务永久阻塞；不影响内置模型的 HTTP 超时。
+  unsigned mcp_timeout_seconds = 30;
+  std::size_t max_mcp_response_bytes = 1024 * 1024; // 限制整个 stdio 消息或 HTTP 响应。
+  // 可选严格模式：拒绝进程内 C++ 工具和无法保证截止时间的模型/自定义 MCP Client。
+  // 对无法协作取消的 C++ 回调，改用 add_mcp_stdio 运行在独立进程。
+  bool strict_process_isolation = false;
 };
 
 struct Skill {
@@ -90,6 +97,8 @@ class Model {
 public:
   virtual ~Model() = default;
   virtual Json create(const Json& request) = 0;
+  // 自定义 Model 必须自行实现请求级截止时间才可将此声明为 true。
+  virtual bool supports_request_deadline() const noexcept { return false; }
   // The default keeps injected providers source-compatible. Built-in HTTP
   // backends override this to enforce a per-request transport deadline.
   virtual Json create_with_timeout(const Json& request,
@@ -105,6 +114,7 @@ public:
   Json create(const Json& request) override;
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
+  bool supports_request_deadline() const noexcept override { return true; }
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
@@ -125,6 +135,7 @@ public:
   Json create(const Json& request) override;
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
+  bool supports_request_deadline() const noexcept override { return true; }
 private:
   Config config_;
 };
@@ -164,10 +175,16 @@ public:
   template<class F, class... Ts>
   void tool(std::string name, std::string description, F fn, Arg<Ts>... args) {
     const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+    if(config_.strict_process_isolation)
+      throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
   }
-  Server& local_mcp_server() { return local_; }
+  Server& local_mcp_server() {
+    if(config_.strict_process_isolation)
+      throw std::invalid_argument("Strict isolation forbids local MCP server access");
+    return local_;
+  }
 
   void load_skills(const std::filesystem::path& directory);
   void use_skill(const std::string& name);
@@ -239,8 +256,10 @@ private:
     std::string native_name;
   };
   void validate_mcp_prefix(const std::string& prefix) const;
-  Json tool_definitions(std::map<std::string, Route>& routes);
-  std::string execute_tool(const Route& route, const Json& call);
+  Json tool_definitions(std::map<std::string, Route>& routes,
+                        const mymcp::RequestOptions& request_options);
+  std::string execute_tool(const Route& route, const Json& call,
+                           const mymcp::RequestOptions& request_options);
   std::string instructions() const;
   std::string run(Json user_content, bool allow_tools = true,
                   unsigned max_model_calls = std::numeric_limits<unsigned>::max(),

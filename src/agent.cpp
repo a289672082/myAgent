@@ -619,6 +619,8 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
           ? std::shared_ptr<Model>(std::make_shared<ChatCompletionsModel>(config_))
           : std::shared_ptr<Model>(std::make_shared<OpenAIResponses>(config_)))),
     local_("agent-local", "1.0.0") {
+  if(config_.strict_process_isolation && !model_->supports_request_deadline())
+    throw std::invalid_argument("Strict isolation requires a deadline-aware Model backend");
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
@@ -635,6 +637,9 @@ void Agent::validate_mcp_prefix(const std::string& prefix) const {
 void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   if (!client) throw std::invalid_argument("MCP client is null");
+  if(config_.strict_process_isolation && prefix!="local" &&
+     !client->has_bounded_transport())
+    throw std::invalid_argument("Strict isolation requires bounded MCP transport (stdio/HTTP)");
   validate_mcp_prefix(prefix);
   endpoints_.push_back({std::move(prefix), std::move(client)});
 }
@@ -669,6 +674,8 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(config_.strict_process_isolation)
+    throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
   local_.add_tool(std::move(name), std::move(description),
                   std::move(schema), std::move(handler));
 }
@@ -686,7 +693,8 @@ std::string Agent::instructions() const {
   std::string result = config_.instructions;
   for (const auto& [name, content] : manual_skill_contents_)
     result += "\n\n# Explicit Skill: " + name + "\n" + content;
-  if (config_.auto_skill_selection && !skills_.all().empty()) {
+  if (!config_.strict_process_isolation &&
+      config_.auto_skill_selection && !skills_.all().empty()) {
     result += "\n\n# Available Skills (metadata only)\n"
               "Use agent_skill_load with the matching skill name when a task "
               "would benefit from its instructions. Do not load irrelevant "
@@ -705,7 +713,8 @@ std::string Agent::instructions() const {
   }
   return result;
 }
-Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
+Json Agent::tool_definitions(std::map<std::string, Route>& routes,
+                             const mymcp::RequestOptions& request_options) {
   Json tools = json::array{};
   const auto max_tools=std::min(config_.max_mcp_tools,MaxMcpToolsHard);
   const auto max_tool_bytes=std::min(config_.max_mcp_tool_bytes,MaxMcpToolBytesHard);
@@ -715,14 +724,15 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
   std::size_t catalog_left=max_catalog_bytes;
   std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
-    endpoint.client->discover();
+    if(config_.strict_process_isolation && endpoint.prefix=="local")continue;
+    endpoint.client->discover(request_options);
     Json params=json::object{};
     std::set<std::string> cursors;
     bool exhausted=false;
     for(std::size_t page=0;page<MaxMcpPages;++page) {
       // Request one page at a time: Client::list_all would first accumulate
       // every tool, potentially 10,000 pages, before enforcing our limits.
-      const Json result=endpoint.client->request("tools/list",params);
+      const Json result=endpoint.client->request("tools/list",params,request_options);
       const Json* entries=json::if_contains(result,"tools");
       if(!entries || !entries->is_array())
         throw std::runtime_error("Invalid MCP tools/list page");
@@ -769,7 +779,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
     }
     if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
   }
-  if (config_.auto_skill_selection && !skills_.all().empty()) {
+  if (!config_.strict_process_isolation &&
+      config_.auto_skill_selection && !skills_.all().empty()) {
     // Keep built-in Skill tools separate from externally registered MCP routes.
     if (routes.count("agent_skill_load") || routes.count("agent_skill_read_file"))
       throw std::runtime_error("An MCP tool collides with an internal Skill tool");
@@ -797,12 +808,13 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
   }
   return tools;
 }
-std::string Agent::execute_tool(const Route& route, const Json& call) {
+std::string Agent::execute_tool(const Route& route, const Json& call,
+                                const mymcp::RequestOptions& request_options) {
   try {
     const auto raw = as_string(call, "arguments", "{}");
     const auto args = json::parse(raw);
     if (!args.is_object()) throw std::invalid_argument("Tool arguments must be a JSON object");
-    const Json value=route.client->call(route.native_name,args);
+    const Json value=route.client->call(route.native_name,args,request_options);
     std::size_t available=MaxToolResultBytes;
     if(!fits_json_budget(value,available))
       return R"({"isError":true,"message":"Tool output exceeds 256 KiB budget"})";
@@ -879,7 +891,28 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     throw detail::LoopAbort(LoopStatus::Cancelled,"Agent loop cancelled");
   if(model_calls>=max_model_calls)
     throw detail::LoopAbort(LoopStatus::LimitReached,"Model call budget exhausted");
-  const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
+  // Before ANY MCP discovery/tool call, pass both the loop's remaining
+  // deadline and a distinct transport bound to the SDK. Agent-only JSON
+  // limits are not sufficient because decoding takes place inside the SDK.
+  const auto mcp_options=[&]() {
+    if(!config_.mcp_timeout_seconds || !config_.max_mcp_response_bytes ||
+       config_.max_mcp_response_bytes>4u*1024u*1024u)
+      throw std::invalid_argument("MCP transport timeout/response limits are invalid");
+    mymcp::RequestOptions opts;
+    opts.timeout=std::chrono::seconds(config_.mcp_timeout_seconds);
+    if(remaining_time) {
+      const auto left=remaining_time();
+      if(left.count()<=0)
+        throw detail::LoopAbort(LoopStatus::Cancelled,"MCP transport deadline exceeded");
+      opts.timeout=std::min(opts.timeout,
+          std::chrono::duration_cast<std::chrono::milliseconds>(left));
+    }
+    opts.max_response_bytes=config_.max_mcp_response_bytes;
+    opts.cancelled=cancelled;
+    return opts;
+  };
+  const Json tools = allow_tools ? tool_definitions(routes,mcp_options())
+                                : Json(json::array{});
   std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
   const auto emit = [&](const Json& event) {
     if (trace) trace->push_back(event);
@@ -1083,6 +1116,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         tool_output=R"({"isError":true,"message":"Repeated non-idempotent tool call blocked"})";
         emit(json::object{{"phase",phase},{"event","tool_replay_blocked"},{"name",name}});
       } else if (name == "agent_skill_load" || name == "agent_skill_read_file") {
+        if(config_.strict_process_isolation)
+          throw std::runtime_error("In-process Skill tools disabled in strict isolation");
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");
         try {
@@ -1118,7 +1153,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         const auto route = routes.find(name);
         if (route == routes.end())
           throw std::runtime_error("Unknown tool: " + name);
-        tool_output = execute_tool(route->second, item);
+        tool_output = execute_tool(route->second, item, mcp_options());
       }
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
