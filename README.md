@@ -617,4 +617,26 @@ For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow
 
 - The Agent uses bounded paginated MCP tool discovery and rejects oversized schemas/catalogs. The **MCP SDK transport** must also enforce payload limits; an in-process callback can still allocate a large JSON response before returning it.
 - History and Memory saves refuse simultaneous writers using an adjacent `*.lock` directory, as Checkpoints already do. A crashed process can leave a stale directory; remove it **only after verifying no writer is active**. Loaded or previously saved files also use compare-and-replace within the lock, rejecting stale revisions instead of silently overwriting newer content. First saves to a different destination have no prior revision and intentionally replace the destination. Applications should use load() before updating a shared history/memory file, or explicitly coordinate initial writes.
-- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, but the stdio transport can wait indefinitely for a non-cooperative child. 
+- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, and the pinned stdio transport now enforces a finite deadline for non-cooperative children. 
+
+
+## P0/P1 MCP 硬截止时间与严格进程隔离（2026-11-01）
+
+Agent 通过 myMcpTools 的 RequestOptions 在 MCP JSON 解析之前执行字节限制，并把 Loop 剩余时间传入发现、分页和工具调用。默认 mcp_timeout_seconds=30，max_mcp_response_bytes=1 MiB，后者不得超过 4 MiB。
+
+~~~cpp
+myagent::Config config;
+config.api_key = "<configured-credential>";
+config.base_url = "https://model-gateway.example";
+config.mcp_timeout_seconds = 10;
+config.max_mcp_response_bytes = 512 * 1024;
+config.strict_process_isolation = true;
+myagent::Agent agent(config);
+agent.add_mcp_stdio("worker", "/absolute/path/to/untrusted-tool-server");
+~~~
+
+strict_process_isolation=true 会拒绝同步 Agent::tool() C++ 回调、没有 SDK 接收/截止时间能力的自定义 MCP Client，以及未显式声明支持请求超时的 Model；内建进程内 Skill 工具也不可调用。自定义 Model 只有确实实现 create_with_timeout 才能返回 supports_request_deadline=true。
+
+兼容模式（strict_process_isolation=false）仍允许旧的进程内回调，但无法保证恶意或死循环 C++ 代码按时间终止。严格模式解决的是拒绝不安全路径，而非自动把任意 lambda 变为可跨进程序列化的对象。
+
+严格模式不是系统沙箱。仍需要针对外部 MCP 子进程执行最小权限、文件系统隔离、进程树限制与资源配额。
