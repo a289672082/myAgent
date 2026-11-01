@@ -61,7 +61,7 @@ struct TeamOptions {
   unsigned max_parallel_agents = 2;   // 同时运行的不同 Agent 数量，至少 1
   unsigned max_depth = 1;             // 当前架构只有 coordinator -> worker 这一层
   unsigned max_model_calls = 64;      // 全团队模型调用预算
-  unsigned max_tool_calls = 64;       // 全团队工具调用预算
+  unsigned max_tool_calls = 64;       // 全团队工具调用预算，0=禁用工具但允许纯模型任务
   std::uint64_t max_reported_tokens = 0; // 0 = 不限制；计费按请求后报告，软阈值
   unsigned max_handoff_chars = 6000;  // 向子 Agent 仅传相关上游摘要
   LoopOptions worker_loop;

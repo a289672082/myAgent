@@ -156,7 +156,7 @@ Json ChatCompletionsModel::create_with_timeout(const Json& request,
   auto res=client.Post(target,headers,j::serialize(payload),"application/json");
   if(!res)throw std::runtime_error("Chat HTTP transport failed: "+httplib::to_string(res.error()));
   if(res->status<200||res->status>=300)
-    throw std::runtime_error("Chat HTTP "+std::to_string(res->status)+": "+res->body.substr(0,500));
+    throw std::runtime_error("Chat HTTP "+std::to_string(res->status));
   const auto json=j::parse(res->body);
   const auto* choices=j::if_contains(json,"choices");
   if(!choices||!choices->is_array()||choices->empty())

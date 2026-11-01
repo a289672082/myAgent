@@ -1,5 +1,6 @@
 #include "myagent/multi_agent.hpp"
 #include "team_checkpoint.hpp"
+#include "loop_internal.hpp"
 #include "task_scheduler.hpp"
 #include "workspace_io.hpp"
 #include <algorithm>
@@ -294,6 +295,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       return "reported tokens";
     return "";
   };
+  // Keep accumulated usage and completed tasks if scheduling fails mid-flight.
+  try {
   while(!pending.empty()) {
     const auto reason = stop_reason();
     if (!reason.empty()) {
@@ -505,6 +508,10 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if(!options.checkpoint_path.empty())
       detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,{},prior_attempts);
   }
+  } catch(const std::exception& e) {
+    out.status=cancelled()?TeamStatus::Cancelled:TeamStatus::Failed;
+    out.error=e.what();
+  }
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
     if(it!=finished.end())out.tasks.push_back(it->second);
@@ -594,7 +601,8 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       std::to_string(options.max_delegations)+".\nWorkers:\n"+roles+"\nGoal:\n"+goal);
     const auto plan=json::parse(response);
     const Json* raw=json::if_contains(plan,"tasks");
-    if(!raw || !raw->is_array())throw std::runtime_error("Coordinator must return tasks array");
+    if(!raw || !raw->is_array() || raw->size()>options.max_delegations)
+      throw std::runtime_error("Coordinator task count exceeds configured limit");
     std::vector<TeamTask> tasks;
     for(const auto& item:raw->array_range()) {
       if(!item.is_object())throw std::runtime_error("Malformed coordinator task");
@@ -656,6 +664,11 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
         result.answer+"\nGive a concise final synthesis. Do not claim unverified tests.");
       result.answer=final;
     }
+    return result;
+  } catch(const detail::LoopAbort& e) {
+    result.status=e.status==LoopStatus::LimitReached?TeamStatus::LimitReached:
+        e.status==LoopStatus::Cancelled?TeamStatus::Cancelled:TeamStatus::Failed;
+    result.error=e.what();
     return result;
   } catch(const std::exception& e) {
     const std::string reason=e.what();
