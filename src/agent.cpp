@@ -644,8 +644,12 @@ void Agent::add_mcp_http(std::string prefix, std::string url,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
   if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
-  add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http(url, std::move(bearer_token), std::move(on_notification))));
+  auto client=std::make_shared<Client>(
+    Client::http(url, std::move(bearer_token), std::move(on_notification)));
+  client->set_transport_limits({std::chrono::seconds(config_.mcp_timeout_seconds),
+                                config_.max_mcp_wire_bytes});
+  add_mcp(std::move(prefix),std::move(client));
+  endpoints_.back().managed_transport=true;
 }
 void Agent::add_mcp_stdio(std::string prefix, std::string executable,
                           std::vector<std::string> args,
@@ -653,8 +657,12 @@ void Agent::add_mcp_stdio(std::string prefix, std::string executable,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Reject collisions before starting a process.
   if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
-  add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::process(executable, std::move(args), std::move(on_notification))));
+  auto client=std::make_shared<Client>(
+    Client::process(executable, std::move(args), std::move(on_notification)));
+  client->set_transport_limits({std::chrono::seconds(config_.mcp_timeout_seconds),
+                                config_.max_mcp_wire_bytes});
+  add_mcp(std::move(prefix),std::move(client));
+  endpoints_.back().managed_transport=true;
 }
 void Agent::add_mcp_oauth(std::string prefix, std::string url,
                           std::shared_ptr<mymcp::oauth::Session> session,
@@ -663,8 +671,12 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
   validate_mcp_prefix(prefix);
   if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
   if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
-  add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http_oauth(url, std::move(session), std::move(on_notification))));
+  auto client=std::make_shared<Client>(
+    Client::http_oauth(url, std::move(session), std::move(on_notification)));
+  client->set_transport_limits({std::chrono::seconds(config_.mcp_timeout_seconds),
+                                config_.max_mcp_wire_bytes});
+  add_mcp(std::move(prefix),std::move(client));
+  endpoints_.back().managed_transport=true;
 }
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
