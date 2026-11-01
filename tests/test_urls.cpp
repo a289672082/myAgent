@@ -16,7 +16,13 @@ using namespace myagent;
 int main() {
   httplib::Server server;
   server.Post(R"(/.*)", [](const httplib::Request& req, httplib::Response& res) {
-    if (req.path == "/v1/audio/transcriptions" ||
+    if (req.path == "/v1/responses/oversize" ||
+        req.path == "/chat/oversize") {
+      res.set_content(std::string(8*1024*1024+65536,'x'),"application/json");
+    } else if(req.path == "/secret/invalid") {
+      res.status=401;
+      res.set_content("secret_in_remote_error_body","application/json");
+    } else if (req.path == "/v1/audio/transcriptions" ||
         req.path == "/gateway/v1/audio/transcriptions") {
       res.set_content(R"({"text":"Offline transcription"})", "application/json");
     } else if (req.path == "/v1/audio/speech" ||
@@ -108,6 +114,41 @@ int main() {
   bad.base_url = "http://user:password@127.0.0.1/";
   try { OpenAIResponses invalid(bad); assert(false); }
   catch (const std::invalid_argument&) {}
+
+  // Check during reception, not after buffering an untrusted 8+ MiB body.
+  Config capped; capped.api_key="secret_dummy"; capped.model="offline";
+  capped.base_url=origin+"/v1/responses/oversize";
+  capped.append_responses_path=false;
+  OpenAIResponses responses(capped);
+  try {
+    (void)responses.create(mymcp::json::object{{"model","offline"},{"input","x"}});
+    assert(false);
+  } catch(const std::runtime_error& ex) {
+    assert(std::string(ex.what()).find("exceeds 8 MiB")!=std::string::npos);
+  }
+
+  capped.base_url=origin+"/chat/oversize";
+  ChatCompletionsModel chat(capped);
+  try {
+    (void)chat.create(mymcp::json::object{{"model","offline"},
+      {"instructions","test"},{"input",mymcp::json::array{}}});
+    assert(false);
+  } catch(const std::runtime_error& ex) {
+    assert(std::string(ex.what()).find("exceeds 8 MiB")!=std::string::npos);
+  }
+
+  // Neither query-string keys nor remote error bodies are safe to log.
+  capped.base_url=origin+"/secret/invalid?access_token=secret_query_value";
+  OpenAIResponses failed(capped);
+  try {
+    (void)failed.create(mymcp::json::object{{"model","offline"},{"input","x"}});
+    assert(false);
+  } catch(const std::runtime_error& ex) {
+    const std::string error=ex.what();
+    assert(error.find("secret_query_value")==std::string::npos);
+    assert(error.find("secret_in_remote_error_body")==std::string::npos);
+    assert(error.find("HTTP 401")!=std::string::npos);
+  }
 
   server.stop();
   server_thread.join();
