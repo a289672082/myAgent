@@ -114,11 +114,13 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
       // Record ONLY previously missing directories; never delete user data
       // when an unrelated later agent fails validation or startup.
       std::vector<std::filesystem::path> newly_created;
-      for(auto dir=std::filesystem::absolute(spec.workspace);
-          !spec.workspace.empty() && !dir.empty() && !std::filesystem::exists(dir);
-          dir=dir.parent_path()) {
-        newly_created.push_back(dir);
-        if(dir==dir.parent_path())break;
+      if(!spec.workspace.empty()) {
+        for(auto dir=std::filesystem::absolute(spec.workspace);
+            !dir.empty() && !std::filesystem::exists(dir);
+            dir=dir.parent_path()) {
+          newly_created.push_back(dir);
+          if(dir==dir.parent_path())break;
+        }
       }
       add_agent(std::move(spec));
       inserted.push_back(name);

@@ -413,7 +413,10 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       if (deadline != std::chrono::steady_clock::time_point::max()) {
         const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
           deadline-std::chrono::steady_clock::now());
-        worker_options.timeout=remaining.count()>0?remaining:std::chrono::milliseconds(1);
+        const auto team_remaining=remaining.count()>0?remaining:std::chrono::milliseconds(1);
+        // Worker-specific timeouts are upper limits, never widen them.
+        if(worker_options.timeout.count()<=0 || team_remaining<worker_options.timeout)
+          worker_options.timeout=team_remaining;
       }
       // 每个 Agent 都在自己的实例/历史/凭据里运行。主线程仅负责派工与收集结果。
       emit("task_started",t.id,fallback_index[t.id]==0?t.agent:
@@ -505,6 +508,12 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
     if(it!=finished.end())out.tasks.push_back(it->second);
+  }
+  // The final worker may finish after the deadline with a model that
+  // ignores cancellation. Never report the overall team as Completed.
+  if(cancelled() && out.status!=TeamStatus::Cancelled) {
+    out.status=TeamStatus::Cancelled;
+    out.error="Team deadline or cancellation reached before finalization";
   }
   if(out.status!=TeamStatus::Cancelled && out.status!=TeamStatus::LimitReached &&
      out.error.empty()) {

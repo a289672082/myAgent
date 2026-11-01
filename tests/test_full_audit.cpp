@@ -131,7 +131,28 @@ static void test_worker_cancellation_and_deadline() {
   const auto timed=team.run("do work",options);
   assert(timed.status==TeamStatus::Cancelled);
   assert(worker->calls==0);
-  assert(timed.model_calls==1);
+  // A 1 ms deadline can expire before dispatch (0 calls) or while the
+  // mock is sleeping (1 call). Count actual attempts, not a scheduling guess.
+  assert(timed.model_calls==coordinator->calls.load());
+  assert(timed.model_calls<=1);
+}
+static void test_noncooperative_model_deadline() {
+  auto model=std::make_shared<Mock>();
+  model->reply=[](const Json&){
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    return answer("late completion");
+  };
+  Agent agent(settings(),model);
+  LoopOptions options;
+  options.timeout=std::chrono::milliseconds(1);
+  auto result=agent.react("timeout must not commit history",options);
+  assert(result.status==LoopStatus::Cancelled);
+  assert(agent.history().empty());
+  try {
+    (void)agent.ask_without_tools("late request",1,std::chrono::milliseconds(1));
+    assert(false);
+  }catch(const std::runtime_error&) {}
+  assert(agent.history().empty());
 }
 static void test_config_transaction_and_workspace(const fs::path& root) {
   auto dir=root/"team-config";
@@ -254,6 +275,7 @@ int main() {
     test_empty_completion();
     test_history_format(root);
     test_worker_cancellation_and_deadline();
+    test_noncooperative_model_deadline();
     test_config_transaction_and_workspace(root);
     test_replay_guard();
     test_memory_save_and_metadata(root);

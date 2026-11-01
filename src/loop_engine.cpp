@@ -343,13 +343,19 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
     }
     }
 
+    // A non-cooperative custom Model may return after the deadline.
+    // Do not commit a timed-out response as a successful answer.
+    if (cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded");
     // Optional final speech output is generated only for successful runs.
     if (!options.speech_output.empty()) {
-      if (options.cancelled && options.cancelled())
+      if (cancelled())
         throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
       speak(result.answer, options.speech_output, options.speech_voice);
       result.speech_output = options.speech_output;
     }
+    if (cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after output");
     if (options.commit_to_history) {
       // 压缩在 working 中发生时，提交已压缩的原始历史而不是重新使用
       // 未压缩的 history_；只保留原始会话及本次最终答案，不回写内部工具轨迹。

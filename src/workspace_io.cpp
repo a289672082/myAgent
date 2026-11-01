@@ -58,8 +58,22 @@ void require_fd(int fd,const char* reason) {
 }
 FD directory_fd(const fs::path& root,const std::vector<fs::path>& parts,
                 std::size_t count) {
-  FD dir(::open(root.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
-  require_fd(dir.fd,"Cannot open workspace root");
+  // Anchor at the filesystem root and open EVERY ancestor through the
+  // previously verified directory handle. O_NOFOLLOW on a full pathname
+  // alone protects only its last component.
+  if(root.empty())throw std::invalid_argument("Workspace root cannot be empty");
+  const auto absolute=fs::absolute(root).lexically_normal();
+  FD dir(::open(absolute.root_path().c_str(),
+                O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+  require_fd(dir.fd,"Cannot open filesystem root");
+  for(const auto& component:absolute.relative_path()) {
+    if(component=="." || component=="..")
+      throw std::invalid_argument("Invalid workspace root component");
+    FD next(::openat(dir.fd,component.c_str(),
+                  O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+    require_fd(next.fd,"Workspace root ancestor denied");
+    dir=std::move(next);
+  }
   for(std::size_t i=0;i<count;++i) {
     FD next(::openat(dir.fd,parts[i].c_str(),
                 O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));

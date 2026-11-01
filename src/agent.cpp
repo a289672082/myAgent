@@ -736,6 +736,8 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
+  std::set<std::string> executed_effects;
+  const LoopOptions safe_defaults; // Same protection as run_loop(), including ask().
   const auto deadline=max_duration.count()>0
       ? std::chrono::steady_clock::now()+max_duration
       : std::chrono::steady_clock::time_point::max();
@@ -749,8 +751,11 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
       max_duration.count()>0?std::function<bool()>(cancelled):std::function<bool()>{},
       nullptr, {}, "ask",nullptr,nullptr,nullptr,nullptr,
-      nullptr,nullptr,nullptr,nullptr,false,
+      nullptr,&executed_effects,&safe_defaults.non_idempotent_tools,
+      &safe_defaults.idempotent_tools,safe_defaults.protect_unclassified_tools,
       max_duration.count()>0?remaining:std::function<std::chrono::milliseconds()>{});
+  if(max_duration.count()>0 && cancelled())
+    throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after response");
   history_ = std::move(working);
   last_response_ = turn.response;
   return turn.answer;
