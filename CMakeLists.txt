@@ -109,6 +109,11 @@ if(MYAGENT_BUILD_TESTS)
   add_dependencies(myagent_tests myagent_test_stdio_server)
   target_compile_definitions(myagent_tests PRIVATE
     MYAGENT_TEST_STDIO_SERVER="$<TARGET_FILE:myagent_test_stdio_server>")
+  # 子 Agent MCP 硬截止时间/限额的真实子进程回归，不依赖外网。
+  add_executable(myagent_mcp_transport_tests tests/test_mcp_transport.cpp)
+  target_link_libraries(myagent_mcp_transport_tests PRIVATE myagent)
+  add_test(NAME myagent_mcp_transport COMMAND myagent_mcp_transport_tests)
+  set_tests_properties(myagent_mcp_transport PROPERTIES TIMEOUT 20)
   # Actual localhost HTTP endpoint tests for append-vs-exact Responses URLs.
   add_executable(myagent_url_tests tests/test_urls.cpp)
   target_link_libraries(myagent_url_tests PRIVATE myagent)
