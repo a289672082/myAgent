@@ -55,7 +55,7 @@ add_library(myagent::mcp ALIAS myagent_mcp)
 
 add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp src/tool_policy.cpp
   src/chat_completions.cpp src/memory_store.cpp src/agent_team_config.cpp
-  src/team_checkpoint.cpp src/task_scheduler.cpp src/workspace_io.cpp)
+  src/team_checkpoint.cpp src/task_scheduler.cpp src/workspace_io.cpp src/file_io.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

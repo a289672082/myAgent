@@ -1,6 +1,7 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
 #include "workspace_io.hpp"
+#include "file_io.hpp"
 #include "httplib.h"
 #include "yaml-cpp/yaml.h"
 #include <algorithm>
@@ -35,15 +36,7 @@ std::string trim(std::string s) {
   return s;
 }
 std::string read_bounded_file(const std::filesystem::path& file, std::size_t limit) {
-  if (!std::filesystem::is_regular_file(file))
-    throw std::runtime_error("Not a regular file: " + file.string());
-  if (std::filesystem::file_size(file) > limit)
-    throw std::runtime_error("File exceeds configured safety limit: " + file.string());
-  std::ifstream in(file, std::ios::binary);
-  if (!in) throw std::runtime_error("Cannot read: " + file.string());
-  std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  if (s.size() > limit) throw std::runtime_error("File exceeds limit");
-  return s;
+  return detail::read_regular_file(file,limit);
 }
 void write_file(const std::filesystem::path& file, const std::string& data) {
   std::ofstream out(file, std::ios::binary | std::ios::trunc);
@@ -1100,7 +1093,7 @@ void Agent::save_history(const std::filesystem::path& file) const {
   const auto content=json::serialize(envelope);
   if(content.size()>8*1024*1024)
     throw std::runtime_error("History save exceeds the 8 MiB load limit");
-  write_file(file,content);
+  detail::atomic_replace(file,content);
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);

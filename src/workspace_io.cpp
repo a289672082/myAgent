@@ -109,9 +109,17 @@ void hold_directory(const fs::path& path,std::vector<Handle>& handles) {
 CheckedPath checked_path(const fs::path& root,const std::vector<fs::path>& names,
                          bool directory=false) {
   CheckedPath checked;
-  // Root is already canonicalized by AgentTeam; canonicalize for standalone use.
-  checked.path=fs::canonical(root);
+  // Do NOT recanonicalize a saved root: canonical() follows a junction
+  // that may have been swapped in after worker registration. Pin every
+  // ancestor from the volume root and reject *all* reparse components.
+  const auto absolute=fs::absolute(root).lexically_normal();
+  checked.path=absolute.root_path();
+  if(checked.path.empty())throw std::runtime_error("Invalid workspace root");
   hold_directory(checked.path,checked.held_directories);
+  for(const auto& component:absolute.relative_path()) {
+    checked.path/=component;
+    hold_directory(checked.path,checked.held_directories);
+  }
   const auto dirs=directory?names.size():names.size()-1;
   for(std::size_t i=0;i<dirs;++i) {
     checked.path/=names[i];
