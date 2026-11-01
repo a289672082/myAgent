@@ -243,7 +243,8 @@ private:
     std::string native_name;
   };
   void validate_mcp_prefix(const std::string& prefix) const;
-  Json tool_definitions(std::map<std::string, Route>& routes);
+  Json tool_definitions(std::map<std::string, Route>& routes,
+      const std::function<std::chrono::milliseconds()>& remaining_time = {});
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
   std::string run(Json user_content, bool allow_tools = true,
