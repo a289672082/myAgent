@@ -1,5 +1,6 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
+#include "workspace_io.hpp"
 #include "httplib.h"
 #include "yaml-cpp/yaml.h"
 #include <algorithm>
@@ -156,6 +157,39 @@ std::string output_text(const Json& response) {
   if (text.empty()) text = as_string(response, "output_text");
   return text;
 }
+// Refuse malformed imported histories and orphaned tool outputs.
+void validate_history(const Json& history) {
+  std::set<std::string> pending;
+  for(const auto& entry:history.array_range()) {
+    if(!entry.is_object())throw std::runtime_error("Invalid history entry");
+    const auto type=as_string(entry,"type");
+    if(type=="function_call") {
+      const auto id=as_string(entry,"call_id");
+      if(id.empty() || as_string(entry,"name").empty() ||
+         !json::if_contains(entry,"arguments") ||
+         !entry.at("arguments").is_string() || !pending.insert(id).second)
+        throw std::runtime_error("Invalid or duplicate function call in history");
+    } else if(type=="function_call_output") {
+      const auto id=as_string(entry,"call_id");
+      if(id.empty() || !pending.erase(id) ||
+         !json::if_contains(entry,"output") || !entry.at("output").is_string())
+        throw std::runtime_error("Orphan or invalid function output in history");
+    } else if(type=="message" || type.empty()) {
+      const auto role=as_string(entry,"role");
+      if(role!="user" && role!="assistant")
+        throw std::runtime_error("Invalid history role");
+      const auto* content=json::if_contains(entry,"content");
+      if(!content || (!content->is_string() && !content->is_array()))
+        throw std::runtime_error("Invalid history content");
+      if(type=="message" && !content->is_array())
+        throw std::runtime_error("Responses message content must be an array");
+    } else if(type!="reasoning") {
+      throw std::runtime_error("Unsupported history message type: "+type);
+    }
+  }
+  if(!pending.empty())
+    throw std::runtime_error("Unpaired tool calls in history");
+}
 } // namespace
 
 // Read only the YAML metadata at discovery time; body is read when selected.
@@ -256,10 +290,11 @@ std::size_t utf8_chars(const std::string& value, const std::filesystem::path& fi
   return count;
 }
 YAML::Node read_frontmatter(const std::filesystem::path& file) {
-  if (std::filesystem::file_size(file) > MaxSkillBytes)
+  const auto raw=detail::workspace_read(file.parent_path(),
+                                           file.filename().string());
+  if (raw.size() > MaxSkillBytes)
     throw skill_error(file, "SKILL.md exceeds the 128 KiB limit");
-  std::ifstream in(file, std::ios::binary);
-  if (!in) throw skill_error(file, "cannot open SKILL.md");
+  std::istringstream in(raw);
   std::string line;
   if (!std::getline(in, line))
     throw skill_error(file, "SKILL.md is empty");
@@ -398,7 +433,10 @@ const Skill& SkillLibrary::get(const std::string& name) const {
 }
 std::string SkillLibrary::read(const std::string& name) const {
   const auto& skill = get(name);
-  std::string contents = read_bounded_file(skill.source, MaxSkillBytes);
+  std::string contents = detail::workspace_read(skill.source.parent_path(),
+                                                skill.source.filename().string());
+  if(contents.size()>MaxSkillBytes)
+    throw std::runtime_error("Skill exceeds 128 KiB");
   contents.erase(std::remove(contents.begin(), contents.end(), '\r'), contents.end());
   return contents;
 }
@@ -443,10 +481,25 @@ std::string SkillLibrary::read_file(const std::string& name,
     if (fs::is_symlink(path))
       throw std::invalid_argument("Skill symlinks are not permitted");
   }
-  auto content = read_bounded_file(path, MaxSkillBytes);
+  auto content = detail::workspace_read(root, rel.generic_string());
+  if(content.size()>MaxSkillBytes)
+    throw std::runtime_error("Skill support file exceeds 128 KiB");
   if (content.find('\0') != std::string::npos)
     throw std::invalid_argument("Binary Skill asset cannot be read as text");
   return content;
+}
+
+std::string audio_target(const Config& config, const std::string& endpoint) {
+  if(config.audio_base_url.empty())return "/v1/audio/"+endpoint;
+  const auto url=parse_base_url(config.audio_base_url);
+  std::string path=url.path;
+  while(path.size()>1 && path.back()=='/')path.pop_back();
+  if(path=="/")path.clear();
+  if(!path.ends_with("/v1/audio")) {
+    if(path.ends_with("/v1"))path+="/audio";
+    else path+="/v1/audio";
+  }
+  return path+"/"+endpoint+url.query;
 }
 
 OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
@@ -455,6 +508,8 @@ OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
   if (config_.base_url.empty())
     throw std::invalid_argument("OpenAI base URL is required: set Config::base_url explicitly");
   (void)parse_base_url(config_.base_url);
+  if(!config_.audio_base_url.empty())
+    (void)parse_base_url(config_.audio_base_url);
 }
 Json OpenAIResponses::create(const Json& request) {
   const auto url = parse_base_url(config_.base_url);
@@ -477,8 +532,20 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
     {"file", bytes, file.filename().string(), "application/octet-stream"},
     {"model", model, "", ""}
   };
-  auto result = client.Post("/v1/audio/transcriptions", headers(config_), items);
-  check_http(result, "/v1/audio/transcriptions");
+  const auto target=audio_target(config_,"transcriptions");
+  if(!config_.audio_base_url.empty()) {
+    const auto audio=parse_base_url(config_.audio_base_url);
+    httplib::Client routed(audio.origin);
+    configure(routed,config_.http_timeout_seconds);
+    auto result=routed.Post(target,headers(config_),items);
+    check_http(result,target);
+    const auto body=json::parse(result->body);
+    const auto text=as_string(body,"text");
+    if(text.empty())throw std::runtime_error("Audio transcription returned no text");
+    return text;
+  }
+  auto result = client.Post(target, headers(config_), items);
+  check_http(result, target);
   const auto body = json::parse(result->body);
   const auto text = as_string(body, "text");
   if (text.empty()) throw std::runtime_error("Audio transcription returned no text");
@@ -493,9 +560,20 @@ void OpenAIResponses::speech(const std::string& text,
   configure(client, config_.http_timeout_seconds);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
-  auto result = client.Post("/v1/audio/speech", headers(config_),
+  const auto target=audio_target(config_,"speech");
+  if(!config_.audio_base_url.empty()) {
+    const auto audio=parse_base_url(config_.audio_base_url);
+    httplib::Client routed(audio.origin);
+    configure(routed,config_.http_timeout_seconds);
+    auto result=routed.Post(target,headers(config_),
+                            json::serialize(request),"application/json");
+    check_http(result,target);
+    write_file(output,result->body);
+    return;
+  }
+  auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
-  check_http(result, "/v1/audio/speech");
+  check_http(result, target);
   write_file(output, result->body); // MP3 bytes; caller chooses destination filename.
 }
 
@@ -685,6 +763,11 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
   std::map<std::string, Route> routes;
+  // Discovery itself can perform I/O; enforce budgets before starting it.
+  if(cancelled && cancelled())
+    throw detail::LoopAbort(LoopStatus::Cancelled,"Agent loop cancelled");
+  if(model_calls>=max_model_calls)
+    throw detail::LoopAbort(LoopStatus::LimitReached,"Model call budget exhausted");
   const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
   std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
   const auto emit = [&](const Json& event) {
@@ -824,6 +907,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     }
     if (!has_calls) {
       auto answer = output_text(response);
+      if(answer.empty())
+        throw std::runtime_error("Model returned no final answer text");
       working = std::move(proposed);
       return TurnResult{std::move(answer), response};
     }
@@ -1007,15 +1092,17 @@ void Agent::clear_history() {
 }
 void Agent::save_history(const std::filesystem::path& file) const {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  write_file(file, json::serialize(history_));
+  const auto content=json::serialize(history_);
+  if(content.size()>8*1024*1024)
+    throw std::runtime_error("History save exceeds the 8 MiB load limit");
+  write_file(file,content);
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   Json data = json::parse(read_bounded_file(file, 8 * 1024 * 1024));
   if (!data.is_array() || data.size() > config_.max_history_items)
     throw std::runtime_error("Invalid history file");
-  for (const auto& entry : data.array_range())
-    if (!entry.is_object()) throw std::runtime_error("Invalid history entry");
+  validate_history(data);
   history_ = std::move(data);
   last_response_ = nullptr;
   context_.clear_stats();

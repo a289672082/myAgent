@@ -31,6 +31,8 @@ struct Config {
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
   std::string base_url; // Required: base origin/path or an exact Responses URL.
+  // Optional audio gateway prefix. Empty uses base_url origin's /v1/audio.
+  std::string audio_base_url;
   // true: append /v1/responses (unless URL already ends with it).
   // false: POST to base_url exactly, including its path/query.
   bool append_responses_path = true;
