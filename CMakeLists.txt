@@ -55,7 +55,7 @@ add_library(myagent::mcp ALIAS myagent_mcp)
 
 add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp src/tool_policy.cpp
   src/chat_completions.cpp src/memory_store.cpp src/agent_team_config.cpp
-  src/team_checkpoint.cpp src/task_scheduler.cpp)
+  src/team_checkpoint.cpp src/task_scheduler.cpp src/workspace_io.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -133,6 +133,13 @@ if(MYAGENT_BUILD_TESTS)
       set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
     endforeach()
   endif()
+  # 静态审计回归：Checkpoint、上下文压缩、Chat 多工具调用、
+  # Coordinator 模型预算与工作区路径安全。
+  add_executable(myagent_audit_tests tests/test_audit_fixes.cpp)
+  target_link_libraries(myagent_audit_tests PRIVATE myagent)
+  target_include_directories(myagent_audit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  add_test(NAME myagent_audit COMMAND myagent_audit_tests)
+  set_tests_properties(myagent_audit PROPERTIES TIMEOUT 60)
   add_executable(myagent_p1_p2_tests tests/test_p1_p2.cpp)
   target_link_libraries(myagent_p1_p2_tests PRIVATE myagent)
   add_test(NAME myagent_p1_p2 COMMAND myagent_p1_p2_tests)

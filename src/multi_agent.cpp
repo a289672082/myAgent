@@ -1,6 +1,7 @@
 #include "myagent/multi_agent.hpp"
 #include "team_checkpoint.hpp"
 #include "task_scheduler.hpp"
+#include "workspace_io.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -84,67 +85,20 @@ AgentTeam::AgentTeam(Config coordinator, std::shared_ptr<Model> coordinator_mode
     : coordinator_(std::make_unique<Agent>(std::move(coordinator),std::move(coordinator_model))) {}
 
 void AgentTeam::register_workspace_tools(Worker& worker) {
-  const auto root = std::filesystem::weakly_canonical(worker.spec.workspace);
+  const auto root = std::filesystem::canonical(worker.spec.workspace);
   worker.instance->tool("workspace_read", "只读取子 Agent 工作区内的文本文件",
-      [root](const std::string& relative) {
-        const auto path = resolve_path(root, relative);
-        if (!std::filesystem::is_regular_file(path) ||
-            std::filesystem::file_size(path) > 1024 * 1024)
-          throw std::runtime_error("File missing or exceeds 1 MiB");
-        std::ifstream in(path, std::ios::binary);
-        if (!in) throw std::runtime_error("Cannot read workspace file");
-        return std::string(std::istreambuf_iterator<char>(in), {});
-      }, mymcp::arg<std::string>("relative"));
+    [root](const std::string& relative) {
+      return detail::workspace_read(root,relative);
+    },mymcp::arg<std::string>("relative"));
   worker.instance->tool("workspace_list", "列出子 Agent 工作区内目录",
-      [root](const std::string& relative) {
-        const auto path = resolve_path(root, relative);
-        if (!std::filesystem::is_directory(path))
-          throw std::runtime_error("Directory does not exist");
-        std::string contents;
-        unsigned count = 0;
-        for (const auto& e : std::filesystem::directory_iterator(path)) {
-          if (++count > 100) { contents += "(truncated)\n"; break; }
-          contents += e.path().filename().string() + "\n";
-        }
-        return contents;
-      }, mymcp::arg<std::string>("relative"));
-  if (worker.spec.allow_workspace_write) {
-    worker.instance->tool("workspace_write", "只写入子 Agent 工作区内的文本文件",
-      [root](const std::string& relative, const std::string& content) {
-        if (content.size() > 1024 * 1024)
-          throw std::runtime_error("File content exceeds 1 MiB");
-        const auto path = resolve_path(root, relative);
-        // 只允许写入已有目录内的文件，禁止通过符号链接跳出 root。
-        if (!std::filesystem::is_directory(path.parent_path()))
-          throw std::runtime_error("Destination directory missing");
-        // 不能直接 truncate 已存在文件：先写同目录暂存文件，成功后再重命名。
-        // 检查符号链接与路径的过程仍不构成 OS 沙箱；不可信多租户需容器隔离。
-        if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
-          throw std::runtime_error("Writing through symbolic link denied");
-        static std::atomic<std::uint64_t> counter{0};
-        const auto nonce=counter.fetch_add(1);
-        auto temp=path;
-        temp+=".myagent-tmp-"+std::to_string(nonce)+"-"+
-              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-        try {
-          {
-            std::ofstream out(temp,std::ios::binary|std::ios::trunc);
-            if(!out)throw std::runtime_error("Cannot create workspace temporary file");
-            out.write(content.data(),static_cast<std::streamsize>(content.size()));
-            out.flush();
-            if(!out)throw std::runtime_error("Workspace temporary file write failed");
-          }
-          if(std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
-            throw std::runtime_error("Workspace target became symbolic link");
-          std::filesystem::rename(temp,path);
-        } catch (...) {
-          std::error_code error;
-          std::filesystem::remove(temp,error);
-          throw;
-        }
-        return true;
-      }, mymcp::arg<std::string>("relative"),mymcp::arg<std::string>("content"));
-  }
+    [root](const std::string& relative) {
+      return detail::workspace_list(root,relative);
+    },mymcp::arg<std::string>("relative"));
+  if(worker.spec.allow_workspace_write)
+    worker.instance->tool("workspace_write", "安全写入子 Agent 工作区内的文本文件",
+      [root](const std::string& relative,const std::string& content) {
+        return detail::workspace_write(root,relative,content);
+      },mymcp::arg<std::string>("relative"),mymcp::arg<std::string>("content"));
 }
 void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
   validate_name(spec.name);
@@ -252,9 +206,24 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
            std::chrono::steady_clock::now()>=deadline;
   };
   std::map<std::string,DelegationResult> finished;
+  std::map<std::string,std::vector<DelegationResult>> prior_attempts;
   std::map<std::string,std::size_t> fallback_index;
   if (options.resume_checkpoint) {
-    finished=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
+    auto restored=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
+    finished=std::move(restored.finished);
+    prior_attempts=std::move(restored.prior_attempts);
+    for (const auto& [id,history]:prior_attempts) {
+      const auto task=std::find_if(tasks.begin(),tasks.end(),
+        [&](const TeamTask& t){return t.id==id;});
+      if (task==tasks.end() || history.size()>task->fallback_agents.size())
+        throw std::runtime_error("Invalid fallback history in checkpoint");
+      fallback_index[id]=history.size();
+      for(const auto& attempt:history) {
+        out.model_calls+=attempt.model_calls;
+        out.tool_calls+=attempt.tool_calls;
+        add_usage(out,attempt.agent,attempt.usage);
+      }
+    }
     for (const auto& [id,r]:finished) {
       out.model_calls+=r.model_calls;
       out.tool_calls+=r.tool_calls;
@@ -330,7 +299,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if(!options.checkpoint_path.empty()) {
       std::set<std::string> in_flight;
       for(const auto i:ready)in_flight.insert(tasks[i].id);
-      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,in_flight);
+      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,in_flight,prior_attempts);
     }
     std::vector<std::future<DelegationResult>> futures;
     futures.reserve(ready.size());
@@ -399,6 +368,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
           return result;
         }));
     }
+    std::set<std::string> in_flight;
+    for(const auto i:ready) in_flight.insert(tasks[i].id);
     for(std::size_t j=0;j<ready.size();++j) {
       const auto& t=tasks[ready[j]];
       try {
@@ -426,8 +397,13 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
            !cancelled()) {
           // 当前 Agent 只做了模型调用，不涉及副作用工具；
           // 下一轮将此任务委派给另一 Agent，保留本轮真实 Token/调用账本。
+          prior_attempts[t.id].push_back(result);
           ++fallback_index[t.id];
           emit("task_reassigned",t.id,t.fallback_agents[fallback_index[t.id]-1]);
+          in_flight.erase(t.id);
+          if(!options.checkpoint_path.empty())
+            detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,
+                                         in_flight,prior_attempts);
           advanced=true;
           continue;
         }
@@ -442,9 +418,10 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       }
       // fallback 分支在此之前 continue，保留 pending 并进入下一轮。
       pending.erase(t.id);
+      in_flight.erase(t.id);
     }
     if(!options.checkpoint_path.empty())
-      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,{});
+      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,{},prior_attempts);
   }
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
@@ -482,17 +459,18 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     }
     // 协调器只看名称/职责；绝不把 worker 的 api_key、base_url、历史暴露给模型。
     const auto coordinator_call = [&](const std::string& prompt) {
-      // 失败也必须统计已经返回 usage 的模型调用。
+      // 使用剩余模型预算约束本次 ask，包括可能触发的上下文压缩请求。
+      if(result.model_calls >= options.max_model_calls)
+        throw std::runtime_error("Coordinator model budget exhausted");
+      const unsigned remaining=options.max_model_calls-result.model_calls;
       try {
-        auto reply=coordinator_->ask_without_tools(prompt);
+        auto reply=coordinator_->ask_without_tools(prompt,remaining);
         add_usage(result,"coordinator",coordinator_->last_usage());
-        result.model_calls+=static_cast<unsigned>(
-          coordinator_->last_usage().reported_calls+coordinator_->last_usage().unreported_calls);
+        result.model_calls+=coordinator_->last_model_attempts();
         return reply;
       } catch(...) {
         add_usage(result,"coordinator",coordinator_->last_usage());
-        result.model_calls+=static_cast<unsigned>(
-          coordinator_->last_usage().reported_calls+coordinator_->last_usage().unreported_calls);
+        result.model_calls+=coordinator_->last_model_attempts();
         throw;
       }
     };

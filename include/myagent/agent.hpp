@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -170,6 +171,10 @@ public:
   std::string ask(const std::string& text);
   // 仅供协调器规划/汇总：不发现、不展示、不调用 MCP 或 Skill 工具。
   std::string ask_without_tools(const std::string& text);
+  // Coordinator 专用：限制这次无工具请求（包括可能触发的摘要调用）。
+  // 零预算会在发送任何模型请求前被拒绝。
+  std::string ask_without_tools(const std::string& text, unsigned max_model_calls);
+  unsigned last_model_attempts() const { return last_model_attempts_; }
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
   std::string ask_image(const std::string& question, const std::filesystem::path& image);
@@ -213,7 +218,8 @@ private:
   Json tool_definitions(std::map<std::string, Route>& routes);
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
-  std::string run(Json user_content, bool allow_tools = true);
+  std::string run(Json user_content, bool allow_tools = true,
+                  unsigned max_model_calls = std::numeric_limits<unsigned>::max());
   struct TurnResult {
     std::string answer;
     Json response;
@@ -226,7 +232,8 @@ private:
       const std::function<void(const Json&)>& on_event, const std::string& phase,
       Json* step_tool_results = nullptr, TokenUsage* run_usage = nullptr,
       std::map<std::string, TokenUsage>* usage_by_phase = nullptr,
-      std::map<std::string, TokenUsage>* usage_by_model = nullptr);
+      std::map<std::string, TokenUsage>* usage_by_model = nullptr,
+      Json* compacted_history_prefix = nullptr);
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
@@ -241,6 +248,7 @@ private:
   Json last_response_ = nullptr;
   TokenUsage last_usage_;
   TokenUsage total_usage_;
+  unsigned last_model_attempts_ = 0; // 包含失败/无 usage 的实际 HTTP 请求次数
   mutable std::recursive_mutex session_mutex_; // 保护同一 Agent 的对话与模型执行，避免并发冲突。
 };
 
