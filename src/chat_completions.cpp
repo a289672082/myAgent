@@ -88,6 +88,10 @@ ChatCompletionsModel::ChatCompletionsModel(Config config):config_(std::move(conf
     throw std::invalid_argument("ChatCompletionsModel HTTP timeout must be positive");
 }
 Json ChatCompletionsModel::create(const Json& request) {
+  return create_with_timeout(request,{});
+}
+Json ChatCompletionsModel::create_with_timeout(const Json& request,
+    std::chrono::milliseconds timeout) {
   // Chat Completions 适配器适用于提供 OpenAI 兼容 /chat/completions 的服务；
   // Anthropic/Gemini 原生协议及音频流式调用需用户注入其他 Model 实现。
   const auto& url=config_.base_url;
@@ -133,8 +137,20 @@ Json ChatCompletionsModel::create(const Json& request) {
     payload["parallel_tool_calls"]=*parallel;
   httplib::Client client(origin);
   const auto limit=config_.http_timeout_seconds;
-  client.set_connection_timeout(std::min(limit,10u));
-  client.set_read_timeout(limit);client.set_write_timeout(limit);
+  if(timeout.count()>0) {
+    const auto actual=std::min(timeout,std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::seconds(limit)));
+    const auto connection=std::min(actual,std::chrono::milliseconds(10000));
+    client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
+                                  static_cast<time_t>((connection.count()%1000)*1000));
+    client.set_read_timeout(static_cast<time_t>(actual.count()/1000),
+                            static_cast<time_t>((actual.count()%1000)*1000));
+    client.set_write_timeout(static_cast<time_t>(actual.count()/1000),
+                             static_cast<time_t>((actual.count()%1000)*1000));
+  } else {
+    client.set_connection_timeout(std::min(limit,10u));
+    client.set_read_timeout(limit);client.set_write_timeout(limit);
+  }
   client.set_follow_location(false);
   httplib::Headers headers={{"Authorization","Bearer "+config_.api_key}};
   auto res=client.Post(target,headers,j::serialize(payload),"application/json");

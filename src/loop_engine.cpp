@@ -61,6 +61,13 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       return (options.cancelled && options.cancelled()) ||
              std::chrono::steady_clock::now() >= deadline;
     };
+    const std::function<std::chrono::milliseconds()> remaining_time=
+        deadline==std::chrono::steady_clock::time_point::max()
+        ? std::function<std::chrono::milliseconds()>{}
+        : std::function<std::chrono::milliseconds()>([&](){
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline-std::chrono::steady_clock::now());
+          });
     if (cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
     original_input = prepare_loop_input(input, result.audio_transcript);
@@ -81,7 +88,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           step_tool_results, &result.usage, &result.usage_by_phase,
           &result.usage_by_model, &compacted_history_prefix,
           &executed_effects, &options.non_idempotent_tools,
-          &options.idempotent_tools, options.protect_unclassified_tools);
+          &options.idempotent_tools, options.protect_unclassified_tools,
+          remaining_time);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -132,7 +140,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model,
         &compacted_history_prefix, &executed_effects,
         &options.non_idempotent_tools, &options.idempotent_tools,
-        options.protect_unclassified_tools);
+        options.protect_unclassified_tools, remaining_time);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);

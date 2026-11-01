@@ -107,11 +107,25 @@ void check_http(const httplib::Result& result, const std::string& endpoint) {
     throw std::runtime_error(endpoint + " HTTP " + std::to_string(result->status) + ": " + body);
   }
 }
-void configure(httplib::Client& client, unsigned timeout_seconds = 60) {
+void configure(httplib::Client& client, unsigned timeout_seconds = 60,
+               std::chrono::milliseconds remaining = {}) {
   if (!timeout_seconds) throw std::invalid_argument("HTTP timeout must be positive");
-  client.set_connection_timeout(std::min(timeout_seconds, 10u));
-  client.set_read_timeout(timeout_seconds);
-  client.set_write_timeout(timeout_seconds);
+  if(remaining.count()>0) {
+    const auto max_transport=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::seconds(timeout_seconds));
+    const auto actual=std::min(remaining,max_transport);
+    const auto seconds=static_cast<time_t>(actual.count()/1000);
+    const auto micros=static_cast<time_t>((actual.count()%1000)*1000);
+    const auto connection=std::min(actual,std::chrono::seconds(10));
+    client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
+                                  static_cast<time_t>((connection.count()%1000)*1000));
+    client.set_read_timeout(seconds,micros);
+    client.set_write_timeout(seconds,micros);
+  } else {
+    client.set_connection_timeout(std::min(timeout_seconds,10u));
+    client.set_read_timeout(timeout_seconds);
+    client.set_write_timeout(timeout_seconds);
+  }
   client.set_follow_location(false); // Never forward a bearer token on redirects.
 }
 std::string media_type(const std::filesystem::path& file) {
@@ -509,10 +523,14 @@ OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
     (void)parse_base_url(config_.audio_base_url);
 }
 Json OpenAIResponses::create(const Json& request) {
+  return create_with_timeout(request,{});
+}
+Json OpenAIResponses::create_with_timeout(const Json& request,
+    std::chrono::milliseconds timeout) {
   const auto url = parse_base_url(config_.base_url);
   const auto target = responses_target(config_, url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
+  configure(client, config_.http_timeout_seconds, timeout);
   auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
   check_http(result, target);
@@ -710,17 +728,28 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
     return json::serialize(json::object{{"isError", true}, {"message", e.what()}});
   }
 }
-std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls) {
+std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
+                       std::chrono::milliseconds max_duration) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
+  const auto deadline=max_duration.count()>0
+      ? std::chrono::steady_clock::now()+max_duration
+      : std::chrono::steady_clock::time_point::max();
+  const auto cancelled=[&](){return std::chrono::steady_clock::now()>=deadline;};
+  const std::function<std::chrono::milliseconds()> remaining=[&]() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline-std::chrono::steady_clock::now());
+  };
   const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
       model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
-      {}, nullptr, {}, "ask");
+      max_duration.count()>0?std::function<bool()>(cancelled):std::function<bool()>{},
+      nullptr, {}, "ask",nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,
+      max_duration.count()>0?remaining:std::function<std::chrono::milliseconds()>{});
   history_ = std::move(working);
   last_response_ = turn.response;
   return turn.answer;
@@ -739,8 +768,16 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     std::set<std::string>* executed_effects,
     const std::set<std::string>* protected_tools,
     const std::set<std::string>* idempotent_tools,
-    bool protect_unclassified_tools) {
+    bool protect_unclassified_tools,
+    const std::function<std::chrono::milliseconds()>& remaining_time) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
+  const auto model_timeout=[&]() {
+    if(!remaining_time)return std::chrono::milliseconds{0};
+    const auto left=remaining_time();
+    if(left.count()<=0)
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Model request deadline exceeded");
+    return left;
+  };
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
   std::map<std::string, Route> routes;
@@ -774,7 +811,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
             ? config_.model : config_.context.summary_model;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
-        const Json summary_response = model_->create(summary_request);
+        const Json summary_response = model_->create_with_timeout(summary_request,model_timeout());
         const auto usage = parse_token_usage(summary_response);
         total_usage_.add(usage);
         last_usage_.add(usage);
@@ -853,7 +890,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         "Model budget exhausted after context compression");
     ++model_calls; // Charge attempts, even when the request fails.
     if (phase == "ask") ++last_model_attempts_;
-    const Json response = model_->create(request);
+    const Json response = model_->create_with_timeout(request,model_timeout());
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
@@ -1018,6 +1055,10 @@ std::string Agent::ask(const std::string& text) { return run(text); }
 std::string Agent::ask_without_tools(const std::string& text) { return run(text, false); }
 std::string Agent::ask_without_tools(const std::string& text, unsigned max_model_calls) {
   return run(text, false, max_model_calls);
+}
+std::string Agent::ask_without_tools(const std::string& text,unsigned max_model_calls,
+    std::chrono::milliseconds max_duration) {
+  return run(text,false,max_model_calls,max_duration);
 }
 std::string Agent::ask_parts(Json content) {
   if (!content.is_array() || content.empty())

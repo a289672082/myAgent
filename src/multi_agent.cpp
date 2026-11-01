@@ -553,9 +553,14 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       if(result.model_calls >= options.max_model_calls)
         throw std::runtime_error("Coordinator model budget exhausted");
       const unsigned remaining=options.max_model_calls-result.model_calls;
+      const auto time_left=deadline==std::chrono::steady_clock::time_point::max()
+          ? std::chrono::milliseconds{0}
+          : std::max(std::chrono::milliseconds{1},
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  deadline-std::chrono::steady_clock::now()));
       std::string reply;
       try {
-        reply=coordinator_->ask_without_tools(prompt,remaining);
+        reply=coordinator_->ask_without_tools(prompt,remaining,time_left);
       } catch(...) {
         add_usage(result,"coordinator",coordinator_->last_usage());
         result.model_calls+=coordinator_->last_model_attempts();

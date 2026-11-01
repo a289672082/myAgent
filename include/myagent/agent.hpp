@@ -85,12 +85,21 @@ class Model {
 public:
   virtual ~Model() = default;
   virtual Json create(const Json& request) = 0;
+  // The default keeps injected providers source-compatible. Built-in HTTP
+  // backends override this to enforce a per-request transport deadline.
+  virtual Json create_with_timeout(const Json& request,
+                                  std::chrono::milliseconds timeout) {
+    (void)timeout;
+    return create(request);
+  }
 };
 
 class OpenAIResponses final : public Model {
 public:
   explicit OpenAIResponses(Config config);
   Json create(const Json& request) override;
+  Json create_with_timeout(const Json& request,
+                           std::chrono::milliseconds timeout) override;
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
@@ -107,6 +116,8 @@ class ChatCompletionsModel final : public Model {
 public:
   explicit ChatCompletionsModel(Config config);
   Json create(const Json& request) override;
+  Json create_with_timeout(const Json& request,
+                           std::chrono::milliseconds timeout) override;
 private:
   Config config_;
 };
@@ -177,6 +188,8 @@ public:
   // Coordinator 专用：限制这次无工具请求（包括可能触发的摘要调用）。
   // 零预算会在发送任何模型请求前被拒绝。
   std::string ask_without_tools(const std::string& text, unsigned max_model_calls);
+  std::string ask_without_tools(const std::string& text, unsigned max_model_calls,
+                                std::chrono::milliseconds max_duration);
   unsigned last_model_attempts() const { return last_model_attempts_; }
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
@@ -222,7 +235,8 @@ private:
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
   std::string run(Json user_content, bool allow_tools = true,
-                  unsigned max_model_calls = std::numeric_limits<unsigned>::max());
+                  unsigned max_model_calls = std::numeric_limits<unsigned>::max(),
+                  std::chrono::milliseconds max_duration = {});
   struct TurnResult {
     std::string answer;
     Json response;
@@ -240,7 +254,8 @@ private:
       std::set<std::string>* executed_effects = nullptr,
       const std::set<std::string>* protected_tools = nullptr,
       const std::set<std::string>* idempotent_tools = nullptr,
-      bool protect_unclassified_tools = false);
+      bool protect_unclassified_tools = false,
+      const std::function<std::chrono::milliseconds()>& remaining_time = {});
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
