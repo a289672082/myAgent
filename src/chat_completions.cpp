@@ -106,6 +106,7 @@ Json ChatCompletionsModel::create(const Json& request) {
   const std::string query=query_at==std::string::npos?"":url.substr(query_at);
   if(config_.append_responses_path) {
     while(path.size()>1 && path.back()=='/')path.pop_back();
+    if(path=="/")path.clear(); // Root origin must not produce //v1.
     if(!path.ends_with("/chat/completions")) {
       // An existing /v1 API prefix must not become /v1/v1.
       path+=(path.ends_with("/v1")?"":"/v1");
