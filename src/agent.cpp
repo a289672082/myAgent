@@ -600,12 +600,15 @@ void OpenAIResponses::speech(const std::string& text,
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
   const auto target=audio_target(config_,"speech");
-  auto result = client.Post(target, headers(config_),
-                            json::serialize(request), "application/json");
-  check_http(result, target);
-  if(result->body.size()>MaxMediaBytes)
-    throw std::runtime_error("Speech output exceeds 20 MiB limit");
-  detail::atomic_replace(output,result->body); // Never leave a partial MP3.
+  std::string audio;bool oversized=false;
+  auto result=client.Post(target,headers(config_),json::serialize(request),
+      "application/json",[&](const char* chunk,std::size_t n) {
+        if(n>MaxMediaBytes-audio.size()){oversized=true;return false;}
+        audio.append(chunk,n);return true;
+      });
+  if(oversized)throw std::runtime_error("Speech output exceeds 20 MiB");
+  check_http(result,target);
+  detail::atomic_replace(output,audio); // Never leave a partial MP3.
 }
 
 Agent::Agent(Config config, std::shared_ptr<Model> model)
