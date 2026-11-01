@@ -183,6 +183,55 @@ static void test_workspaces(const fs::path& root) {
   catch(const std::exception&){}
 #endif
 }
+static void test_loop_compaction_history_and_hard_limit() {
+  auto model=std::make_shared<Mock>();
+  std::atomic<unsigned> summaries{0};
+  model->handler=[&](const Json& request) {
+    const auto* ins=j::if_contains(request,"instructions");
+    if(ins && ins->is_string() &&
+       std::string(ins->as_string()).find("Summarize older conversation")!=std::string::npos) {
+      ++summaries;
+      return answer("PRESERVED_COMPACT_SUMMARY");
+    }
+    return answer("ok");
+  };
+  auto c=config();
+  c.context.auto_compress=true;
+  c.context.max_context_tokens=6000;
+  c.context.reserve_output_tokens=100;
+  c.context.compress_threshold=0.45;
+  c.context.keep_recent_turns=1;
+  Agent agent(c,model);
+  for(int i=0;i<3;++i)
+    assert(agent.ask("Earlier history "+std::to_string(i)+" "+std::string(350,'A'))=="ok");
+  const auto before=summaries.load();
+  const auto result=agent.react("Large current task "+std::string(9000,'B'));
+  assert(result.status==LoopStatus::Completed);
+  assert(summaries>before);
+  assert(agent.history().size()>=3);
+  assert(std::string(agent.history()[0].at("content").as_string()).find(
+    "PRESERVED_COMPACT_SUMMARY")!=std::string::npos);
+  // 继续新任务不应重新看到已被压缩的原文。
+  assert(agent.history()[0].at("content").as_string().find(
+    "Earlier history 0")==std::string::npos);
+
+  auto hard=config();
+  hard.context.auto_compress=true;
+  hard.context.max_context_tokens=3000;
+  hard.context.reserve_output_tokens=100;
+  hard.context.compress_threshold=0.7;
+  hard.context.keep_recent_turns=1;
+  Agent limited(hard,model);
+  for(int i=0;i<2;++i)
+    assert(limited.ask("Old conversation "+std::to_string(i)+" "+std::string(400,'C'))=="ok");
+  const auto history_before=j::serialize(limited.history());
+  const auto count=summaries.load();
+  const auto rejected=limited.react("Too-large uncompressible goal "+std::string(12000,'D'));
+  assert(rejected.status==LoopStatus::LimitReached);
+  assert(summaries>count);
+  // 压缩成功但最终输入仍超出硬预算，必须 fail-closed 且不写入历史。
+  assert(j::serialize(limited.history())==history_before);
+}
 int main() {
   auto root=fs::temp_directory_path()/("myagent-audit-"+std::to_string(
     std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -192,6 +241,7 @@ int main() {
     test_chat_multi_tool_calls();
     test_coordinator_hard_budget();
     test_workspaces(root);
+    test_loop_compaction_history_and_hard_limit();
   } catch(...) {fs::remove_all(root);throw;}
   fs::remove_all(root);
   std::cout<<"Audit regression suite passed\n";

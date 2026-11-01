@@ -366,6 +366,14 @@ team.add_agent(worker);
 
 `run_context_compression_demo()`、`run_agent_delegation_demo()`、`run_agent_collaboration_demo()`、`run_parallel_agents_demo()` 均为独立文件与独立 CMake 目标，包含中文说明、离线 Mock Model；`tests/test_context.cpp`、`tests/test_multi_agent.cpp` 集成到 CTest，验证上下文压缩、Token 统计、不同模型、自动委派、依赖、并发、预算和越界路径。
 
+## 源码审计修复：上下文、Checkpoint、工具与安全边界
+
+- **团队 Checkpoint v2**：分别保存已完成任务和失败/转派的旧 Agent 尝试记录，跨进程恢复后把旧 Token、模型调用、工具调用记回预算并跳过已经失败的备用 Agent。格式新增 `prior_attempts`，**不直接兼容旧 v1 文件**；旧文件必须先由宿主核对后迁移。
+- **Loop 压缩提交**：自动压缩后，会提交压缩过的原始会话前缀以及本次任务和最终答案，不把内部工具日志混入普通历史；压缩成功后仍检查包含阶段指令、检索记忆、Skill 与工具 Schema 的最终上下文预算。
+- **Chat Completions**：多个 tool_calls 被合并成同一 assistant 消息，并转发 `parallel_tool_calls` 控制。
+- **Coordinator 预算**：无工具请求可限定模型调用总数，自动压缩请求同样消耗预算；请求失败也计入调用次数。
+- **工作区安全**：POSIX 使用目录 FD、`openat`、`O_NOFOLLOW`、排他临时文件与 `renameat`；Windows 使用重解析点检查、排他 `CreateFileW` 与 `MoveFileExW`。**仍不是 OS 沙箱**。特别是 Windows 上父目录可被其他进程并发替换时，应借助 ACL、独立进程或容器隔离。任何外部 MCP 的权限仍需由服务端及 ToolPolicy 管理。
+- **验证扩展**：新增 `myagent_audit` 测试；CI 增加 Linux/Windows Release 与 Linux ASan/UBSan；Release 版测试保持 assert 检查有效。
 ## Token 消耗统计（Responses usage）
 
 Agent 直接读取每次 Responses API 返回的 `usage`，**不靠文字字符数估算**。支持普通 `ask()`、图片请求、工具调用后的模型轮次，以及全部四种 Agent Loop。每个 Loop 都会统计所有规划、执行、反思、评估阶段的用量。

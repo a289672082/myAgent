@@ -190,3 +190,18 @@ if(MYAGENT_BUILD_TESTS)
   add_test(NAME myagent COMMAND myagent_tests)
   set_tests_properties(myagent PROPERTIES TIMEOUT 30)
 endif()
+
+# Release 构建必须让测试中的 assert 继续生效：否则 -DNDEBUG 会跳过断言
+# 表达式，连表达式中的请求操作也可能不会执行。
+if(MYAGENT_BUILD_TESTS)
+  get_property(_myagent_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_target IN LISTS _myagent_targets)
+    if(_target MATCHES "^myagent_.*tests$" OR _target MATCHES "^run_.*demo$")
+      if(MSVC)
+        target_compile_options(${_target} PRIVATE "$<$<CONFIG:Release>:/UNDEBUG>")
+      else()
+        target_compile_options(${_target} PRIVATE "$<$<CONFIG:Release>:-UNDEBUG>")
+      endif()
+    endif()
+  endforeach()
+endif()
