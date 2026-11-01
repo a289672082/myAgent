@@ -94,6 +94,10 @@ void PlanManager::replace_pending(const std::string& model_json) {
   // 在修改旧计划之前，先确保新计划的 ID、依赖和容量全部合法。
   const auto replacement = parse_steps(model_json, existing, completed,
                                        max_steps_ - preserved);
+  // Retain superseded steps for auditing, but bound accumulated history.
+  if(steps_.size()>max_history_steps_ ||
+     replacement.size()>max_history_steps_-steps_.size())
+    throw std::runtime_error("Plan audit history capacity exhausted");
   Json next = json::array{};
   for (auto step : steps_.array_range()) {
     const auto status = get_status(step);
