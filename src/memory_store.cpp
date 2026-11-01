@@ -8,6 +8,10 @@
 namespace myagent {
 namespace j=mymcp::json;
 namespace {
+constexpr std::size_t MaxMemoryBytes=32*1024*1024;
+std::size_t record_bytes(const MemoryRecord& r) {
+  return j::serialize(j::object{{"id",r.id},{"content",r.content},{"metadata",r.metadata}}).size();
+}
 std::string lower(std::string s) {
   std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c){
     return static_cast<char>(std::tolower(c));
@@ -34,17 +38,26 @@ void MemoryStore::remember(MemoryRecord r) {
     throw std::invalid_argument("Memory metadata exceeds 16 KiB");
   const auto it=std::find_if(records_.begin(),records_.end(),
     [&](const MemoryRecord& x){return x.id==r.id;});
-  if(it!=records_.end())*it=std::move(r);
+  const bool replacing=it!=records_.end();
+  const std::size_t previous=replacing?record_bytes(*it):0;
+  const std::size_t fresh=record_bytes(r);
+  const std::size_t base=serialized_bytes_-previous+(!replacing&&!records_.empty()?1u:0u);
+  if(fresh>MaxMemoryBytes-base)
+    throw std::runtime_error("Memory records exceed 32 MiB save limit");
+  if(replacing)*it=std::move(r);
   else {
     if(records_.size()>=10000)throw std::runtime_error("Memory records limit reached");
     records_.push_back(std::move(r));
   }
+  serialized_bytes_=base+fresh;
 }
 bool MemoryStore::forget(const std::string& id) {
-  auto it=std::remove_if(records_.begin(),records_.end(),
+  auto it=std::find_if(records_.begin(),records_.end(),
     [&](const MemoryRecord& x){return x.id==id;});
   if(it==records_.end())return false;
-  records_.erase(it,records_.end());return true;
+  serialized_bytes_-=record_bytes(*it)+(records_.size()>1?1u:0u);
+  records_.erase(it);
+  return true;
 }
 std::vector<MemoryRecord> MemoryStore::search(const std::string& query,std::size_t top_k) const {
   struct Match {std::size_t index,score;};
