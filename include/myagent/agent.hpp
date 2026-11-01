@@ -47,6 +47,11 @@ struct Config {
   bool memory_retrieval = false; // 只有宿主明确开启才向模型提供检索出的记忆条目。
   unsigned max_memory_hits = 3;
   unsigned http_timeout_seconds = 60; // 模型 HTTP 请求读写/连接超时；不影响外部 MCP 自身超时。
+  // MCP tool discovery is incremental, with a strict per-tool and aggregate
+  // budget to avoid runaway paginated catalogs from untrusted servers.
+  std::size_t max_mcp_tools = 128;
+  std::size_t max_mcp_tool_bytes = 32 * 1024;
+  std::size_t max_mcp_catalog_bytes = 512 * 1024;
 };
 
 struct Skill {

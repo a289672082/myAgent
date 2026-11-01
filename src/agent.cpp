@@ -21,6 +21,34 @@ namespace {
 constexpr std::size_t MaxMediaBytes = 20 * 1024 * 1024;
 constexpr std::size_t MaxSkillBytes = 128 * 1024;
 constexpr std::size_t MaxToolResultBytes = 256 * 1024;
+constexpr std::size_t MaxMcpPages = 64;
+constexpr std::size_t MaxMcpToolsHard = 512;
+constexpr std::size_t MaxMcpToolBytesHard = 128 * 1024;
+constexpr std::size_t MaxMcpCatalogBytesHard = 2 * 1024 * 1024;
+
+// Conservative preflight traversal avoids serializing arbitrarily large
+// external MCP JSON. Each member consumes a little structural overhead; the
+// exact encoded JSON length is checked again after this fast bounded walk.
+bool fits_json_budget(const Json& value,std::size_t& remaining,unsigned depth=0) {
+  if(depth>48 || remaining<16)return false;
+  remaining-=16;
+  if(value.is_string()) {
+    const auto text=value.as_string_view();
+    if(text.size()>remaining)return false;
+    remaining-=text.size();
+  } else if(value.is_array()) {
+    for(const auto& item:value.array_range())
+      if(!fits_json_budget(item,remaining,depth+1))return false;
+  } else if(value.is_object()) {
+    for(const auto& entry:value.object_range()) {
+      const auto key=entry.key();
+      if(key.size()>remaining)return false;
+      remaining-=key.size();
+      if(!fits_json_budget(entry.value(),remaining,depth+1))return false;
+    }
+  }
+  return true;
+}
 
 std::string as_string(const Json& v, const std::string& key, std::string fallback = {}) {
   const Json* p = json::if_contains(v, key);
@@ -668,24 +696,65 @@ std::string Agent::instructions() const {
 }
 Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
   Json tools = json::array{};
+  const auto max_tools=std::min(config_.max_mcp_tools,MaxMcpToolsHard);
+  const auto max_tool_bytes=std::min(config_.max_mcp_tool_bytes,MaxMcpToolBytesHard);
+  const auto max_catalog_bytes=std::min(config_.max_mcp_catalog_bytes,MaxMcpCatalogBytesHard);
+  if(!max_tools || max_tool_bytes<256 || max_catalog_bytes<max_tool_bytes)
+    throw std::invalid_argument("Invalid MCP catalog limits");
+  std::size_t catalog_left=max_catalog_bytes;
+  std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
     endpoint.client->discover();
-    const Json catalog = endpoint.client->list_all("tools/list", "tools");
-    for (const auto& tool : catalog.array_range()) {
-      const auto name = as_string(tool, "name");
-      const auto qualified = endpoint.prefix + "__" + safe_tool_name(name);
-      if (qualified.size() > 64 || routes.count(qualified))
-        throw std::runtime_error("MCP tool name too long or colliding: " + qualified);
-      // 拒绝的工具不出现在模型可见目录中；执行前仍会再次做权限检查。
-      if (config_.tool_policy.access(qualified) == ToolAccess::Deny) continue;
-      routes.emplace(qualified, Route{endpoint.client, name});
-      const Json* schema = json::if_contains(tool, "inputSchema");
-      tools.push_back(json::object{{"type", "function"}, {"name", qualified},
-          {"description", as_string(tool, "description")},
-          {"parameters", schema && schema->is_object() ? *schema :
-                           Json(json::object{{"type", "object"}, {"properties", json::object{}}})},
-          {"strict", false}});
+    Json params=json::object{};
+    std::set<std::string> cursors;
+    bool exhausted=false;
+    for(std::size_t page=0;page<MaxMcpPages;++page) {
+      // Request one page at a time: Client::list_all would first accumulate
+      // every tool, potentially 10,000 pages, before enforcing our limits.
+      const Json result=endpoint.client->request("tools/list",params);
+      const Json* entries=json::if_contains(result,"tools");
+      if(!entries || !entries->is_array())
+        throw std::runtime_error("Invalid MCP tools/list page");
+      if(entries->size()>max_tools-seen_tools)
+        throw std::runtime_error("MCP tool count exceeds configured limit");
+      for(const auto& tool:entries->array_range()) {
+        if(!tool.is_object())
+          throw std::runtime_error("Malformed MCP tool description");
+        std::size_t remaining=max_tool_bytes;
+        if(!fits_json_budget(tool,remaining))
+          throw std::runtime_error("MCP tool schema/description exceeds configured limit");
+        const auto cost=max_tool_bytes-remaining;
+        if(cost>catalog_left)
+          throw std::runtime_error("MCP aggregate catalog budget exceeded");
+        catalog_left-=cost;
+        ++seen_tools;
+        const auto name=as_string(tool,"name");
+        const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
+        if(qualified.size()>64 || routes.count(qualified))
+          throw std::runtime_error("MCP tool name too long or colliding: "+qualified);
+        if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
+        routes.emplace(qualified,Route{endpoint.client,name});
+        const Json* schema=json::if_contains(tool,"inputSchema");
+        tools.push_back(json::object{{"type","function"},{"name",qualified},
+          {"description",as_string(tool,"description")},
+          {"parameters",schema && schema->is_object()?*schema:
+             Json(json::object{{"type","object"},{"properties",json::object{}}})},
+          {"strict",false}});
+      }
+      const Json* next=json::if_contains(result,"nextCursor");
+      if(!next || next->is_null()) {
+        exhausted=true;
+        break;
+      }
+      if(!next->is_string() || next->as_string_view().empty() ||
+         next->as_string_view().size()>1024)
+        throw std::runtime_error("Invalid MCP pagination cursor");
+      const std::string cursor(next->as_string());
+      if(!cursors.insert(cursor).second)
+        throw std::runtime_error("Repeated MCP pagination cursor");
+      params=json::object{{"cursor",cursor}};
     }
+    if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
   }
   if (config_.auto_skill_selection && !skills_.all().empty()) {
     // Keep built-in Skill tools separate from externally registered MCP routes.
@@ -720,12 +789,17 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
     const auto raw = as_string(call, "arguments", "{}");
     const auto args = json::parse(raw);
     if (!args.is_object()) throw std::invalid_argument("Tool arguments must be a JSON object");
-    auto result = json::serialize(route.client->call(route.native_name, args));
-    if (result.size() > MaxToolResultBytes)
+    const Json value=route.client->call(route.native_name,args);
+    std::size_t available=MaxToolResultBytes;
+    if(!fits_json_budget(value,available))
+      return R"({"isError":true,"message":"Tool output exceeds 256 KiB budget"})";
+    auto result=json::serialize(value);
+    if(result.size()>MaxToolResultBytes)
       return R"({"isError":true,"message":"Tool output exceeds 256 KiB limit"})";
     return result;
   } catch (const std::exception& e) {
-    return json::serialize(json::object{{"isError", true}, {"message", e.what()}});
+    return json::serialize(json::object{{"isError", true},
+      {"message", std::string(e.what()).substr(0,1024)}});
   }
 }
 std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
