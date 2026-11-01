@@ -1,6 +1,7 @@
 #pragma once
 // P2：轻量长期记忆与关键词检索。不是向量数据库，也不执行检索文本里的指令。
 #include "mymcp/mcp.hpp"
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -20,5 +21,6 @@ public:
   void load(const std::filesystem::path& file);
 private:
   std::vector<MemoryRecord> records_;
+  std::size_t serialized_bytes_ = 2; // Exact serialized JSON array size.
 };
 } // namespace myagent
