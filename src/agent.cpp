@@ -38,11 +38,7 @@ std::string trim(std::string s) {
 std::string read_bounded_file(const std::filesystem::path& file, std::size_t limit) {
   return detail::read_regular_file(file,limit);
 }
-void write_file(const std::filesystem::path& file, const std::string& data) {
-  std::ofstream out(file, std::ios::binary | std::ios::trunc);
-  if (!out || !out.write(data.data(), static_cast<std::streamsize>(data.size())))
-    throw std::runtime_error("Cannot write: " + file.string());
-}
+// Persisted outputs are written through detail::atomic_replace.
 std::string base64(const std::string& input) {
   static constexpr char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -537,13 +533,14 @@ Json OpenAIResponses::create_with_timeout(const Json& request,
   return json::parse(result->body);
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
-                                        const std::string& model) const {
+                                        const std::string& model,
+                                        std::chrono::milliseconds timeout) const {
   const std::string bytes = read_bounded_file(file, MaxMediaBytes);
   // The optional audio gateway can have its own origin and route prefix.
   const auto url = parse_base_url(config_.audio_base_url.empty()?
       config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
+  configure(client, config_.http_timeout_seconds,timeout);
   httplib::UploadFormDataItems items = {
     {"file", bytes, file.filename().string(), "application/octet-stream"},
     {"model", model, "", ""}
@@ -558,18 +555,21 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
 }
 void OpenAIResponses::speech(const std::string& text,
                              const std::filesystem::path& output,
-                             const std::string& voice, const std::string& model) const {
+                             const std::string& voice, const std::string& model,
+                             std::chrono::milliseconds timeout) const {
   const auto url = parse_base_url(config_.audio_base_url.empty()?
       config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
+  configure(client, config_.http_timeout_seconds,timeout);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
   const auto target=audio_target(config_,"speech");
   auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
   check_http(result, target);
-  write_file(output, result->body); // MP3 bytes; caller chooses destination filename.
+  if(result->body.size()>MaxMediaBytes)
+    throw std::runtime_error("Speech output exceeds 20 MiB limit");
+  detail::atomic_replace(output,result->body); // Never leave a partial MP3.
 }
 
 Agent::Agent(Config config, std::shared_ptr<Model> model)
@@ -1035,13 +1035,17 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
   throw detail::LoopAbort(LoopStatus::LimitReached, "Tool round limit reached");
 }
 
-Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript) {
+Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript,
+    const std::function<std::chrono::milliseconds()>& remaining_time) {
   std::string text = input.text;
   if (!input.audio.empty()) {
     const auto backend = std::dynamic_pointer_cast<OpenAIResponses>(model_);
     if (!backend)
       throw std::logic_error("Audio input requires OpenAIResponses transcription backend");
-    transcript = backend->transcribe(input.audio);
+    const auto remaining=remaining_time?remaining_time():std::chrono::milliseconds{0};
+    if(remaining_time && remaining.count()<=0)
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Audio transcription deadline exceeded");
+    transcript = backend->transcribe(input.audio,"gpt-4o-mini-transcribe",remaining);
     if (!text.empty()) text += "\n\n";
     text += "Audio transcript:\n" + transcript;
   }
@@ -1089,10 +1093,10 @@ std::string Agent::ask_audio(const std::filesystem::path& file, const std::strin
              transcript);
 }
 void Agent::speak(const std::string& text, const std::filesystem::path& output,
-                  const std::string& voice) {
+                  const std::string& voice,std::chrono::milliseconds timeout) {
   auto openai = std::dynamic_pointer_cast<OpenAIResponses>(model_);
   if (!openai) throw std::logic_error("speak requires OpenAIResponses model backend");
-  openai->speech(text, output, voice);
+  openai->speech(text, output, voice,"gpt-4o-mini-tts",timeout);
 }
 CompressionResult Agent::compress_context() {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
