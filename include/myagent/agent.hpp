@@ -103,10 +103,12 @@ public:
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
-                         const std::string& model = "gpt-4o-mini-transcribe") const;
+                         const std::string& model = "gpt-4o-mini-transcribe",
+                         std::chrono::milliseconds timeout = {}) const;
   void speech(const std::string& text, const std::filesystem::path& output,
               const std::string& voice = "alloy",
-              const std::string& model = "gpt-4o-mini-tts") const;
+              const std::string& model = "gpt-4o-mini-tts",
+              std::chrono::milliseconds timeout = {}) const;
 private:
   Config config_;
 };
@@ -198,7 +200,8 @@ public:
   std::string ask_audio(const std::filesystem::path& audio,
                         const std::string& question = {});
   void speak(const std::string& text, const std::filesystem::path& output,
-             const std::string& voice = "alloy");
+             const std::string& voice = "alloy",
+             std::chrono::milliseconds timeout = {});
 
   // 统计全部从 Responses API 的 usage 字段读取；不进行文本字符估算。
   // last_usage()：上一次 ask()/Loop 的调用（即便最终失败，也保留已收到的用量）。
@@ -256,7 +259,8 @@ private:
       const std::set<std::string>* idempotent_tools = nullptr,
       bool protect_unclassified_tools = false,
       const std::function<std::chrono::milliseconds()>& remaining_time = {});
-  Json prepare_loop_input(const LoopInput& input, std::string& transcript);
+  Json prepare_loop_input(const LoopInput& input, std::string& transcript,
+      const std::function<std::chrono::milliseconds()>& remaining_time = {});
 
   Config config_;
   ContextManager context_;
