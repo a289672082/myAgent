@@ -161,6 +161,7 @@ static void test_config_transaction_and_workspace(const fs::path& root) {
     assert(false);
   }catch(const std::exception&){}
   try{(void)team.agent("worker");assert(false);}catch(const std::out_of_range&){}
+  assert(!fs::exists(dir/"nested-work")); // Newly created empty dirs rolled back.
   write_config(false);
   team.add_agents_from_file(config_file,[](const std::string&){return "offline";});
   assert(fs::is_directory(dir/"nested-work"));
@@ -181,7 +182,8 @@ static void test_replay_guard() {
   agent.tool("write","non-idempotent write",[&](std::string){++effects;return true;},
              mymcp::arg<std::string>("path"));
   LoopOptions options;
-  options.non_idempotent_tools.insert("local__write");
+  // Protect unknown tool names by default; callers opt safe read-only tools out.
+  assert(options.protect_unclassified_tools);
   options.max_iterations=6;
   const auto result=agent.react("write once",options);
   assert(result.status==LoopStatus::Completed);
@@ -193,6 +195,52 @@ static void test_replay_guard() {
       blocked=true;
   }
   assert(blocked);
+}
+static void test_memory_save_and_metadata(const fs::path& root) {
+  MemoryStore memory;
+  memory.remember({"note","Hello memory",j::object{{"topic","test"}}});
+  const auto file=root/"memory.json";
+  memory.save(file);
+  memory.remember({"more","Extra item",j::object{}});
+  memory.save(file); // Existing destination must be replaceable on Windows.
+  MemoryStore loaded;
+  loaded.load(file);
+  assert(loaded.all().size()==2);
+  try {
+    memory.remember({"huge","body",j::object{{"blob",std::string(17000,'a')}}});
+    assert(false);
+  }catch(const std::invalid_argument&){}
+  assert(memory.all().size()==2);
+}
+static void test_handoff_budget(const fs::path& root) {
+  auto model=std::make_shared<Mock>();
+  std::atomic<std::size_t> longest{0};
+  model->reply=[&](const Json& request) {
+    const auto& input=request.at("input");
+    for(const auto& entry:input.array_range()) {
+      if(!entry.is_object())continue;
+      const auto* role=j::if_contains(entry,"role");
+      const auto* content=j::if_contains(entry,"content");
+      if(role && role->is_string() && role->as_string()=="user" &&
+         content && content->is_string()) {
+        const auto value=std::string(content->as_string());
+        longest=std::max(longest.load(),value.size());
+      }
+    }
+    return answer(std::string(800,'x'));
+  };
+  AgentTeam team(settings(),std::make_shared<Mock>());
+  AgentSpec spec;spec.name="worker";spec.description="worker";spec.config=settings();
+  team.add_agent(spec,model);
+  TeamTask first;first.id="first";first.agent="worker";first.description="First";
+  TeamTask second;second.id="second";second.agent="worker";
+  second.description="Second";second.depends_on={"first"};
+  second.context.goal="A very long goal: "+std::string(700,'x');
+  second.context.relevant_context=j::object{{"blob",std::string(5000,'z')}};
+  TeamOptions opts;opts.max_handoff_chars=115;
+  const auto result=team.collaborate({first,second},opts);
+  assert(result.status==TeamStatus::Completed);
+  assert(longest.load()<=opts.max_handoff_chars);
 }
 int main() {
   const auto root=fs::temp_directory_path()/
@@ -207,6 +255,8 @@ int main() {
     test_worker_cancellation_and_deadline();
     test_config_transaction_and_workspace(root);
     test_replay_guard();
+    test_memory_save_and_metadata(root);
+    test_handoff_budget(root);
   }catch(...){fs::remove_all(root);throw;}
   fs::remove_all(root);
   std::cout<<"Full audit regression tests OK\n";

@@ -602,3 +602,13 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 - **Offline tests**: `myagent_full_audit` checks protocol URLs, stop reasons, token overflow guarantees, empty output, history safety, cancellation/timeout, YAML rollback, and non-idempotent replay guards.
 
 For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow only necessary tools, review discovered Skills, and enforce permissions at MCP servers and OS/container boundaries.
+
+### Follow-up audit: 2026-11-01
+
+- Historical v2 restores avoid jsoncons sub-object self-assignment; this regression is covered by Linux AddressSanitizer.
+- `LoopOptions.protect_unclassified_tools=true` now blocks repeated identical calls to unknown MCP tools during one loop. Add verified read-only tools to `LoopOptions.idempotent_tools`; explicit `non_idempotent_tools` always take precedence. These guards are per run, not a transactional external-system ledger.
+- `TeamOptions.timeout` is propagated to the built-in Responses and Chat Completions HTTP transports on a per-request basis. Third-party `Model` implementations may override `create_with_timeout` to support it; MCP tools and non-cooperative custom models cannot be hard-interrupted safely.
+- History and memory saves use same-directory durable atomic replacement. Checkpoint writes additionally refuse concurrent writers via `<path>.lock` directory. If the process crashes during a write, the operator may need to remove a stale lock **after** checking no writer remains.
+- Media/history/checkpoint/memory reads verify an opened regular-file handle and enforce byte limits, rejecting final symlink/reparse point or FIFO paths.
+- Worker handoff budgets now include task descriptions, dependency results and optional structured context under one aggregate byte budget.
+- YAML agent-registration rollback removes only newly created empty workspace directories; pre-existing files and directories are never recursively deleted.
