@@ -46,6 +46,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                            const LoopOptions& options) {
   const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
+  Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
@@ -77,7 +78,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           options.max_model_calls, options.max_tool_calls, max_rounds,
           cancelled, &result.trace, options.on_event, phase,
           step_tool_results, &result.usage, &result.usage_by_phase,
-          &result.usage_by_model);
+          &result.usage_by_model, &compacted_history_prefix);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -125,7 +126,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         options.max_model_calls, options.max_tool_calls,
         std::min(config_.max_tool_rounds, options.max_iterations - 1),
         cancelled, &result.trace, options.on_event, "react",
-        nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model);
+        nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model,
+        &compacted_history_prefix);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);
@@ -336,7 +338,10 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       result.speech_output = options.speech_output;
     }
     if (options.commit_to_history) {
-      Json committed = history_;
+      // 压缩在 working 中发生时，提交已压缩的原始历史而不是重新使用
+      // 未压缩的 history_；只保留原始会话及本次最终答案，不回写内部工具轨迹。
+      Json committed = compacted_history_prefix.empty()
+          ? history_ : compacted_history_prefix;
       committed.push_back(json::object{{"role", "user"}, {"content", original_input}});
       committed.push_back(json::object{{"role", "assistant"}, {"content", result.answer}});
       if (committed.size() > config_.max_history_items)

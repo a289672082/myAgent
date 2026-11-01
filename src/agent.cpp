@@ -655,14 +655,15 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
     return json::serialize(json::object{{"isError", true}, {"message", e.what()}});
   }
 }
-std::string Agent::run(Json user_content, bool allow_tools) {
+std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
+  last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
   const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
-      model_calls, tool_calls, std::numeric_limits<unsigned>::max(),
+      model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
       {}, nullptr, {}, "ask");
   history_ = std::move(working);
@@ -678,7 +679,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const std::function<void(const Json&)>& on_event, const std::string& phase,
     Json* step_tool_results, TokenUsage* run_usage,
     std::map<std::string, TokenUsage>* usage_by_phase,
-    std::map<std::string, TokenUsage>* usage_by_model) {
+    std::map<std::string, TokenUsage>* usage_by_model,
+    Json* compacted_history_prefix) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
@@ -707,6 +709,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         summary_request["model"] = config_.context.summary_model.empty()
             ? config_.model : config_.context.summary_model;
         ++model_calls;
+        if (phase == "ask") ++last_model_attempts_;
         const Json summary_response = model_->create(summary_request);
         const auto usage = parse_token_usage(summary_response);
         total_usage_.add(usage);
@@ -719,6 +722,24 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           {"unreported_calls",usage.unreported_calls}});
         return summary_response;
       }, true);
+      if (compaction.compressed && compacted_history_prefix) {
+        // Loop 在单独的 working 中执行；必须把压缩摘要和仍保留的原始
+        // 会话完整轮次传给提交逻辑。不能将阶段中的工具输出当作普通历史。
+        Json compacted=json::array{};
+        compacted.push_back(proposed[0]);
+        std::size_t best_begin=history_.size(), best_len=0;
+        for(std::size_t begin=0;begin<history_.size();++begin) {
+          std::size_t len=0;
+          while(begin+len<history_.size() && 1+len<proposed.size() &&
+                json::serialize(history_[begin+len]) ==
+                json::serialize(proposed[1+len])) ++len;
+          if(len>best_len) {best_len=len;best_begin=begin;}
+        }
+        if(best_begin<history_.size())
+          for(std::size_t i=0;i<best_len;++i)
+            compacted.push_back(history_[best_begin+i]);
+        *compacted_history_prefix=std::move(compacted);
+      }
       // 早期阈值仅是触发信号。若旧轮次不足但尚未超越硬预算，
       // 允许继续；真正无法缩小且超出硬预算时明确失败。
       if (!compaction.compressed &&
@@ -742,6 +763,17 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           prompt += "- ["+record.id+"] "+record.content.substr(0,1200)+"\n";
       }
     }
+    // 压缩“成功”只代表历史变短，不代表最终请求一定能放进上下文。
+    // 必须计入完整阶段指令、Skills、检索记忆、工具 Schema 后重新检查。
+    if(config_.context.auto_compress && config_.context.max_context_tokens) {
+      const std::size_t estimate=context_.stats(proposed).estimated_tokens;
+      const std::size_t extra=(prompt.size()+json::serialize(tools).size())/3+128;
+      const std::size_t available=config_.context.max_context_tokens -
+          config_.context.reserve_output_tokens;
+      if(estimate>=available || extra>=available-estimate)
+        throw detail::LoopAbort(LoopStatus::LimitReached,
+          "Context budget exceeded after compaction and prompt construction");
+    }
     Json request = json::object{
       {"model", model_override.empty() ? config_.model : model_override},
       {"instructions", prompt},
@@ -750,7 +782,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       {"parallel_tool_calls", false}
     };
     if (!tools.empty()) request["tools"] = tools;
+    // Auto compaction may have consumed the final request slot earlier in this
+    // same iteration. Check again immediately before making the main request.
+    if(model_calls >= max_model_calls)
+      throw detail::LoopAbort(LoopStatus::LimitReached,
+        "Model budget exhausted after context compression");
     ++model_calls; // Charge attempts, even when the request fails.
+    if (phase == "ask") ++last_model_attempts_;
     const Json response = model_->create(request);
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
@@ -896,6 +934,9 @@ Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript) 
 }
 std::string Agent::ask(const std::string& text) { return run(text); }
 std::string Agent::ask_without_tools(const std::string& text) { return run(text, false); }
+std::string Agent::ask_without_tools(const std::string& text, unsigned max_model_calls) {
+  return run(text, false, max_model_calls);
+}
 std::string Agent::ask_parts(Json content) {
   if (!content.is_array() || content.empty())
     throw std::invalid_argument("ask_parts requires a nonempty array of content parts");

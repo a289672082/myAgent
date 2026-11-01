@@ -31,3 +31,53 @@ jobs:
         run: cmake --build build --config Debug --parallel 2
       - name: Tests
         run: ctest --test-dir build -C Debug --output-on-failure
+
+  linux-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
+      - name: Configure Release
+        run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build Release
+        run: cmake --build build-release --parallel 2
+      - name: Test Release
+        run: ctest --test-dir build-release --output-on-failure
+
+  linux-sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
+      - name: Configure ASan and UBSan
+        run: >
+          cmake -S . -B build-sanitized -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build with sanitizers
+        run: cmake --build build-sanitized --parallel 2
+      - name: Test with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitized --output-on-failure
+
+  windows-release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure Release
+        run: cmake -S . -B build-release -A x64
+      - name: Build Release
+        run: cmake --build build-release --config Release --parallel 2
+      - name: Test Release
+        run: ctest --test-dir build-release -C Release --output-on-failure

@@ -38,11 +38,18 @@ Json chat_messages(const Json& response_input,const std::string& instructions) {
   for(const auto& item:response_input.array_range()) {
     const auto type=field(item,"type");
     if(type=="function_call") {
-      result.push_back(j::object{{"role","assistant"},{"content",nullptr},
-        {"tool_calls",j::array{j::object{
-          {"id",field(item,"call_id")},{"type","function"},
-          {"function",j::object{{"name",field(item,"name")},
-                                 {"arguments",field(item,"arguments")}}}}}}});
+      const Json call=j::object{{"id",field(item,"call_id")},{"type","function"},
+        {"function",j::object{{"name",field(item,"name")},
+                              {"arguments",field(item,"arguments")}}}};
+      // Responses 的多个 function_call 属于同一模型回复。Chat Completions
+      // 需要一条 assistant 消息携带全部 tool_calls，而不是多条相邻 assistant。
+      if(!result.empty() && field(result[result.size()-1],"role")=="assistant" &&
+         j::if_contains(result[result.size()-1],"tool_calls")) {
+        result[result.size()-1]["tool_calls"].push_back(call);
+      } else {
+        result.push_back(j::object{{"role","assistant"},{"content",nullptr},
+          {"tool_calls",j::array{call}}});
+      }
     } else if(type=="function_call_output") {
       result.push_back(j::object{{"role","tool"},
         {"tool_call_id",field(item,"call_id")},{"content",field(item,"output")}});
@@ -104,6 +111,11 @@ Json ChatCompletionsModel::create(const Json& request) {
           {"description",item.at("description")},{"parameters",item.at("parameters")}}}});
     payload["tools"]=std::move(definitions);
   }
+  // Forward the backend's desired tool concurrency instead of allowing the
+  // Chat provider to silently return multiple tool calls when disabled.
+  if(const auto* parallel=j::if_contains(request,"parallel_tool_calls");
+     parallel && parallel->is_bool())
+    payload["parallel_tool_calls"]=*parallel;
   httplib::Client client(origin);
   const auto limit=config_.http_timeout_seconds;
   client.set_connection_timeout(std::min(limit,10u));

@@ -77,7 +77,11 @@ static void test_auto_and_working_history() {
   assert(agent.total_usage().reported_calls>6);
   // 压缩后的历史依旧能进入四种 Loop 的共同执行路径。
   auto result=agent.react("继续任务");
-  assert(result.status==LoopStatus::Completed);
+  // 若摘要已不足以把整个请求缩到模型预算之内，必须明确 LimitReached，
+  // 不再向模型发送超限请求；这不是模型调用失败或历史损坏。
+  assert(result.status==LoopStatus::Completed || result.status==LoopStatus::LimitReached);
+  if (result.status==LoopStatus::LimitReached)
+    assert(result.error.find("Context budget")!=std::string::npos);
 }
 static void test_preserve_full_tool_turn() {
   auto mock=std::make_shared<Mock>();
