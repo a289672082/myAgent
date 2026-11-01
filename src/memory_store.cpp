@@ -69,6 +69,8 @@ void MemoryStore::save(const std::filesystem::path& file) const {
     data.push_back(mymcp::json::object{{"id",r.id},{"content",r.content},
                                        {"metadata",r.metadata}});
   const auto bytes=mymcp::json::serialize(data);
+  if(bytes.size()>32*1024*1024)
+    throw std::runtime_error("Memory save exceeds the 32 MiB load limit");
   std::ofstream output(file,std::ios::binary|std::ios::trunc);
   if(!output)throw std::runtime_error("Cannot save memory");
   output.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));

@@ -1092,14 +1092,32 @@ void Agent::clear_history() {
 }
 void Agent::save_history(const std::filesystem::path& file) const {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  const auto content=json::serialize(history_);
+  // v2 identifies the protocol and model, allowing incompatible restores to
+  // fail closed instead of silently sending history to a different backend.
+  const Json envelope=json::object{
+    {"format","myagent-history-v2"},
+    {"model",config_.model},
+    {"protocol",static_cast<int>(config_.model_protocol)},
+    {"messages",history_}};
+  const auto content=json::serialize(envelope);
   if(content.size()>8*1024*1024)
     throw std::runtime_error("History save exceeds the 8 MiB load limit");
   write_file(file,content);
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  Json data = json::parse(read_bounded_file(file, 8 * 1024 * 1024));
+  Json data=json::parse(read_bounded_file(file,8*1024*1024));
+  if(data.is_object()) {
+    if(as_string(data,"format")!="myagent-history-v2" ||
+       as_string(data,"model")!=config_.model ||
+       !json::if_contains(data,"protocol") ||
+       !data.at("protocol").is_int64() ||
+       data.at("protocol").as<int>()!=static_cast<int>(config_.model_protocol) ||
+       !json::if_contains(data,"messages"))
+      throw std::runtime_error("History format, model or protocol mismatch");
+    data=data.at("messages");
+  }
+  // Legacy array-only histories are allowed after strict structural validation.
   if (!data.is_array() || data.size() > config_.max_history_items)
     throw std::runtime_error("Invalid history file");
   validate_history(data);
