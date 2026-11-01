@@ -723,10 +723,12 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
         std::size_t remaining=max_tool_bytes;
         if(!fits_json_budget(tool,remaining))
           throw std::runtime_error("MCP tool schema/description exceeds configured limit");
-        const auto cost=max_tool_bytes-remaining;
-        if(cost>catalog_left)
-          throw std::runtime_error("MCP aggregate catalog budget exceeded");
-        catalog_left-=cost;
+        // The walk is a cheap allocation guard; only exact encoded bytes
+        // count against the externally configurable catalog budget.
+        const auto exact_bytes=json::serialize(tool).size();
+        if(exact_bytes>max_tool_bytes || exact_bytes>catalog_left)
+          throw std::runtime_error("MCP aggregate/per-tool encoded budget exceeded");
+        catalog_left-=exact_bytes;
         ++seen_tools;
         const auto name=as_string(tool,"name");
         const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
