@@ -1,11 +1,11 @@
 name: C++20 Agent build and tests
 on:
   push:
-    branches: [main, 'feature/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
-# Two events (push + PR) and many successive fix commits used to create
-# redundant stale 5-platform runs. Only the newest head matters per branch.
+# Feature branches with PRs are tested once via pull_request, instead of
+# competing push and PR runs canceling each other's five-platform jobs.
 concurrency:
   group: myagent-ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
