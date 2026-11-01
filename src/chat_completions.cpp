@@ -153,11 +153,19 @@ Json ChatCompletionsModel::create_with_timeout(const Json& request,
   }
   client.set_follow_location(false);
   httplib::Headers headers={{"Authorization","Bearer "+config_.api_key}};
-  auto res=client.Post(target,headers,j::serialize(payload),"application/json");
+  // An untrusted gateway must not allocate an unbounded response body.
+  constexpr std::size_t MaxJsonBytes=8*1024*1024;
+  std::string body;bool oversized=false;
+  auto res=client.Post(target,headers,j::serialize(payload),"application/json",
+      [&](const char* chunk,std::size_t n) {
+        if(n>MaxJsonBytes-body.size()){oversized=true;return false;}
+        body.append(chunk,n);return true;
+      });
+  if(oversized)throw std::runtime_error("Chat HTTP response exceeds 8 MiB");
   if(!res)throw std::runtime_error("Chat HTTP transport failed: "+httplib::to_string(res.error()));
   if(res->status<200||res->status>=300)
     throw std::runtime_error("Chat HTTP "+std::to_string(res->status));
-  const auto json=j::parse(res->body);
+  const auto json=j::parse(body);
   const auto* choices=j::if_contains(json,"choices");
   if(!choices||!choices->is_array()||choices->empty())
     throw std::runtime_error("Chat Completions missing choices");
