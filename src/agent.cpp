@@ -693,7 +693,8 @@ std::string Agent::instructions() const {
   std::string result = config_.instructions;
   for (const auto& [name, content] : manual_skill_contents_)
     result += "\n\n# Explicit Skill: " + name + "\n" + content;
-  if (config_.auto_skill_selection && !skills_.all().empty()) {
+  if (!config_.strict_process_isolation &&
+      config_.auto_skill_selection && !skills_.all().empty()) {
     result += "\n\n# Available Skills (metadata only)\n"
               "Use agent_skill_load with the matching skill name when a task "
               "would benefit from its instructions. Do not load irrelevant "
