@@ -47,6 +47,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
   Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
+  std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
@@ -78,7 +79,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           options.max_model_calls, options.max_tool_calls, max_rounds,
           cancelled, &result.trace, options.on_event, phase,
           step_tool_results, &result.usage, &result.usage_by_phase,
-          &result.usage_by_model, &compacted_history_prefix);
+          &result.usage_by_model, &compacted_history_prefix,
+          &executed_effects, &options.non_idempotent_tools);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -127,7 +129,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         std::min(config_.max_tool_rounds, options.max_iterations - 1),
         cancelled, &result.trace, options.on_event, "react",
         nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model,
-        &compacted_history_prefix);
+        &compacted_history_prefix, &executed_effects,
+        &options.non_idempotent_tools);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);

@@ -758,7 +758,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     Json* step_tool_results, TokenUsage* run_usage,
     std::map<std::string, TokenUsage>* usage_by_phase,
     std::map<std::string, TokenUsage>* usage_by_model,
-    Json* compacted_history_prefix) {
+    Json* compacted_history_prefix,
+    std::set<std::string>* executed_effects,
+    const std::set<std::string>* protected_tools) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
@@ -933,9 +935,21 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         if (!args.is_object()) throw std::invalid_argument("Tool arguments must be object");
         permitted = config_.tool_policy.authorize(ToolRequest{config_.agent_id, name, args, phase});
       } catch (const std::exception&) { permitted = false; }
+      bool duplicate_effect=false;
+      if(permitted && executed_effects && protected_tools &&
+         protected_tools->count(name)) {
+        // Persist the intent before making the tool call. Even if the call's
+        // result is unknown, an automatic replan must not replay that intent.
+        const auto canonical=json::serialize(
+            json::parse(as_string(item,"arguments","{}")));
+        duplicate_effect=!executed_effects->insert(name+"\n"+canonical).second;
+      }
       if (!permitted) {
         tool_output = R"({"isError":true,"message":"Tool permission denied or approval missing"})";
         emit(json::object{{"phase",phase},{"event","tool_denied"},{"name",name}});
+      } else if(duplicate_effect) {
+        tool_output=R"({"isError":true,"message":"Repeated non-idempotent tool call blocked"})";
+        emit(json::object{{"phase",phase},{"event","tool_replay_blocked"},{"name",name}});
       } else if (name == "agent_skill_load" || name == "agent_skill_read_file") {
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");

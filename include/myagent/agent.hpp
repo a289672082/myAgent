@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <limits>
 #include <string>
@@ -235,7 +236,9 @@ private:
       Json* step_tool_results = nullptr, TokenUsage* run_usage = nullptr,
       std::map<std::string, TokenUsage>* usage_by_phase = nullptr,
       std::map<std::string, TokenUsage>* usage_by_model = nullptr,
-      Json* compacted_history_prefix = nullptr);
+      Json* compacted_history_prefix = nullptr,
+      std::set<std::string>* executed_effects = nullptr,
+      const std::set<std::string>* protected_tools = nullptr);
   Json prepare_loop_input(const LoopInput& input, std::string& transcript);
 
   Config config_;
