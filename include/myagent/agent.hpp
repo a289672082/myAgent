@@ -276,6 +276,9 @@ private:
   SkillLibrary skills_;
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   Json history_ = json::array{};
+  mutable std::filesystem::path history_revision_path_;
+  mutable std::string history_revision_bytes_;
+  mutable bool has_history_revision_=false;
   Json last_response_ = nullptr;
   TokenUsage last_usage_;
   TokenUsage total_usage_;

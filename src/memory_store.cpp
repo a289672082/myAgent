@@ -89,9 +89,13 @@ void MemoryStore::save(const std::filesystem::path& file) const {
   const auto bytes=mymcp::json::serialize(data);
   if(bytes.size()>32*1024*1024)
     throw std::runtime_error("Memory save exceeds the 32 MiB load limit");
-  // Serialize writers across processes. Concurrent saves fail instead of
-  // silently overwriting an in-progress replacement.
-  detail::atomic_replace(file,bytes,true);
+  const auto destination=std::filesystem::absolute(file).lexically_normal();
+  const std::string* expected=has_persisted_version_ && destination==persisted_path_
+      ? &persisted_bytes_:nullptr;
+  detail::atomic_replace(file,bytes,true,expected);
+  persisted_path_=destination;
+  persisted_bytes_=bytes;
+  has_persisted_version_=true;
 }
 void MemoryStore::load(const std::filesystem::path& file) {
   const auto bytes=detail::read_regular_file(file,32*1024*1024);
@@ -110,5 +114,8 @@ void MemoryStore::load(const std::filesystem::path& file) {
       id,std::string(entry.at("content").as_string()),entry.at("metadata")});
   }
   *this=std::move(candidate);
+  persisted_path_=std::filesystem::absolute(file).lexically_normal();
+  persisted_bytes_=bytes;
+  has_persisted_version_=true;
 }
 } // namespace myagent

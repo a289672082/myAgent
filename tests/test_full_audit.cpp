@@ -251,10 +251,26 @@ static void test_memory_save_and_metadata(const fs::path& root) {
     catch(const std::runtime_error&) {hit_limit=true;break;}
   }
   assert(hit_limit);
-  capped.save(file);
+  const auto capped_file=root/"capped-memory.json";
+  capped.save(capped_file);
   MemoryStore restored;
-  restored.load(file);
+  restored.load(capped_file);
   assert(restored.all().size()==capped.all().size());
+
+  // Two processes can load a common version; only the first update may save.
+  MemoryStore first_writer,stale_writer;
+  first_writer.load(file);
+  stale_writer.load(file);
+  first_writer.remember({"winner","saved",j::object{}});
+  first_writer.save(file);
+  stale_writer.remember({"loser","stale",j::object{}});
+  try {
+    stale_writer.save(file);
+    assert(false);
+  }catch(const std::runtime_error&){}
+  MemoryStore verified;
+  verified.load(file);
+  assert(verified.all().size()==2);
 
   // The load operation must be transactional, rejecting duplicate IDs
   // rather than silently replacing a previous record.
@@ -276,8 +292,14 @@ static void test_memory_save_and_metadata(const fs::path& root) {
     assert(false);
   }catch(const std::runtime_error&){}
   fs::remove(lock_path);
-  memory.save(file);
-  loaded.load(file);
+  // This instance has a stale revision: save must still reject that overwrite.
+  try {
+    memory.save(file);
+    assert(false);
+  }catch(const std::runtime_error&){}
+  const auto separate=root/"new-memory.json";
+  memory.save(separate);
+  loaded.load(separate);
   assert(loaded.all().size()==1);
 }
 static void test_handoff_budget(const fs::path& root) {

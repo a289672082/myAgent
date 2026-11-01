@@ -22,5 +22,9 @@ public:
 private:
   std::vector<MemoryRecord> records_;
   std::size_t serialized_bytes_ = 2; // Exact serialized JSON array size.
+  // Compare-and-replace snapshot; mutable because save() is logically const.
+  mutable std::filesystem::path persisted_path_;
+  mutable std::string persisted_bytes_;
+  mutable bool has_persisted_version_=false;
 };
 } // namespace myagent

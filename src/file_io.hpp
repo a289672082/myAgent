@@ -10,5 +10,6 @@ std::string read_regular_file(const std::filesystem::path& file,std::size_t limi
 // single_writer=true also refuses concurrent writes from other processes
 // through a lock directory (stale locks must be removed manually after crash).
 void atomic_replace(const std::filesystem::path& path,const std::string& data,
-                    bool single_writer=false);
+                    bool single_writer=false,
+                    const std::string* expected_previous=nullptr);
 } // namespace myagent::detail

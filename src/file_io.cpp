@@ -88,9 +88,19 @@ std::string read_regular_file(const fs::path& path,std::size_t limit) {
   return result;
 #endif
 }
-void atomic_replace(const fs::path& path,const std::string& data,bool single_writer) {
+void atomic_replace(const fs::path& path,const std::string& data,bool single_writer,
+                    const std::string* expected_previous) {
   if(path.empty())throw std::invalid_argument("Empty output path");
+  if(expected_previous && !single_writer)
+    throw std::invalid_argument("Revision checking requires exclusive writer lock");
   SingleWriter lock(path,single_writer);
+  // Compare contents UNDER the interprocess lock: separate processes that
+  // loaded the same old revision cannot silently overwrite each other's edits.
+  if(expected_previous) {
+    const auto current=read_regular_file(path,expected_previous->size());
+    if(current!=*expected_previous)
+      throw std::runtime_error("Save conflict: file changed since last load/save");
+  }
   fs::path temp=path;
   temp+="."+std::to_string(std::chrono::steady_clock::now()
       .time_since_epoch().count())+"-"+std::to_string(counter++)+".tmp";

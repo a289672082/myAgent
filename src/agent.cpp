@@ -1226,12 +1226,18 @@ void Agent::save_history(const std::filesystem::path& file) const {
   const auto content=json::serialize(envelope);
   if(content.size()>8*1024*1024)
     throw std::runtime_error("History save exceeds the 8 MiB load limit");
-  // Lock the destination against overlapping cross-process saves.
-  detail::atomic_replace(file,content,true);
+  const auto destination=std::filesystem::absolute(file).lexically_normal();
+  const std::string* expected=has_history_revision_ && destination==history_revision_path_
+      ? &history_revision_bytes_:nullptr;
+  detail::atomic_replace(file,content,true,expected);
+  history_revision_path_=destination;
+  history_revision_bytes_=content;
+  has_history_revision_=true;
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  Json data=json::parse(read_bounded_file(file,8*1024*1024));
+  const auto bytes=read_bounded_file(file,8*1024*1024);
+  Json data=json::parse(bytes);
   if(data.is_object()) {
     if(as_string(data,"format")!="myagent-history-v2" ||
        as_string(data,"model")!=config_.model ||
@@ -1250,6 +1256,9 @@ void Agent::load_history(const std::filesystem::path& file) {
     throw std::runtime_error("Invalid history file");
   validate_history(data);
   history_ = std::move(data);
+  history_revision_path_=std::filesystem::absolute(file).lexically_normal();
+  history_revision_bytes_=bytes;
+  has_history_revision_=true;
   last_response_ = nullptr;
   context_.clear_stats();
 }
