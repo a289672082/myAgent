@@ -118,6 +118,10 @@ static void test_parallel_and_dependency_budget() {
   TeamOptions opts;opts.max_parallel_agents=2;
   auto result=team.collaborate(graph,opts);
   assert(result.status==TeamStatus::Completed);
+  TeamOptions no_tools;
+  no_tools.max_tool_calls=0; // 0 forbids tools, but pure model tasks still run.
+  const auto model_only=team.collaborate(graph,no_tools);
+  assert(model_only.status==TeamStatus::Completed && model_only.tool_calls==0);
   assert(result.model_calls==3&&result.usage.total_tokens==60);
   assert(peak.load()==2);
   TeamOptions budget;budget.max_parallel_agents=2;budget.max_model_calls=1;
