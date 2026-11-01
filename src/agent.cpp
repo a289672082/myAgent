@@ -524,8 +524,9 @@ Json OpenAIResponses::create(const Json& request) {
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
                                         const std::string& model) const {
   const std::string bytes = read_bounded_file(file, MaxMediaBytes);
-  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
-  const auto url = parse_base_url(config_.base_url);
+  // The optional audio gateway can have its own origin and route prefix.
+  const auto url = parse_base_url(config_.audio_base_url.empty()?
+      config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
   configure(client, config_.http_timeout_seconds);
   httplib::UploadFormDataItems items = {
@@ -533,17 +534,6 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
     {"model", model, "", ""}
   };
   const auto target=audio_target(config_,"transcriptions");
-  if(!config_.audio_base_url.empty()) {
-    const auto audio=parse_base_url(config_.audio_base_url);
-    httplib::Client routed(audio.origin);
-    configure(routed,config_.http_timeout_seconds);
-    auto result=routed.Post(target,headers(config_),items);
-    check_http(result,target);
-    const auto body=json::parse(result->body);
-    const auto text=as_string(body,"text");
-    if(text.empty())throw std::runtime_error("Audio transcription returned no text");
-    return text;
-  }
   auto result = client.Post(target, headers(config_), items);
   check_http(result, target);
   const auto body = json::parse(result->body);
@@ -554,23 +544,13 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
 void OpenAIResponses::speech(const std::string& text,
                              const std::filesystem::path& output,
                              const std::string& voice, const std::string& model) const {
-  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
-  const auto url = parse_base_url(config_.base_url);
+  const auto url = parse_base_url(config_.audio_base_url.empty()?
+      config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
   configure(client, config_.http_timeout_seconds);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
   const auto target=audio_target(config_,"speech");
-  if(!config_.audio_base_url.empty()) {
-    const auto audio=parse_base_url(config_.audio_base_url);
-    httplib::Client routed(audio.origin);
-    configure(routed,config_.http_timeout_seconds);
-    auto result=routed.Post(target,headers(config_),
-                            json::serialize(request),"application/json");
-    check_http(result,target);
-    write_file(output,result->body);
-    return;
-  }
   auto result = client.Post(target, headers(config_),
                             json::serialize(request), "application/json");
   check_http(result, target);
