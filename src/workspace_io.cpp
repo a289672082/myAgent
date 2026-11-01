@@ -5,6 +5,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 #include <vector>
 #ifndef _WIN32
 #include <cerrno>
