@@ -175,10 +175,16 @@ public:
   template<class F, class... Ts>
   void tool(std::string name, std::string description, F fn, Arg<Ts>... args) {
     const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+    if(config_.strict_process_isolation)
+      throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
   }
-  Server& local_mcp_server() { return local_; }
+  Server& local_mcp_server() {
+    if(config_.strict_process_isolation)
+      throw std::invalid_argument("Strict isolation forbids local MCP server access");
+    return local_;
+  }
 
   void load_skills(const std::filesystem::path& directory);
   void use_skill(const std::string& name);
