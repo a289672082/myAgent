@@ -56,6 +56,9 @@ struct Config {
   // 0 非法，以避免不可信 MCP 服务永久阻塞；不影响内置模型的 HTTP 超时。
   unsigned mcp_timeout_seconds = 30;
   std::size_t max_mcp_response_bytes = 1024 * 1024; // 限制整个 stdio 消息或 HTTP 响应。
+  // 可选严格模式：拒绝进程内 C++ 工具和无法保证截止时间的模型/自定义 MCP Client。
+  // 对无法协作取消的 C++ 回调，改用 add_mcp_stdio 运行在独立进程。
+  bool strict_process_isolation = false;
 };
 
 struct Skill {
@@ -94,6 +97,8 @@ class Model {
 public:
   virtual ~Model() = default;
   virtual Json create(const Json& request) = 0;
+  // 自定义 Model 必须自行实现请求级截止时间才可将此声明为 true。
+  virtual bool supports_request_deadline() const noexcept { return false; }
   // The default keeps injected providers source-compatible. Built-in HTTP
   // backends override this to enforce a per-request transport deadline.
   virtual Json create_with_timeout(const Json& request,
@@ -109,6 +114,7 @@ public:
   Json create(const Json& request) override;
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
+  bool supports_request_deadline() const noexcept override { return true; }
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
@@ -129,6 +135,7 @@ public:
   Json create(const Json& request) override;
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
+  bool supports_request_deadline() const noexcept override { return true; }
 private:
   Config config_;
 };

@@ -619,6 +619,8 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
           ? std::shared_ptr<Model>(std::make_shared<ChatCompletionsModel>(config_))
           : std::shared_ptr<Model>(std::make_shared<OpenAIResponses>(config_)))),
     local_("agent-local", "1.0.0") {
+  if(config_.strict_process_isolation && !model_->supports_request_deadline())
+    throw std::invalid_argument("Strict isolation requires a deadline-aware Model backend");
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
@@ -635,6 +637,9 @@ void Agent::validate_mcp_prefix(const std::string& prefix) const {
 void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   if (!client) throw std::invalid_argument("MCP client is null");
+  if(config_.strict_process_isolation && prefix!="local" &&
+     !client->has_bounded_transport())
+    throw std::invalid_argument("Strict isolation requires bounded MCP transport (stdio/HTTP)");
   validate_mcp_prefix(prefix);
   endpoints_.push_back({std::move(prefix), std::move(client)});
 }
@@ -669,6 +674,8 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(config_.strict_process_isolation)
+    throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
   local_.add_tool(std::move(name), std::move(description),
                   std::move(schema), std::move(handler));
 }
@@ -716,6 +723,7 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
   std::size_t catalog_left=max_catalog_bytes;
   std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
+    if(config_.strict_process_isolation && endpoint.prefix=="local")continue;
     endpoint.client->discover(request_options);
     Json params=json::object{};
     std::set<std::string> cursors;
@@ -770,7 +778,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
     }
     if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
   }
-  if (config_.auto_skill_selection && !skills_.all().empty()) {
+  if (!config_.strict_process_isolation &&
+      config_.auto_skill_selection && !skills_.all().empty()) {
     // Keep built-in Skill tools separate from externally registered MCP routes.
     if (routes.count("agent_skill_load") || routes.count("agent_skill_read_file"))
       throw std::runtime_error("An MCP tool collides with an internal Skill tool");
@@ -1106,6 +1115,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         tool_output=R"({"isError":true,"message":"Repeated non-idempotent tool call blocked"})";
         emit(json::object{{"phase",phase},{"event","tool_replay_blocked"},{"name",name}});
       } else if (name == "agent_skill_load" || name == "agent_skill_read_file") {
+        if(config_.strict_process_isolation)
+          throw std::runtime_error("In-process Skill tools disabled in strict isolation");
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");
         try {
