@@ -162,7 +162,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       //
       // 与 ReAct 的区别：这里先有明确的计划/依赖/验收标准，每一步有独立状态。
       // 它仍复用 run_stage() 的同一套 MCP Tool Calling 底层执行器。
-      detail::PlanManager manager(options.max_plan_steps);
+      detail::PlanManager manager(options.max_plan_steps,options.max_replans);
       manager.initialize(invoke("plan", original_input, plan_prompt, false,
                                 0, options.planner_model));
       result.plan = manager.steps();
