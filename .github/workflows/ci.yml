@@ -4,6 +4,11 @@ on:
     branches: [main, 'feature/**']
   pull_request:
   workflow_dispatch:
+# Two events (push + PR) and many successive fix commits used to create
+# redundant stale 5-platform runs. Only the newest head matters per branch.
+concurrency:
+  group: myagent-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   linux:
     runs-on: ubuntu-24.04
