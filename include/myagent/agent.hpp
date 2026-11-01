@@ -52,6 +52,10 @@ struct Config {
   std::size_t max_mcp_tools = 128;
   std::size_t max_mcp_tool_bytes = 32 * 1024;
   std::size_t max_mcp_catalog_bytes = 512 * 1024;
+  // SDK 接收/解析 JSON 之前执行的 MCP 限额：每个请求都设置独立的整体截止时间。
+  // 0 非法，以避免不可信 MCP 服务永久阻塞；不影响内置模型的 HTTP 超时。
+  unsigned mcp_timeout_seconds = 30;
+  std::size_t max_mcp_response_bytes = 1024 * 1024; // 限制整个 stdio 消息或 HTTP 响应。
 };
 
 struct Skill {
@@ -239,8 +243,10 @@ private:
     std::string native_name;
   };
   void validate_mcp_prefix(const std::string& prefix) const;
-  Json tool_definitions(std::map<std::string, Route>& routes);
-  std::string execute_tool(const Route& route, const Json& call);
+  Json tool_definitions(std::map<std::string, Route>& routes,
+                        const mymcp::RequestOptions& request_options);
+  std::string execute_tool(const Route& route, const Json& call,
+                           const mymcp::RequestOptions& request_options);
   std::string instructions() const;
   std::string run(Json user_content, bool allow_tools = true,
                   unsigned max_model_calls = std::numeric_limits<unsigned>::max(),
