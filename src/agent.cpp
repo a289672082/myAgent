@@ -782,6 +782,11 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       {"parallel_tool_calls", false}
     };
     if (!tools.empty()) request["tools"] = tools;
+    // Auto compaction may have consumed the final request slot earlier in this
+    // same iteration. Check again immediately before making the main request.
+    if(model_calls >= max_model_calls)
+      throw detail::LoopAbort(LoopStatus::LimitReached,
+        "Model budget exhausted after context compression");
     ++model_calls; // Charge attempts, even when the request fails.
     if (phase == "ask") ++last_model_attempts_;
     const Json response = model_->create(request);
