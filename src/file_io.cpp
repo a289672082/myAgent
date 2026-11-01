@@ -1,4 +1,5 @@
 #include "file_io.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -74,14 +75,16 @@ std::string read_regular_file(const fs::path& path,std::size_t limit) {
      static_cast<std::uint64_t>(info.QuadPart)>limit)
     throw std::runtime_error("File exceeds size limit");
   std::string result;result.reserve(static_cast<std::size_t>(info.QuadPart));
-  char buffer[8192];DWORD count=0;
-  while(ReadFile(raw,buffer,sizeof(buffer),&count,nullptr) && count) {
+  char buffer[8192];
+  for(;;) {
+    DWORD count=0;
+    if(!ReadFile(raw,buffer,sizeof(buffer),&count,nullptr))
+      throw std::runtime_error("File read failed");
+    if(!count)break;
     if(static_cast<std::size_t>(count)>limit-result.size())
       throw std::runtime_error("File grew beyond size limit during read");
     result.append(buffer,count);
   }
-  if(GetLastError()!=ERROR_SUCCESS && count!=0)
-    throw std::runtime_error("File read failed");
   return result;
 #endif
 }
