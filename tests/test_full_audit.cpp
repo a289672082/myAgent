@@ -1,6 +1,7 @@
 // Regression cases for audit issues that were not covered by earlier suites.
 #include "myagent/multi_agent.hpp"
 #include "httplib.h"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
