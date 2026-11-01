@@ -70,7 +70,9 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           });
     if (cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
-    original_input = prepare_loop_input(input, result.audio_transcript);
+    original_input = prepare_loop_input(input, result.audio_transcript,remaining_time);
+    if(cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Agent deadline exceeded during input preparation");
     const std::string task = input.text.empty()
         ? (input.audio.empty() ? "Analyze the provided image(s)." :
                                 "Analyze the provided audio.")
@@ -351,7 +353,10 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
     if (!options.speech_output.empty()) {
       if (cancelled())
         throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
-      speak(result.answer, options.speech_output, options.speech_voice);
+      const auto remaining=remaining_time?remaining_time():std::chrono::milliseconds{0};
+      if(remaining_time && remaining.count()<=0)
+        throw detail::LoopAbort(LoopStatus::Cancelled,"Speech output deadline exceeded");
+      speak(result.answer, options.speech_output, options.speech_voice,remaining);
       result.speech_output = options.speech_output;
     }
     if (cancelled())
