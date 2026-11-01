@@ -368,7 +368,7 @@ static void test_mcp_catalog_and_result_limits() {
   assert(mock->calls==0);
 
   auto large=std::make_shared<Mock>();
-  large->reply=[&](const Json& request) {
+  large->reply=[&](const Json& request) -> Json {
     if(large->calls==1)
       return j::object{{"status","completed"},{"output",j::array{
         j::object{{"type","function_call"},{"call_id","big1"},
