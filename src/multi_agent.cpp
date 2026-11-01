@@ -173,8 +173,9 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     for(const auto& fallback:t.fallback_agents)
       if(!workers_.count(fallback) || fallback==t.agent)
         throw std::invalid_argument("Invalid fallback Agent: "+fallback);
-    if (t.description.empty() || t.description.size() > 10000)
-      throw std::invalid_argument("Invalid task description");
+    if (t.description.empty() || t.description.size() > 10000 ||
+        t.context.goal.size() > 10000)
+      throw std::invalid_argument("Invalid task description or context goal");
     std::set<std::string> deps;
     for (const auto& dep : t.depends_on)
       if (!deps.insert(dep).second || !seen.count(dep) || dep == t.id)
@@ -315,13 +316,32 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       }
       // 每个任务可以附带自己的已筛选事实、产物引用及验证约束。
       // 将这些内容视为数据，而不是新的系统指令；不会复制主 Agent 历史。
-      if (!t.context.goal.empty()) context += "\n[Task goal]\n" + t.context.goal;
+      std::size_t context_budget=options.max_handoff_chars;
+      const auto append_bounded = [&](std::string payload) {
+        if (payload.size()>context_budget)payload.resize(context_budget);
+        context+=payload;
+        context_budget-=payload.size();
+      };
+      if (!t.context.goal.empty()) {
+        append_bounded("\n[Task goal]\n");
+        append_bounded(t.context.goal);
+      }
       const auto add_context = [&](const char* label, const Json& value) {
-        if (value.is_object() && value.empty()) return;
-        std::string serialized=json::serialize(value);
-        if (serialized.size()>options.max_handoff_chars)
-          serialized.resize(options.max_handoff_chars);
-        context += std::string("\n[") + label + " / DATA]\n" + serialized;
+        if (context_budget < 96 || (value.is_object() && value.empty())) return;
+        const std::string header=std::string("\n[")+label+" / DATA]\n";
+        if(header.size()>=context_budget)return;
+        const auto serialized=json::serialize(value);
+        const auto available=context_budget-header.size();
+        std::string payload=serialized;
+        if(payload.size()>available) {
+          // Do not slice a JSON string mid-token: downstream consumers must
+          // always see valid JSON, even after hitting the handoff budget.
+          payload=json::serialize(json::object{
+            {"truncated",true},{"original_bytes",serialized.size()}});
+        }
+        if(payload.size()>available)return;
+        append_bounded(header);
+        append_bounded(payload);
       };
       add_context("Relevant context",t.context.relevant_context);
       add_context("Artifacts",t.context.artifacts);
@@ -329,7 +349,11 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       LoopOptions worker_options=options.worker_loop;
       worker_options.max_model_calls=std::min(share,worker_options.max_model_calls);
       worker_options.max_tool_calls=std::min(tool_share,worker_options.max_tool_calls);
-      worker_options.cancelled=cancelled;
+      // Preserve the worker's own cancellation hook as well as the team's.
+      const auto worker_cancel=worker_options.cancelled;
+      worker_options.cancelled=[cancelled,worker_cancel]() {
+        return cancelled() || (worker_cancel && worker_cancel());
+      };
       // 子任务超时继承团队剩余期限，防止超时后继续启动新任务。
       if (deadline != std::chrono::steady_clock::time_point::max()) {
         const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -451,15 +475,24 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
   try {
     validate_options(options);
     if(workers_.empty())throw std::invalid_argument("No registered sub Agents");
+    const auto deadline=options.timeout.count()>0
+        ? std::chrono::steady_clock::now()+options.timeout
+        : std::chrono::steady_clock::time_point::max();
+    const auto cancelled=[&]() {
+      return (options.cancelled && options.cancelled()) ||
+             std::chrono::steady_clock::now()>=deadline;
+    };
     std::string roles;
     for(const auto& [name,worker]:workers_)
       roles += "- "+name+": "+worker->spec.description+"\n";
-    if(options.cancelled && options.cancelled()) {
+    if(cancelled()) {
       result.status=TeamStatus::Cancelled;return result;
     }
     // 协调器只看名称/职责；绝不把 worker 的 api_key、base_url、历史暴露给模型。
     const auto coordinator_call = [&](const std::string& prompt) {
       // 使用剩余模型预算约束本次 ask，包括可能触发的上下文压缩请求。
+      if(cancelled())
+        throw std::runtime_error("Coordinator cancelled or timed out");
       if(result.model_calls >= options.max_model_calls)
         throw std::runtime_error("Coordinator model budget exhausted");
       const unsigned remaining=options.max_model_calls-result.model_calls;
@@ -467,6 +500,8 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
         auto reply=coordinator_->ask_without_tools(prompt,remaining);
         add_usage(result,"coordinator",coordinator_->last_usage());
         result.model_calls+=coordinator_->last_model_attempts();
+        if(cancelled())
+          throw std::runtime_error("Coordinator cancelled or timed out after response");
         return reply;
       } catch(...) {
         add_usage(result,"coordinator",coordinator_->last_usage());
@@ -509,6 +544,17 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       return result;
     }
     TeamOptions bounded=options;
+    bounded.cancelled=cancelled;
+    if(deadline!=std::chrono::steady_clock::time_point::max()) {
+      const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline-std::chrono::steady_clock::now());
+      if(remaining.count()<=0) {
+        result.status=TeamStatus::Cancelled;
+        result.error="Team deadline exceeded during planning";
+        return result;
+      }
+      bounded.timeout=remaining;
+    }
     if(options.max_reported_tokens)
       bounded.max_reported_tokens-=result.usage.total_tokens;
     bounded.max_model_calls=options.max_model_calls>result.model_calls ?
@@ -538,7 +584,11 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     }
     return result;
   } catch(const std::exception& e) {
-    result.status=TeamStatus::Failed;
+    const std::string reason=e.what();
+    result.status=((options.cancelled && options.cancelled()) ||
+        reason.find("cancelled or timed out")!=std::string::npos ||
+        reason.find("deadline exceeded")!=std::string::npos)?
+        TeamStatus::Cancelled:TeamStatus::Failed;
     result.error=e.what();
     return result;
   }

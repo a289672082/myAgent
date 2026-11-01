@@ -58,6 +58,8 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     spec.config.instructions=scalar(cfg,"instructions");
     if(spec.config.instructions.empty())spec.config.instructions="You are a helpful assistant.";
     spec.workspace=scalar(item,"workspace");
+    if(!spec.workspace.empty() && spec.workspace.is_relative())
+      spec.workspace=file.parent_path()/spec.workspace;
     spec.allow_workspace_write=flag(item,"allow_workspace_write",false);
     const auto skills=item["skills"];
     if(skills) {
@@ -102,6 +104,18 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     }
     specs.push_back(std::move(spec));
   }
-  for(auto& spec:specs)add_agent(std::move(spec));
+  std::vector<std::string> inserted;
+  try {
+    for(auto& spec:specs) {
+      const auto name=spec.name;
+      add_agent(std::move(spec));
+      inserted.push_back(name);
+    }
+  } catch(...) {
+    // Atomic from the caller's perspective: no partially registered team.
+    // A started stdio connection is shut down when its Worker is destroyed.
+    for(const auto& name:inserted)workers_.erase(name);
+    throw;
+  }
 }
 } // namespace myagent
