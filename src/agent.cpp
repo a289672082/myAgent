@@ -371,7 +371,11 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
     if (std::filesystem::exists(codex)) {
       if (!std::filesystem::is_regular_file(codex) || std::filesystem::is_symlink(codex))
         throw skill_error(codex, "expected a regular agents/openai.yaml file");
-      const auto text = read_bounded_file(codex, MaxSkillBytes);
+      // Use the same descriptor/handle-based traversal as SKILL.md and
+      // supporting files, not a check-then-open path.
+      const auto text = detail::workspace_read(codex.parent_path(),"openai.yaml");
+      if(text.size()>MaxSkillBytes)
+        throw skill_error(codex,"agents/openai.yaml exceeds 128 KiB");
       const auto doc = yaml_unique_map(yaml_document(text, codex, 0), codex, "agents/openai.yaml");
       const auto policy = doc["policy"];
       if (policy.IsDefined()) {
