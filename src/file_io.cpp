@@ -112,7 +112,14 @@ void atomic_replace(const fs::path& path,const std::string& data,bool single_wri
   cleanup.path.clear();
   const auto parent=path.has_parent_path()?path.parent_path():fs::path(".");
   const int dir=::open(parent.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC);
-  if(dir>=0){::fsync(dir);::close(dir);}
+  if(dir<0)
+    throw std::runtime_error("File replaced, but parent directory sync could not start");
+  const int synced=::fsync(dir);
+  const int saved_errno=errno;
+  ::close(dir);
+  if(synced!=0)
+    throw std::system_error(saved_errno,std::generic_category(),
+      "File replaced, but parent directory sync failed (durability uncertain)");
 #else
   HANDLE raw=CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,
                          CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
