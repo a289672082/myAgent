@@ -16,9 +16,11 @@ using namespace myagent;
 int main() {
   httplib::Server server;
   server.Post(R"(/.*)", [](const httplib::Request& req, httplib::Response& res) {
-    if (req.path == "/v1/audio/transcriptions") {
+    if (req.path == "/v1/audio/transcriptions" ||
+        req.path == "/gateway/v1/audio/transcriptions") {
       res.set_content(R"({"text":"Offline transcription"})", "application/json");
-    } else if (req.path == "/v1/audio/speech") {
+    } else if (req.path == "/v1/audio/speech" ||
+               req.path == "/gateway/v1/audio/speech") {
       res.set_content("fake-mp3-data", "audio/mpeg");
     } else {
       res.set_content(mymcp::json::serialize(mymcp::json::object{
@@ -89,6 +91,12 @@ int main() {
                             std::istreambuf_iterator<char>());
     assert(audio == "fake-mp3-data");
   }
+  // A gateway may route audio under a different prefix/origin. Existing
+  // base_url-only clients keep the original /v1/audio behavior.
+  audio_config.audio_base_url=origin+"/gateway";
+  OpenAIResponses routed_audio(audio_config);
+  assert(routed_audio.transcribe(input_file)=="Offline transcription");
+  routed_audio.speech("Hello routed!",output_file);
   fs::remove_all(temp_dir);
 
   // Reject fragments and userinfo URLs to avoid ambiguous routing.

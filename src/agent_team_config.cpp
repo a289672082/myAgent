@@ -42,6 +42,7 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     if(!cfg || !cfg.IsMap())throw std::invalid_argument("Agent config missing");
     reject_inline_secret(cfg,"api_key");
     spec.config.base_url=scalar(cfg,"base_url",true);
+    spec.config.audio_base_url=scalar(cfg,"audio_base_url");
     spec.config.model=scalar(cfg,"model",true);
     const auto protocol=scalar(cfg,"model_protocol");
     if(protocol.empty()||protocol=="responses")

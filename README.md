@@ -589,3 +589,16 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 `Config::api_key` 和 `Config::base_url` 必须由调用方显式赋值。使用真实 API Key 时应由你的应用安全地取得并传入，**不要将真实密钥硬编码后提交到 Git**；历史文件可能包含敏感会话内容，也不要提交。
 技能文件只在按需激活时作为工具内容或手动配置的提示词加载，不执行脚本；请核查 Skills 和远程 MCP 服务的来源。会改变文件或运行命令的工具应由调用方额外做权限控制与隔离。
 媒体上限为 20 MiB，工具返回上限为 256 KiB；不包含实际 OpenAI API 联网集成测试。
+
+## 2026-11-01 audit hardening (PR #16)
+
+- **Chat Completions routing**: retains optional gateway prefixes and query strings; only `stop` and `tool_calls` are successful finish reasons. Unexpected termination and empty final text raise errors.
+- **Audio gateway**: by default transcription/speech use `/v1/audio` on the model origin. To route them elsewhere, set `Config::audio_base_url = "https://proxy.example.com/tenant"`; it appends `/v1/audio/{transcriptions|speech}`. The team YAML `config.audio_base_url` field is also supported.
+- **Cancellation**: worker-specific cancellation is combined with team cancellation; team timeout includes coordinator planning/summary and passes remaining time to workers. Model HTTP and MCP operations still use cooperative timeouts.
+- **History**: `save_history()` writes `myagent-history-v2` with model/protocol metadata; `load_history()` accepts old array files only after strict validation and rejects incompatible v2 metadata. Both save and load enforce the 8 MiB limit; saved memory files enforce their 32 MiB load limit.
+- **Idempotence**: `LoopOptions::non_idempotent_tools` identifies tool names that must not be replayed with identical arguments inside one loop run; the built-in `local__workspace_write` starts protected. Add external write/delete/payment tools explicitly (e.g., `options.non_idempotent_tools.insert("git__push")`). A different argument value or a process restart is not automatically idempotent; use host validations, operation IDs and checkpoint reconciliation.
+- **Disk safety**: checkpoint writes use a unique temporary file, flush and atomic same-directory replacement; Windows workspace operations pin parent directories and reject reparse points. These mechanisms are not an OS or tenant sandbox.
+- **Team YAML**: relative `workspace` paths resolve beside the configuration file, like Skill paths. Bulk registration rolls back already created workers if a later registration fails.
+- **Offline tests**: `myagent_full_audit` checks protocol URLs, stop reasons, token overflow guarantees, empty output, history safety, cancellation/timeout, YAML rollback, and non-idempotent replay guards.
+
+For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow only necessary tools, review discovered Skills, and enforce permissions at MCP servers and OS/container boundaries.
