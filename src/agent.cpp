@@ -748,7 +748,8 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
       model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
       max_duration.count()>0?std::function<bool()>(cancelled):std::function<bool()>{},
-      nullptr, {}, "ask",nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,
+      nullptr, {}, "ask",nullptr,nullptr,nullptr,nullptr,
+      nullptr,nullptr,nullptr,nullptr,false,
       max_duration.count()>0?remaining:std::function<std::chrono::milliseconds()>{});
   history_ = std::move(working);
   last_response_ = turn.response;
