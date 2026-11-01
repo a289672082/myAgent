@@ -22,7 +22,7 @@ struct ContextStats {
   std::size_t estimated_tokens = 0; // 非精确计数，不用于计费。
   std::size_t compression_count = 0;
   std::size_t removed_messages = 0;
-  TokenUsage compression_usage;
+  TokenUsage compression_usage; // 所有已返回的摘要模型 usage，包括未采用的摘要。
 };
 struct CompressionResult {
   bool compressed = false;

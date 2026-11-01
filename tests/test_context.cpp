@@ -121,9 +121,51 @@ static void test_preserve_full_tool_turn() {
       assert(type->as_string()!="function_call_output");
   }
 }
+// 回归：摘要模型已调用却未缩短上下文，或返回不完整状态时，
+// 不应修改原始历史；但实际返回的 usage 不能从压缩统计中漏记。
+static void test_compaction_attempt_usage() {
+  ContextOptions options;
+  options.auto_compress = false;
+  options.keep_recent_turns = 1;
+  ContextManager context(options);
+  Json history = j::array{
+    j::object{{"role", "user"}, {"content", "初始需求：维护 C++ Agent SDK"}},
+    j::object{{"role", "assistant"}, {"content", "已核对任务和代码"}},
+    j::object{{"role", "user"}, {"content", "请继续审查"}}
+  };
+  const std::string original = j::serialize(history);
+  unsigned calls = 0;
+  const auto no_gain = context.compress(history, [&](const Json&) {
+    ++calls;
+    // 有效的 usage，但摘要比原始历史更长，不应误记成功压缩。
+    return response(std::string(1800, 'X'), 30);
+  }, true);
+  assert(calls == 1);
+  assert(!no_gain.compressed && no_gain.reason == "summary_not_smaller");
+  assert(j::serialize(history) == original);
+  assert(context.stats(history).compression_count == 0);
+  assert(context.stats(history).compression_usage.total_tokens == 40);
+  assert(context.stats(history).compression_usage.reported_calls == 1);
+
+  // 服务端报告 incomplete：不替换历史，同样保存已经收到的 Token 消耗。
+  try {
+    context.compress(history, [&](const Json&) {
+      ++calls;
+      Json result = response("不能采用的摘要", 12);
+      result["status"] = "incomplete";
+      return result;
+    }, true);
+    assert(false && "Incomplete response must be rejected");
+  } catch (const std::runtime_error&) {}
+  assert(calls == 2 && j::serialize(history) == original);
+  assert(context.stats(history).compression_usage.total_tokens == 62);
+  assert(context.stats(history).compression_usage.reported_calls == 2);
+  assert(context.stats(history).compression_count == 0);
+}
 int main() {
   test_manual_and_stats();
   test_auto_and_working_history();
   test_preserve_full_tool_turn();
+  test_compaction_attempt_usage();
   std::cout<<"ContextManager offline tests OK\n";
 }

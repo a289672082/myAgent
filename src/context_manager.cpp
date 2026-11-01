@@ -86,6 +86,10 @@ CompressionResult ContextManager::compress(Json& history,
   };
   // 先调用摘要模型，不修改原历史；抛异常时历史可以完整保留。
   const Json response = summarize(request);
+  // 摘要模型只要返回了 Responses usage，就已产生实际消耗：
+  // 即便摘要太长、无效或最终没有被采用，也必须计入压缩模块账本。
+  // compression_count 仅表示真正替换了历史的次数，与模型请求次数不同。
+  stats_.compression_usage.add(parse_token_usage(response));
   const auto* status = json::if_contains(response, "status");
   if (status && status->is_string() && status->as_string() != "completed")
     throw std::runtime_error("Compression model returned non-completed response");
@@ -99,7 +103,6 @@ CompressionResult ContextManager::compress(Json& history,
   if (estimate(compact) >= estimate(history)) {
     result.reason = "summary_not_smaller"; return result;
   }
-  stats_.compression_usage.add(parse_token_usage(response));
   stats_.compression_count++;
   stats_.removed_messages += cutoff;
   result.compressed = true;
