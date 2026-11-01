@@ -612,3 +612,9 @@ For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow
 - Media/history/checkpoint/memory reads verify an opened regular-file handle and enforce byte limits, rejecting final symlink/reparse point or FIFO paths.
 - Worker handoff budgets now include task descriptions, dependency results and optional structured context under one aggregate byte budget.
 - YAML agent-registration rollback removes only newly created empty workspace directories; pre-existing files and directories are never recursively deleted.
+
+### MCP and persistence safety limits
+
+- The Agent uses bounded paginated MCP tool discovery and rejects oversized schemas/catalogs. The **MCP SDK transport** must also enforce payload limits; an in-process callback can still allocate a large JSON response before returning it.
+- History and Memory saves refuse simultaneous writers using an adjacent `*.lock` directory, as Checkpoints already do. A crashed process can leave a stale directory; remove it **only after verifying no writer is active**. This guards overlapping writes, not sequential lost updates from stale in-memory copies: applications that share the same file between processes should serialize their entire load-edit-save transaction or provide version checks.
+- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, but the stdio transport can wait indefinitely for a non-cooperative child. 

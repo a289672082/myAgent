@@ -89,7 +89,9 @@ void MemoryStore::save(const std::filesystem::path& file) const {
   const auto bytes=mymcp::json::serialize(data);
   if(bytes.size()>32*1024*1024)
     throw std::runtime_error("Memory save exceeds the 32 MiB load limit");
-  detail::atomic_replace(file,bytes);
+  // Serialize writers across processes. Concurrent saves fail instead of
+  // silently overwriting an in-progress replacement.
+  detail::atomic_replace(file,bytes,true);
 }
 void MemoryStore::load(const std::filesystem::path& file) {
   const auto bytes=detail::read_regular_file(file,32*1024*1024);
@@ -97,10 +99,16 @@ void MemoryStore::load(const std::filesystem::path& file) {
   if(!data.is_array()||data.size()>10000)
     throw std::runtime_error("Invalid memory file");
   MemoryStore candidate;
-  for(const auto& entry:data.array_range())
+  std::set<std::string> seen;
+  for(const auto& entry:data.array_range()) {
+    if(!entry.is_object())
+      throw std::runtime_error("Invalid memory record object");
+    const std::string id(entry.at("id").as_string());
+    if(!seen.insert(id).second)
+      throw std::runtime_error("Duplicate memory ID in imported file: "+id);
     candidate.remember(MemoryRecord{
-      std::string(entry.at("id").as_string()),
-      std::string(entry.at("content").as_string()),entry.at("metadata")});
+      id,std::string(entry.at("content").as_string()),entry.at("metadata")});
+  }
   *this=std::move(candidate);
 }
 } // namespace myagent

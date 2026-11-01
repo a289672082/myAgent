@@ -196,16 +196,34 @@ std::string workspace_list(const fs::path& root,const std::string& relative) {
   const auto parts=components(relative);
 #ifndef _WIN32
   auto dir=directory_fd(root,parts,parts.size());
-  DIR* raw=::fdopendir(::dup(dir.fd));
-  if(!raw)throw std::runtime_error("Cannot open workspace directory");
+  const int duplicate=::dup(dir.fd);
+  if(duplicate<0)throw std::system_error(errno,std::generic_category(),
+      "Cannot duplicate workspace directory descriptor");
+  DIR* raw=::fdopendir(duplicate);
+  if(!raw) {
+    const int reason=errno;
+    ::close(duplicate);
+    throw std::system_error(reason,std::generic_category(),
+      "Cannot open workspace directory");
+  }
+  struct ClosedDir {
+    DIR* dir;
+    ~ClosedDir(){if(dir)::closedir(dir);}
+  } opened{raw};
   std::string names;unsigned count=0;
-  while(auto* entry=::readdir(raw)) {
+  for(;;) {
+    errno=0;
+    auto* entry=::readdir(opened.dir);
+    if(!entry) {
+      if(errno!=0)throw std::system_error(errno,std::generic_category(),
+          "Workspace directory enumeration failed");
+      break;
+    }
     const std::string name(entry->d_name);
     if(name=="."||name=="..")continue;
     if(++count>100){names+="(truncated)\n";break;}
     names+=name+"\n";
   }
-  ::closedir(raw);
   return names;
 #else
   auto checked=checked_path(root,parts,true);

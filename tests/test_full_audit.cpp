@@ -255,6 +255,30 @@ static void test_memory_save_and_metadata(const fs::path& root) {
   MemoryStore restored;
   restored.load(file);
   assert(restored.all().size()==capped.all().size());
+
+  // The load operation must be transactional, rejecting duplicate IDs
+  // rather than silently replacing a previous record.
+  {
+    std::ofstream out(file,std::ios::binary|std::ios::trunc);
+    out << R"([{"id":"duplicate","content":"first","metadata":{}},{"id":"duplicate","content":"second","metadata":{}}])";
+  }
+  try {
+    loaded.load(file);
+    assert(false);
+  }catch(const std::runtime_error&){}
+  assert(loaded.all().size()==1 && loaded.all().front().id=="note");
+
+  // A concurrent writer must be refused instead of replacing the file.
+  const auto lock_path=fs::path(file.string()+".lock");
+  fs::create_directory(lock_path);
+  try {
+    memory.save(file);
+    assert(false);
+  }catch(const std::runtime_error&){}
+  fs::remove(lock_path);
+  memory.save(file);
+  loaded.load(file);
+  assert(loaded.all().size()==1);
 }
 static void test_handoff_budget(const fs::path& root) {
   auto model=std::make_shared<Mock>();

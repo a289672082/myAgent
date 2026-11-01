@@ -1152,7 +1152,8 @@ void Agent::save_history(const std::filesystem::path& file) const {
   const auto content=json::serialize(envelope);
   if(content.size()>8*1024*1024)
     throw std::runtime_error("History save exceeds the 8 MiB load limit");
-  detail::atomic_replace(file,content);
+  // Lock the destination against overlapping cross-process saves.
+  detail::atomic_replace(file,content,true);
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
