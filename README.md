@@ -618,3 +618,22 @@ For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow
 - The Agent uses bounded paginated MCP tool discovery and rejects oversized schemas/catalogs. The **MCP SDK transport** must also enforce payload limits; an in-process callback can still allocate a large JSON response before returning it.
 - History and Memory saves refuse simultaneous writers using an adjacent `*.lock` directory, as Checkpoints already do. A crashed process can leave a stale directory; remove it **only after verifying no writer is active**. Loaded or previously saved files also use compare-and-replace within the lock, rejecting stale revisions instead of silently overwriting newer content. First saves to a different destination have no prior revision and intentionally replace the destination. Applications should use load() before updating a shared history/memory file, or explicitly coordinate initial writes.
 - External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, but the stdio transport can wait indefinitely for a non-cooperative child. 
+
+
+## MCP 传输资源限制与超时
+
+对于 SDK 管理的 stdio / HTTP / OAuth MCP 客户端，可通过 `Config` 设置接收上限：
+```cpp
+myagent::Config config;
+config.mcp_timeout_seconds = 30;           // 单个 MCP 请求最长 30 秒
+config.max_mcp_wire_bytes = 4 * 1024 * 1024; // SDK 在解析 JSON 前限制数据
+config.max_mcp_catalog_bytes = 512 * 1024;  // Agent 目录预算（在解析后校验）
+```
+在 `react()` / `run_loop()` 等设置了更短截止时间的请求中，托管 MCP
+传输将以剩余执行时间作为更小的上限。目录分页和工具调用每次重新检查时间。
+
+**安全边界**：C++ 进程内的 `Agent::tool()` 回调或自行实现的 `Model`
+若卡死，无法由外部安全地强制终止其线程。对不可信或可能无限期阻塞的工具，
+应把业务逻辑放入独立的 MCP Server 可执行程序，然后通过
+`Agent::add_mcp_stdio()` 接入（可受到外部进程的超时终止与回收保护）。
+这不等价于给任意 C++ 回调提供硬中断，可信回调仍应主动支持协作取消。
