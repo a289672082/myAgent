@@ -142,6 +142,9 @@ static void test_plan_replanning_and_isolation() {
   options.max_plan_steps = 5;
   options.max_iterations = 6;
   options.max_replans = 1;
+  // Re-running a compiler is an explicitly permitted verification action.
+  // Unknown MCP commands otherwise default to replay protection.
+  options.idempotent_tools.insert("local__compile");
   options.planner_model = "planner-model";
   int validation_calls = 0;
   options.validate_step = [&](const Json& step, const Json& execution,
