@@ -310,6 +310,47 @@ static void test_handoff_budget(const fs::path& root) {
   assert(result.status==TeamStatus::Completed);
   assert(longest.load()<=opts.max_handoff_chars);
 }
+static void test_mcp_catalog_and_result_limits() {
+  auto mock=std::make_shared<Mock>();
+  mock->reply=[](const Json&){return answer("should not call model");};
+  Config config=settings();
+  config.max_mcp_tool_bytes=256;
+  Agent limited(config,mock);
+  limited.tool("huge_schema",std::string(2000,'d'),[](){return true;});
+  try {
+    (void)limited.ask("enumerate");
+    assert(false);
+  }catch(const std::runtime_error&){}
+  assert(mock->calls==0);
+
+  Config count_config=settings();
+  count_config.max_mcp_tools=1;
+  Agent count_limited(count_config,mock);
+  count_limited.tool("first","first",[](){return true;});
+  count_limited.tool("second","second",[](){return true;});
+  try {
+    (void)count_limited.ask("enumerate");
+    assert(false);
+  }catch(const std::runtime_error&){}
+  assert(mock->calls==0);
+
+  auto large=std::make_shared<Mock>();
+  large->reply=[&](const Json& request) {
+    if(large->calls==1)
+      return j::object{{"status","completed"},{"output",j::array{
+        j::object{{"type","function_call"},{"call_id","big1"},
+          {"name","local__large"},{"arguments","{}"}}}}};
+    const auto& items=request.at("input");
+    const auto output=std::string(items[items.size()-1].at("output").as_string());
+    assert(output.find("isError")!=std::string::npos);
+    assert(output.size()<4096);
+    return answer("bounded result");
+  };
+  Agent agent(settings(),large);
+  agent.tool("large","large tool result",[](){return std::string(350000,'x');});
+  assert(agent.ask("Call the large tool")=="bounded result");
+  assert(large->calls==2);
+}
 int main() {
   const auto root=fs::temp_directory_path()/
       ("myagent-full-audit-"+std::to_string(std::chrono::steady_clock::now()
@@ -325,6 +366,7 @@ int main() {
     test_config_transaction_and_workspace(root);
     test_replay_guard();
     test_memory_save_and_metadata(root);
+    test_mcp_catalog_and_result_limits();
     test_handoff_budget(root);
   }catch(...){fs::remove_all(root);throw;}
   fs::remove_all(root);
