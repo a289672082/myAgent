@@ -237,10 +237,15 @@ int main() {
     std::chrono::steady_clock::now().time_since_epoch().count()));
   fs::create_directories(root);
   try {
+    std::cerr<<"AUDIT checkpoint\n";
     test_checkpoint_failover_ledger(root);
+    std::cerr<<"AUDIT chat\n";
     test_chat_multi_tool_calls();
+    std::cerr<<"AUDIT coordinator\n";
     test_coordinator_hard_budget();
+    std::cerr<<"AUDIT workspace\n";
     test_workspaces(root);
+    std::cerr<<"AUDIT compaction\n";
     test_loop_compaction_history_and_hard_limit();
   } catch(...) {fs::remove_all(root);throw;}
   fs::remove_all(root);

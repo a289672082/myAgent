@@ -196,6 +196,10 @@ bool workspace_write(const fs::path& root,const std::string& relative,
     if(!WriteFile(file.raw,content.data(),static_cast<DWORD>(content.size()),&written,nullptr) ||
        written!=content.size() || !FlushFileBuffers(file.raw))
       throw std::runtime_error("Workspace temporary file write failed");
+    // Windows 在临时文件句柄仍由本进程独占时可能拒绝 MoveFileExW。
+    // 先 FlushFileBuffers，再关闭临时文件，随后执行同目录原子替换。
+    CloseHandle(file.raw);
+    file.raw=INVALID_HANDLE_VALUE;
     if(fs::is_symlink(fs::symlink_status(path)))
       throw std::runtime_error("Workspace target became symbolic link");
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
