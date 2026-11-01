@@ -635,7 +635,7 @@ myagent::Agent agent(config);
 agent.add_mcp_stdio("worker", "/absolute/path/to/untrusted-tool-server");
 ~~~
 
-strict_process_isolation=true 会拒绝同步 Agent::tool() C++ 回调、没有 SDK 接收/截止时间能力的自定义 MCP Client，以及未显式声明支持请求超时的 Model；内建进程内 Skill 工具也不可调用。自定义 Model 只有确实实现 create_with_timeout 才能返回 supports_request_deadline=true。
+strict_process_isolation=true 会拒绝同步 Agent::tool() C++ 回调、没有 SDK 接收/截止时间能力的自定义 MCP Client（包括存在同步 Token 刷新的 http_oauth），以及未显式声明支持请求超时的 Model；内建进程内 Skill 工具也不可调用。自定义 Model 只有确实实现 create_with_timeout 才能返回 supports_request_deadline=true。
 
 兼容模式（strict_process_isolation=false）仍允许旧的进程内回调，但无法保证恶意或死循环 C++ 代码按时间终止。严格模式解决的是拒绝不安全路径，而非自动把任意 lambda 变为可跨进程序列化的对象。
 
