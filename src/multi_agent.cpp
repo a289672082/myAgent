@@ -496,18 +496,21 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       if(result.model_calls >= options.max_model_calls)
         throw std::runtime_error("Coordinator model budget exhausted");
       const unsigned remaining=options.max_model_calls-result.model_calls;
+      std::string reply;
       try {
-        auto reply=coordinator_->ask_without_tools(prompt,remaining);
-        add_usage(result,"coordinator",coordinator_->last_usage());
-        result.model_calls+=coordinator_->last_model_attempts();
-        if(cancelled())
-          throw std::runtime_error("Coordinator cancelled or timed out after response");
-        return reply;
+        reply=coordinator_->ask_without_tools(prompt,remaining);
       } catch(...) {
         add_usage(result,"coordinator",coordinator_->last_usage());
         result.model_calls+=coordinator_->last_model_attempts();
         throw;
       }
+      // Do not double count an already completed call when the deadline
+      // expires after the response was received.
+      add_usage(result,"coordinator",coordinator_->last_usage());
+      result.model_calls+=coordinator_->last_model_attempts();
+      if(cancelled())
+        throw std::runtime_error("Coordinator cancelled or timed out after response");
+      return reply;
     };
     const std::string response=coordinator_call(
       "You are the coordinator. Return ONLY a JSON object with tasks: "
