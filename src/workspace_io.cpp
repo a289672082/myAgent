@@ -30,6 +30,11 @@ std::vector<fs::path> components(const std::string& relative) {
   for(const auto& name:path) {
     if(name.empty() || name=="." || name=="..")
       throw std::invalid_argument("Workspace traversal denied");
+#ifdef _WIN32
+    // Reject alternate data streams (file:stream) and drive-like segments.
+    if(name.native().find(L':')!=std::wstring::npos)
+      throw std::invalid_argument("Workspace alternate data streams denied");
+#endif
     names.push_back(name);
   }
   if(names.empty())throw std::invalid_argument("Empty workspace path");
@@ -63,29 +68,57 @@ FD directory_fd(const fs::path& root,const std::vector<fs::path>& parts,
   return dir;
 }
 #else
-// Windows uses path verification and exclusive CreateFileW for temporary writes.
-// An adversary able to replace parent directories concurrently still needs OS
-// ACL/container isolation; this is not a multi-tenant filesystem sandbox.
-fs::path checked_path(const fs::path& root,const std::vector<fs::path>& names) {
-  auto path=root;
-  for(const auto& part:names) {
-    path/=part;
-    if(fs::is_symlink(fs::symlink_status(path)))
-      throw std::runtime_error("Workspace reparse point denied");
-  }
-  const auto canonical=fs::weakly_canonical(path);
-  const auto root_path=fs::weakly_canonical(root);
-  auto ri=root_path.begin(), pi=canonical.begin();
-  for(;ri!=root_path.end();++ri,++pi)
-    if(pi==canonical.end()||*ri!=*pi)
-      throw std::runtime_error("Workspace path escaped root");
-  return path;
-}
+// Windows: pin the workspace root and each traversed directory with open
+// handles that do NOT share WRITE or DELETE. A path-only symlink check followed
+// by CreateFileW leaves a rename/reparse race; held handles make ancestors
+// nonreplaceable until the final operation completes. The caller must keep the
+// returned CheckedPath alive throughout read/list/write.
 struct Handle {
   HANDLE raw=INVALID_HANDLE_VALUE;
-  explicit Handle(HANDLE h):raw(h){}
+  explicit Handle(HANDLE h=INVALID_HANDLE_VALUE):raw(h){}
   ~Handle(){if(raw!=INVALID_HANDLE_VALUE)CloseHandle(raw);}
+  Handle(const Handle&)=delete;
+  Handle& operator=(const Handle&)=delete;
+  Handle(Handle&& other) noexcept:raw(other.raw){other.raw=INVALID_HANDLE_VALUE;}
+  Handle& operator=(Handle&& other) noexcept {
+    if(this!=&other) {
+      if(raw!=INVALID_HANDLE_VALUE)CloseHandle(raw);
+      raw=other.raw;other.raw=INVALID_HANDLE_VALUE;
+    }
+    return *this;
+  }
 };
+struct CheckedPath {
+  fs::path path;
+  std::vector<Handle> held_directories;
+};
+void hold_directory(const fs::path& path,std::vector<Handle>& handles) {
+  Handle dir(CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ,nullptr,
+                         OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+  if(dir.raw==INVALID_HANDLE_VALUE)
+    throw std::runtime_error("Workspace directory open denied");
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  if(!GetFileInformationByHandleEx(dir.raw,FileAttributeTagInfo,&tag,sizeof(tag)) ||
+     !(tag.FileAttributes&FILE_ATTRIBUTE_DIRECTORY) ||
+     (tag.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT))
+    throw std::runtime_error("Workspace directory reparse point denied");
+  handles.push_back(std::move(dir));
+}
+CheckedPath checked_path(const fs::path& root,const std::vector<fs::path>& names,
+                         bool directory=false) {
+  CheckedPath checked;
+  // Root is already canonicalized by AgentTeam; canonicalize for standalone use.
+  checked.path=fs::canonical(root);
+  hold_directory(checked.path,checked.held_directories);
+  const auto dirs=directory?names.size():names.size()-1;
+  for(std::size_t i=0;i<dirs;++i) {
+    checked.path/=names[i];
+    hold_directory(checked.path,checked.held_directories);
+  }
+  if(!directory)checked.path/=names.back();
+  return checked;
+}
 #endif
 std::atomic<std::uint64_t> temp_counter{0};
 }
@@ -109,7 +142,8 @@ std::string workspace_read(const fs::path& root,const std::string& relative) {
   if(n<0)throw std::runtime_error("Workspace read error");
   return data;
 #else
-  const auto path=checked_path(root,parts);
+  auto checked=checked_path(root,parts);
+  const auto& path=checked.path;
   Handle file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,
                           OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
   if(file.raw==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot open workspace file");
@@ -123,10 +157,15 @@ std::string workspace_read(const fs::path& root,const std::string& relative) {
      size.QuadPart>static_cast<LONGLONG>(MaxFile))
     throw std::runtime_error("Workspace file exceeds 1 MiB");
   std::string result(static_cast<std::size_t>(size.QuadPart),'\0');
-  DWORD read=0;
-  if(!ReadFile(file.raw,result.data(),static_cast<DWORD>(result.size()),&read,nullptr))
-    throw std::runtime_error("Workspace file read failed");
-  result.resize(read);
+  std::size_t offset=0;
+  while(offset<result.size()) {
+    DWORD read=0;
+    if(!ReadFile(file.raw,result.data()+offset,
+                 static_cast<DWORD>(result.size()-offset),&read,nullptr))
+      throw std::runtime_error("Workspace file read failed");
+    if(read==0)throw std::runtime_error("Workspace file truncated during read");
+    offset+=read;
+  }
   return result;
 #endif
 }
@@ -146,8 +185,8 @@ std::string workspace_list(const fs::path& root,const std::string& relative) {
   ::closedir(raw);
   return names;
 #else
-  const auto path=checked_path(root,parts);
-  if(!fs::is_directory(path))throw std::runtime_error("Directory does not exist");
+  auto checked=checked_path(root,parts,true);
+  const auto& path=checked.path;
   std::string names;unsigned count=0;
   for(const auto& entry:fs::directory_iterator(path)) {
     if(++count>100){names+="(truncated)\n";break;}
@@ -183,7 +222,8 @@ bool workspace_write(const fs::path& root,const std::string& relative,
       throw std::runtime_error("Workspace atomic rename failed");
   }catch(...){::unlinkat(dir.fd,tempname.c_str(),0);throw;}
 #else
-  const auto path=checked_path(root,parts);
+  auto checked=checked_path(root,parts);
+  const auto& path=checked.path;
   if(!fs::is_directory(path.parent_path()))
     throw std::runtime_error("Workspace destination missing");
   const auto temp=path.parent_path()/tempname;
@@ -200,8 +240,15 @@ bool workspace_write(const fs::path& root,const std::string& relative,
     // 先 FlushFileBuffers，再关闭临时文件，随后执行同目录原子替换。
     CloseHandle(file.raw);
     file.raw=INVALID_HANDLE_VALUE;
-    if(fs::is_symlink(fs::symlink_status(path)))
-      throw std::runtime_error("Workspace target became symbolic link");
+    // GetFileAttributesW catches Windows junctions and other reparse tags,
+    // not only filesystem::is_symlink. Reject directories as write targets.
+    const DWORD attributes=GetFileAttributesW(path.c_str());
+    if(attributes!=INVALID_FILE_ATTRIBUTES &&
+       (attributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY)))
+      throw std::runtime_error("Workspace write target is not a regular file");
+    if(attributes==INVALID_FILE_ATTRIBUTES &&
+       GetLastError()!=ERROR_FILE_NOT_FOUND)
+      throw std::runtime_error("Workspace write target attribute check failed");
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
       throw std::runtime_error("Workspace atomic replacement failed");
   }catch(...){std::error_code ec;fs::remove(temp,ec);throw;}
