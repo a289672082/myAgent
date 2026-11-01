@@ -88,6 +88,7 @@ static void test_history_format(const fs::path& root) {
   agent.save_history(file);
   std::ifstream input(file);
   const std::string saved(std::istreambuf_iterator<char>{input},{});
+  input.close(); // Windows must release the read handle before overwriting.
   auto data=j::parse(saved);
   assert(data.at("format").as_string()=="myagent-history-v2");
   Agent restored(settings(),model);
