@@ -721,7 +721,8 @@ std::string Agent::instructions() const {
   }
   return result;
 }
-Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
+Json Agent::tool_definitions(std::map<std::string, Route>& routes,
+    const std::function<std::chrono::milliseconds()>& remaining_time) {
   Json tools = json::array{};
   const auto max_tools=std::min(config_.max_mcp_tools,MaxMcpToolsHard);
   const auto max_tool_bytes=std::min(config_.max_mcp_tool_bytes,MaxMcpToolBytesHard);
@@ -731,6 +732,19 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
   std::size_t catalog_left=max_catalog_bytes;
   std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
+    const auto constrain_request=[&]() {
+      if(!endpoint.managed_transport)return;
+      auto time=std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::seconds(config_.mcp_timeout_seconds));
+      if(remaining_time) {
+        const auto left=remaining_time();
+        if(left.count()<=0)
+          throw detail::LoopAbort(LoopStatus::Cancelled,"MCP discovery deadline exceeded");
+        time=std::min(time,left);
+      }
+      endpoint.client->set_transport_limits({time,config_.max_mcp_wire_bytes});
+    };
+    constrain_request();
     endpoint.client->discover();
     Json params=json::object{};
     std::set<std::string> cursors;
@@ -738,6 +752,7 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
     for(std::size_t page=0;page<MaxMcpPages;++page) {
       // Request one page at a time: Client::list_all would first accumulate
       // every tool, potentially 10,000 pages, before enforcing our limits.
+      constrain_request();
       const Json result=endpoint.client->request("tools/list",params);
       const Json* entries=json::if_contains(result,"tools");
       if(!entries || !entries->is_array())
@@ -909,7 +924,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
   };
   for(const auto& endpoint:endpoints_)
     if(endpoint.managed_transport) configure_mcp(endpoint.client);
-  const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
+  const Json tools = allow_tools ? tool_definitions(routes,remaining_time) : Json(json::array{});
   std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
   const auto emit = [&](const Json& event) {
     if (trace) trace->push_back(event);
