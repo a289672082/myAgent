@@ -1,9 +1,19 @@
 #include "team_checkpoint.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iterator>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#else
+#define NOMINMAX
+#include <windows.h>
+#endif
 namespace myagent::detail {
 namespace json = mymcp::json;
 namespace {
@@ -85,16 +95,38 @@ void save_team_checkpoint(const std::filesystem::path& path,
     {"format","myagent-team-checkpoint-v2"},{"tasks",task_graph(tasks)},
     {"completed_records",records},{"prior_attempts",failures},{"inflight",running}});
   if(serialized.size()>8*1024*1024)throw std::runtime_error("Checkpoint > 8 MiB");
-  auto temp=path;temp+=".tmp";
-  {
-    std::ofstream out(temp,std::ios::binary|std::ios::trunc);
-    if(!out)throw std::runtime_error("Cannot open checkpoint temporary file");
-    out.write(serialized.data(),static_cast<std::streamsize>(serialized.size()));
-    out.flush();
-    if(!out)throw std::runtime_error("Failed to write checkpoint");
+  static std::atomic<std::uint64_t> sequence{0};
+  auto temp=path;
+  temp+="."+std::to_string(std::chrono::steady_clock::now()
+      .time_since_epoch().count())+"-"+std::to_string(sequence++)+".tmp";
+  try {
+    {
+      std::ofstream out(temp,std::ios::binary|std::ios::trunc);
+      if(!out)throw std::runtime_error("Cannot open checkpoint temporary file");
+      out.write(serialized.data(),static_cast<std::streamsize>(serialized.size()));
+      out.flush();
+      if(!out)throw std::runtime_error("Failed to write checkpoint");
+    }
+#ifndef _WIN32
+    const int fd=::open(temp.c_str(),O_RDONLY|O_CLOEXEC);
+    if(fd<0)throw std::runtime_error("Cannot reopen checkpoint for fsync");
+    const int sync_result=::fsync(fd);
+    ::close(fd);
+    if(sync_result!=0)throw std::runtime_error("Checkpoint file fsync failed");
+    std::filesystem::rename(temp,path);
+    const auto parent=path.has_parent_path()?path.parent_path():std::filesystem::path(".");
+    const int dir=::open(parent.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    if(dir>=0){::fsync(dir);::close(dir);}
+#else
+    if(!MoveFileExW(temp.c_str(),path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+      throw std::runtime_error("Checkpoint atomic replacement failed");
+#endif
+  } catch(...) {
+    std::error_code ec;
+    std::filesystem::remove(temp,ec);
+    throw;
   }
-  // 同目录 rename，避免写出半截 JSON。宿主仍需保证目录可信和权限正确。
-  std::filesystem::rename(temp,path);
 }
 RestoredTeamCheckpoint load_team_checkpoint(
     const std::filesystem::path& path,const std::vector<TeamTask>& tasks,
