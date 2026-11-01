@@ -21,6 +21,7 @@ namespace {
 constexpr std::size_t MaxMediaBytes = 20 * 1024 * 1024;
 constexpr std::size_t MaxSkillBytes = 128 * 1024;
 constexpr std::size_t MaxToolResultBytes = 256 * 1024;
+constexpr std::size_t MaxHttpJsonBytes = 8 * 1024 * 1024;
 constexpr std::size_t MaxMcpPages = 64;
 constexpr std::size_t MaxMcpToolsHard = 512;
 constexpr std::size_t MaxMcpToolBytesHard = 128 * 1024;
@@ -123,12 +124,12 @@ httplib::Headers headers(const Config& config) {
   return {{"Authorization", "Bearer " + config.api_key}};
 }
 void check_http(const httplib::Result& result, const std::string& endpoint) {
-  if (!result) throw std::runtime_error("HTTP transport failed at " + endpoint + ": " +
+  const auto safe_endpoint=endpoint.substr(0,endpoint.find('?'));
+  if (!result) throw std::runtime_error("HTTP transport failed at " + safe_endpoint + ": " +
                                         httplib::to_string(result.error()));
   if (result->status < 200 || result->status >= 300) {
-    // HTTP error bodies may include external text, but not the Authorization header.
-    std::string body = result->body.substr(0, 1024);
-    throw std::runtime_error(endpoint + " HTTP " + std::to_string(result->status) + ": " + body);
+    // Error bodies and URL queries may contain or echo credentials.
+    throw std::runtime_error(safe_endpoint + " HTTP " + std::to_string(result->status));
   }
 }
 void configure(httplib::Client& client, unsigned timeout_seconds = 60,
@@ -555,10 +556,17 @@ Json OpenAIResponses::create_with_timeout(const Json& request,
   const auto target = responses_target(config_, url);
   httplib::Client client(url.origin);
   configure(client, config_.http_timeout_seconds, timeout);
-  auto result = client.Post(target, headers(config_),
-                            json::serialize(request), "application/json");
-  check_http(result, target);
-  return json::parse(result->body);
+  // Receive incrementally: limiting result->body after Post is too late.
+  std::string body;bool oversized=false;
+  auto result=client.Post(target,headers(config_),json::serialize(request),
+      "application/json",[&](const char* chunk,std::size_t n) {
+        if(n>MaxHttpJsonBytes-body.size()) {oversized=true;return false;}
+        body.append(chunk,n);
+        return true;
+      });
+  if(oversized)throw std::runtime_error("Model HTTP response exceeds 8 MiB");
+  check_http(result,target);
+  return json::parse(body);
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
                                         const std::string& model,
@@ -1002,11 +1010,28 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const Json* output = json::if_contains(response, "output");
     if (!output || !output->is_array())
       throw std::runtime_error("Model response missing output array");
-    bool has_calls = false;
-    for (const auto& item : output->array_range()) {
-      proposed.push_back(item);
-      if (as_string(item, "type") == "function_call") has_calls = true;
+    // Reject invalid/duplicate calls as a batch BEFORE the first tool runs.
+    bool has_calls=false;
+    std::set<std::string> batch_ids;
+    for(const auto& item:output->array_range()) {
+      if(!item.is_object())
+        throw std::runtime_error("Model output item must be an object");
+      if(as_string(item,"type")!="function_call")continue;
+      has_calls=true;
+      const auto* id=json::if_contains(item,"call_id");
+      const auto* name=json::if_contains(item,"name");
+      const auto* args=json::if_contains(item,"arguments");
+      if(!id || !id->is_string() || id->as_string_view().empty() ||
+         id->as_string_view().size()>128 ||
+         !std::all_of(id->as_string_view().begin(),id->as_string_view().end(),
+           [](unsigned char ch){return ch>=33 && ch<=126;}) ||
+         !batch_ids.insert(std::string(id->as_string())).second ||
+         !name || !name->is_string() || name->as_string_view().empty() ||
+         !args || !args->is_string() ||
+         args->as_string_view().size()>MaxToolResultBytes)
+        throw std::runtime_error("Invalid or duplicate model tool call metadata");
     }
+    for(const auto& item:output->array_range())proposed.push_back(item);
     if (!has_calls) {
       auto answer = output_text(response);
       if(answer.empty())
