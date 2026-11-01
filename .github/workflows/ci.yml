@@ -1,9 +1,16 @@
 name: C++20 Agent build and tests
 on:
   push:
-    branches: [main, 'feature/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
+# Feature branches with PRs are tested once via pull_request, instead of
+# competing push and PR runs canceling each other's five-platform jobs.
+concurrency:
+  # Every PR has a unique number, including forks with identically named
+  # branches. Non-PR runs are keyed by the full ref.
+  group: myagent-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   linux:
     runs-on: ubuntu-24.04

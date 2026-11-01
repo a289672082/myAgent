@@ -35,6 +35,50 @@ static bool has_tool(const Json& req,const std::string& name) {
     if(item.at("name").as_string()==name)return true;
   return false;
 }
+static void test_wildcard_policy() {
+  ToolPolicy policy;
+  policy.deny("*");
+  assert(policy.access("local__write")==ToolAccess::Deny);
+  assert(policy.access("remote__read")==ToolAccess::Deny);
+  policy.allow("local__safe");
+  policy.allow("git__*");
+  policy.deny("git__push");
+  assert(policy.access("local__safe")==ToolAccess::Allow);
+  assert(policy.access("git__log")==ToolAccess::Allow);
+  assert(policy.access("git__push")==ToolAccess::Deny);
+  policy.require_approval("git__destructive*");
+  assert(policy.access("git__destructive_reset")==ToolAccess::RequireApproval);
+}
+static void test_atomic_tool_call_batch_validation() {
+  auto model=std::make_shared<Mock>();
+  auto config=cfg();
+  Agent agent(config,model);
+  std::atomic<int> executed{0};
+  agent.tool("side_effect","increments", [&]{++executed;return true;});
+  const auto invocation=[](const char* id) {
+    return Json(j::object{{"type","function_call"},{"call_id",id},
+      {"name","local__side_effect"},{"arguments","{}"}});
+  };
+  model->reply=[&](const Json&,int) {
+    return Json(j::object{{"status","completed"},{"output",j::array{
+      invocation("same"),invocation("same")}}});
+  };
+  try {
+    (void)agent.ask("must reject duplicate calls");
+    assert(false);
+  } catch(const std::runtime_error&) {}
+  assert(executed==0 && agent.history().empty());
+
+  model->reply=[&](const Json&,int) {
+    return Json(j::object{{"status","completed"},{"output",j::array{
+      invocation("valid"),invocation("bad\nline")}}});
+  };
+  try {
+    (void)agent.ask("must reject malformed calls");
+    assert(false);
+  } catch(const std::runtime_error&) {}
+  assert(executed==0 && agent.history().empty());
+}
 static void test_policy() {
   auto mock=std::make_shared<Mock>();
   Config config=cfg();
@@ -108,6 +152,7 @@ static void test_cancel() {
   assert(r.status==LoopStatus::Completed || r.status==LoopStatus::Cancelled);
 }
 int main() {
+  test_wildcard_policy();test_atomic_tool_call_batch_validation();
   test_policy();test_coordinator_no_tools();test_session_lock();test_cancel();
   std::cout<<"P0 runtime safety tests OK\n";
 }

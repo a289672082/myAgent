@@ -7,7 +7,8 @@ ToolAccess ToolPolicy::access(const std::string& tool) const {
   std::size_t longest = 0;
   ToolAccess selected = default_access;
   for (const auto& [pattern, mode] : rules) {
-    if (pattern.size() <= 1 || pattern.back() != '*') continue;
+    // '*' matches every tool and exact rules take precedence.
+    if (pattern.empty() || pattern.back() != '*') continue;
     const auto length = pattern.size() - 1;
     if (length >= longest && tool.compare(0, length, pattern, 0, length) == 0) {
       longest = length;

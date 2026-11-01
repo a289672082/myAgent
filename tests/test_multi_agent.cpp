@@ -118,6 +118,10 @@ static void test_parallel_and_dependency_budget() {
   TeamOptions opts;opts.max_parallel_agents=2;
   auto result=team.collaborate(graph,opts);
   assert(result.status==TeamStatus::Completed);
+  TeamOptions no_tools;
+  no_tools.max_tool_calls=0; // 0 forbids tools, but pure model tasks still run.
+  const auto model_only=team.collaborate(graph,no_tools);
+  assert(model_only.status==TeamStatus::Completed && model_only.tool_calls==0);
   assert(result.model_calls==3&&result.usage.total_tokens==60);
   assert(peak.load()==2);
   TeamOptions budget;budget.max_parallel_agents=2;budget.max_model_calls=1;
@@ -176,10 +180,49 @@ static void test_workspace_boundaries() {
   assert(fs::exists(root/"one"/"data.txt"));
   fs::remove_all(root);
 }
+static void test_team_partial_ledger_and_coordinator_limits() {
+  auto coordinator=std::make_shared<Mock>();
+  coordinator->handle=[](const Json&,unsigned) {
+    return reply(R"({"tasks":[{"id":"first","agent":"worker","description":"one"},{"id":"second","agent":"worker","description":"two"}]})");
+  };
+  auto worker=std::make_shared<Mock>();
+  worker->handle=[](const Json&,unsigned){return reply("completed");};
+  AgentTeam team(config("coordinator"),coordinator);
+  AgentSpec spec;spec.name="worker";spec.description="work";spec.config=config("worker");
+  team.add_agent(spec,worker);
+
+  TeamOptions capped;
+  capped.max_delegations=1;
+  const auto rejected=team.run("two tasks",capped);
+  assert(rejected.status==TeamStatus::Failed);
+  assert(worker->n==0);
+
+  TeamOptions model_budget;
+  model_budget.max_model_calls=1;
+  const auto limited=team.run("two tasks",model_budget);
+  assert(limited.status==TeamStatus::LimitReached);
+  assert(limited.model_calls==1);
+
+  std::vector<TeamTask> graph={
+    TeamTask{"first","worker","one"},
+    TeamTask{"second","worker","two",{"first"}}
+  };
+  TeamOptions interrupted;
+  interrupted.on_event=[](const Json& event){
+    if(event.at("event").as_string()=="task_started" &&
+       event.at("task").as_string()=="second")
+      throw std::runtime_error("host event handler failed");
+  };
+  const auto partial=team.collaborate(graph,interrupted);
+  assert(partial.status==TeamStatus::Failed);
+  assert(partial.tasks.size()==1 && partial.tasks.front().id=="first");
+  assert(partial.model_calls==1 && partial.usage.total_tokens==20);
+}
 int main(){
   test_credential_context_and_delegation();
   test_automatic_coordination_and_deps();
   test_parallel_and_dependency_budget();
+  test_team_partial_ledger_and_coordinator_limits();
   test_workspace_boundaries();
   std::cout<<"AgentTeam offline tests OK\n";
 }

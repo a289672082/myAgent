@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <limits>
 #include <string>
@@ -31,6 +32,8 @@ struct Config {
   std::string model = "gpt-4.1-mini";
   std::string instructions = "You are a helpful assistant.";
   std::string base_url; // Required: base origin/path or an exact Responses URL.
+  // Optional audio gateway prefix. Empty uses base_url origin's /v1/audio.
+  std::string audio_base_url;
   // true: append /v1/responses (unless URL already ends with it).
   // false: POST to base_url exactly, including its path/query.
   bool append_responses_path = true;
@@ -44,6 +47,11 @@ struct Config {
   bool memory_retrieval = false; // 只有宿主明确开启才向模型提供检索出的记忆条目。
   unsigned max_memory_hits = 3;
   unsigned http_timeout_seconds = 60; // 模型 HTTP 请求读写/连接超时；不影响外部 MCP 自身超时。
+  // MCP tool discovery is incremental, with a strict per-tool and aggregate
+  // budget to avoid runaway paginated catalogs from untrusted servers.
+  std::size_t max_mcp_tools = 128;
+  std::size_t max_mcp_tool_bytes = 32 * 1024;
+  std::size_t max_mcp_catalog_bytes = 512 * 1024;
 };
 
 struct Skill {
@@ -82,19 +90,30 @@ class Model {
 public:
   virtual ~Model() = default;
   virtual Json create(const Json& request) = 0;
+  // The default keeps injected providers source-compatible. Built-in HTTP
+  // backends override this to enforce a per-request transport deadline.
+  virtual Json create_with_timeout(const Json& request,
+                                  std::chrono::milliseconds timeout) {
+    (void)timeout;
+    return create(request);
+  }
 };
 
 class OpenAIResponses final : public Model {
 public:
   explicit OpenAIResponses(Config config);
   Json create(const Json& request) override;
+  Json create_with_timeout(const Json& request,
+                           std::chrono::milliseconds timeout) override;
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
-                         const std::string& model = "gpt-4o-mini-transcribe") const;
+                         const std::string& model = "gpt-4o-mini-transcribe",
+                         std::chrono::milliseconds timeout = {}) const;
   void speech(const std::string& text, const std::filesystem::path& output,
               const std::string& voice = "alloy",
-              const std::string& model = "gpt-4o-mini-tts") const;
+              const std::string& model = "gpt-4o-mini-tts",
+              std::chrono::milliseconds timeout = {}) const;
 private:
   Config config_;
 };
@@ -104,6 +123,8 @@ class ChatCompletionsModel final : public Model {
 public:
   explicit ChatCompletionsModel(Config config);
   Json create(const Json& request) override;
+  Json create_with_timeout(const Json& request,
+                           std::chrono::milliseconds timeout) override;
 private:
   Config config_;
 };
@@ -174,6 +195,8 @@ public:
   // Coordinator 专用：限制这次无工具请求（包括可能触发的摘要调用）。
   // 零预算会在发送任何模型请求前被拒绝。
   std::string ask_without_tools(const std::string& text, unsigned max_model_calls);
+  std::string ask_without_tools(const std::string& text, unsigned max_model_calls,
+                                std::chrono::milliseconds max_duration);
   unsigned last_model_attempts() const { return last_model_attempts_; }
   // An array of OpenAI input content parts (e.g., input_text, input_image).
   std::string ask_parts(Json content);
@@ -182,7 +205,8 @@ public:
   std::string ask_audio(const std::filesystem::path& audio,
                         const std::string& question = {});
   void speak(const std::string& text, const std::filesystem::path& output,
-             const std::string& voice = "alloy");
+             const std::string& voice = "alloy",
+             std::chrono::milliseconds timeout = {});
 
   // 统计全部从 Responses API 的 usage 字段读取；不进行文本字符估算。
   // last_usage()：上一次 ask()/Loop 的调用（即便最终失败，也保留已收到的用量）。
@@ -219,7 +243,8 @@ private:
   std::string execute_tool(const Route& route, const Json& call);
   std::string instructions() const;
   std::string run(Json user_content, bool allow_tools = true,
-                  unsigned max_model_calls = std::numeric_limits<unsigned>::max());
+                  unsigned max_model_calls = std::numeric_limits<unsigned>::max(),
+                  std::chrono::milliseconds max_duration = {});
   struct TurnResult {
     std::string answer;
     Json response;
@@ -233,8 +258,14 @@ private:
       Json* step_tool_results = nullptr, TokenUsage* run_usage = nullptr,
       std::map<std::string, TokenUsage>* usage_by_phase = nullptr,
       std::map<std::string, TokenUsage>* usage_by_model = nullptr,
-      Json* compacted_history_prefix = nullptr);
-  Json prepare_loop_input(const LoopInput& input, std::string& transcript);
+      Json* compacted_history_prefix = nullptr,
+      std::set<std::string>* executed_effects = nullptr,
+      const std::set<std::string>* protected_tools = nullptr,
+      const std::set<std::string>* idempotent_tools = nullptr,
+      bool protect_unclassified_tools = false,
+      const std::function<std::chrono::milliseconds()>& remaining_time = {});
+  Json prepare_loop_input(const LoopInput& input, std::string& transcript,
+      const std::function<std::chrono::milliseconds()>& remaining_time = {});
 
   Config config_;
   ContextManager context_;
@@ -245,6 +276,9 @@ private:
   SkillLibrary skills_;
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   Json history_ = json::array{};
+  mutable std::filesystem::path history_revision_path_;
+  mutable std::string history_revision_bytes_;
+  mutable bool has_history_revision_=false;
   Json last_response_ = nullptr;
   TokenUsage last_usage_;
   TokenUsage total_usage_;

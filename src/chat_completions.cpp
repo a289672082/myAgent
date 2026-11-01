@@ -88,6 +88,10 @@ ChatCompletionsModel::ChatCompletionsModel(Config config):config_(std::move(conf
     throw std::invalid_argument("ChatCompletionsModel HTTP timeout must be positive");
 }
 Json ChatCompletionsModel::create(const Json& request) {
+  return create_with_timeout(request,{});
+}
+Json ChatCompletionsModel::create_with_timeout(const Json& request,
+    std::chrono::milliseconds timeout) {
   // Chat Completions 适配器适用于提供 OpenAI 兼容 /chat/completions 的服务；
   // Anthropic/Gemini 原生协议及音频流式调用需用户注入其他 Model 实现。
   const auto& url=config_.base_url;
@@ -95,10 +99,25 @@ Json ChatCompletionsModel::create(const Json& request) {
      (url.rfind("http://",0)==0?7u:0u);
   if(!scheme||url.find('@',scheme)!=std::string::npos||url.find('#')!=std::string::npos)
     throw std::invalid_argument("Invalid Chat base_url");
-  const auto slash=url.find('/',scheme);
-  const auto origin=url.substr(0,slash);
-  const std::string target=config_.append_responses_path?"/v1/chat/completions":
-      (slash==std::string::npos?"/":url.substr(slash));
+  const auto boundary=url.find_first_of("/?",scheme);
+  const auto origin=url.substr(0,boundary);
+  if(origin.size()==scheme)
+    throw std::invalid_argument("Chat base_url requires a host");
+  const auto query_at=url.find('?',scheme);
+  const auto path_end=query_at==std::string::npos?url.size():query_at;
+  std::string path=(boundary!=std::string::npos && url[boundary]=='/')?
+      url.substr(boundary,path_end-boundary):"/";
+  const std::string query=query_at==std::string::npos?"":url.substr(query_at);
+  if(config_.append_responses_path) {
+    while(path.size()>1 && path.back()=='/')path.pop_back();
+    if(path=="/")path.clear(); // Root origin must not produce //v1.
+    if(!path.ends_with("/chat/completions")) {
+      // An existing /v1 API prefix must not become /v1/v1.
+      path+=(path.ends_with("/v1")?"":"/v1");
+      path+="/chat/completions";
+    }
+  }
+  const std::string target=path+query;
   const auto* input=j::if_contains(request,"input");
   if(!input||!input->is_array())throw std::invalid_argument("Responses input required");
   Json payload=j::object{{"model",request.at("model")},
@@ -118,15 +137,35 @@ Json ChatCompletionsModel::create(const Json& request) {
     payload["parallel_tool_calls"]=*parallel;
   httplib::Client client(origin);
   const auto limit=config_.http_timeout_seconds;
-  client.set_connection_timeout(std::min(limit,10u));
-  client.set_read_timeout(limit);client.set_write_timeout(limit);
+  if(timeout.count()>0) {
+    const auto actual=std::min(timeout,std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::seconds(limit)));
+    const auto connection=std::min(actual,std::chrono::milliseconds(10000));
+    client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
+                                  static_cast<time_t>((connection.count()%1000)*1000));
+    client.set_read_timeout(static_cast<time_t>(actual.count()/1000),
+                            static_cast<time_t>((actual.count()%1000)*1000));
+    client.set_write_timeout(static_cast<time_t>(actual.count()/1000),
+                             static_cast<time_t>((actual.count()%1000)*1000));
+  } else {
+    client.set_connection_timeout(std::min(limit,10u));
+    client.set_read_timeout(limit);client.set_write_timeout(limit);
+  }
   client.set_follow_location(false);
   httplib::Headers headers={{"Authorization","Bearer "+config_.api_key}};
-  auto res=client.Post(target,headers,j::serialize(payload),"application/json");
+  // An untrusted gateway must not allocate an unbounded response body.
+  constexpr std::size_t MaxJsonBytes=8*1024*1024;
+  std::string body;bool oversized=false;
+  auto res=client.Post(target,headers,j::serialize(payload),"application/json",
+      [&](const char* chunk,std::size_t n) {
+        if(n>MaxJsonBytes-body.size()){oversized=true;return false;}
+        body.append(chunk,n);return true;
+      });
+  if(oversized)throw std::runtime_error("Chat HTTP response exceeds 8 MiB");
   if(!res)throw std::runtime_error("Chat HTTP transport failed: "+httplib::to_string(res.error()));
   if(res->status<200||res->status>=300)
-    throw std::runtime_error("Chat HTTP "+std::to_string(res->status)+": "+res->body.substr(0,500));
-  const auto json=j::parse(res->body);
+    throw std::runtime_error("Chat HTTP "+std::to_string(res->status));
+  const auto json=j::parse(body);
   const auto* choices=j::if_contains(json,"choices");
   if(!choices||!choices->is_array()||choices->empty())
     throw std::runtime_error("Chat Completions missing choices");
@@ -144,8 +183,12 @@ Json ChatCompletionsModel::create(const Json& request) {
         {"call_id",call.at("id")},{"name",function.at("name")},
         {"arguments",function.at("arguments")}});
     }
-  Json converted=j::object{{"status",field(choice,"finish_reason")=="length"?
-      "incomplete":"completed"},{"output",std::move(outputs)}};
+  const auto finish=field(choice,"finish_reason");
+  // Only a normal stop or a tool-call handoff represents a completed turn.
+  // content_filter, length and nonstandard/unknown reasons are not success.
+  const bool complete=(finish=="stop" || finish=="tool_calls");
+  Json converted=j::object{{"status",complete?"completed":"incomplete"},
+      {"output",std::move(outputs)}};
   if(const auto* usage=j::if_contains(json,"usage")) {
     const auto normalized=convert_usage(*usage);
     if(!normalized.is_null())converted["usage"]=normalized;

@@ -1,6 +1,7 @@
 #include "myagent/multi_agent.hpp"
 #include <yaml-cpp/yaml.h>
 #include <stdexcept>
+#include <vector>
 
 namespace myagent {
 namespace {
@@ -42,6 +43,7 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     if(!cfg || !cfg.IsMap())throw std::invalid_argument("Agent config missing");
     reject_inline_secret(cfg,"api_key");
     spec.config.base_url=scalar(cfg,"base_url",true);
+    spec.config.audio_base_url=scalar(cfg,"audio_base_url");
     spec.config.model=scalar(cfg,"model",true);
     const auto protocol=scalar(cfg,"model_protocol");
     if(protocol.empty()||protocol=="responses")
@@ -58,6 +60,8 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     spec.config.instructions=scalar(cfg,"instructions");
     if(spec.config.instructions.empty())spec.config.instructions="You are a helpful assistant.";
     spec.workspace=scalar(item,"workspace");
+    if(!spec.workspace.empty() && spec.workspace.is_relative())
+      spec.workspace=file.parent_path()/spec.workspace;
     spec.allow_workspace_write=flag(item,"allow_workspace_write",false);
     const auto skills=item["skills"];
     if(skills) {
@@ -102,6 +106,34 @@ void AgentTeam::add_agents_from_file(const std::filesystem::path& file,
     }
     specs.push_back(std::move(spec));
   }
-  for(auto& spec:specs)add_agent(std::move(spec));
+  std::vector<std::string> inserted;
+  std::vector<std::filesystem::path> created_directories;
+  try {
+    for(auto& spec:specs) {
+      const auto name=spec.name;
+      // Record ONLY previously missing directories; never delete user data
+      // when an unrelated later agent fails validation or startup.
+      std::vector<std::filesystem::path> newly_created;
+      if(!spec.workspace.empty()) {
+        for(auto dir=std::filesystem::absolute(spec.workspace);
+            !dir.empty() && !std::filesystem::exists(dir);
+            dir=dir.parent_path()) {
+          newly_created.push_back(dir);
+          if(dir==dir.parent_path())break;
+        }
+      }
+      add_agent(std::move(spec));
+      inserted.push_back(name);
+      created_directories.insert(created_directories.end(),
+                                  newly_created.begin(),newly_created.end());
+    }
+  } catch(...) {
+    for(const auto& name:inserted)workers_.erase(name);
+    for(const auto& directory:created_directories) {
+      std::error_code ec;
+      std::filesystem::remove(directory,ec); // Only succeeds for empty directories.
+    }
+    throw;
+  }
 }
 } // namespace myagent

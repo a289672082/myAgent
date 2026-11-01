@@ -47,6 +47,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
   Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
+  std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
@@ -60,9 +61,18 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       return (options.cancelled && options.cancelled()) ||
              std::chrono::steady_clock::now() >= deadline;
     };
+    const std::function<std::chrono::milliseconds()> remaining_time=
+        deadline==std::chrono::steady_clock::time_point::max()
+        ? std::function<std::chrono::milliseconds()>{}
+        : std::function<std::chrono::milliseconds()>([&](){
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline-std::chrono::steady_clock::now());
+          });
     if (cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
-    original_input = prepare_loop_input(input, result.audio_transcript);
+    original_input = prepare_loop_input(input, result.audio_transcript,remaining_time);
+    if(cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Agent deadline exceeded during input preparation");
     const std::string task = input.text.empty()
         ? (input.audio.empty() ? "Analyze the provided image(s)." :
                                 "Analyze the provided audio.")
@@ -78,7 +88,10 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           options.max_model_calls, options.max_tool_calls, max_rounds,
           cancelled, &result.trace, options.on_event, phase,
           step_tool_results, &result.usage, &result.usage_by_phase,
-          &result.usage_by_model, &compacted_history_prefix);
+          &result.usage_by_model, &compacted_history_prefix,
+          &executed_effects, &options.non_idempotent_tools,
+          &options.idempotent_tools, options.protect_unclassified_tools,
+          remaining_time);
       latest_response = turn.response;
       trace_event(result, options, phase, "completed", result.iterations);
       return turn.answer;
@@ -127,7 +140,9 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         std::min(config_.max_tool_rounds, options.max_iterations - 1),
         cancelled, &result.trace, options.on_event, "react",
         nullptr, &result.usage, &result.usage_by_phase, &result.usage_by_model,
-        &compacted_history_prefix);
+        &compacted_history_prefix, &executed_effects,
+        &options.non_idempotent_tools, &options.idempotent_tools,
+        options.protect_unclassified_tools, remaining_time);
       latest_response = turn.response;
       result.answer = turn.answer;
       result.iterations = std::min(options.max_iterations, result.tool_calls + 1);
@@ -149,7 +164,7 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       //
       // 与 ReAct 的区别：这里先有明确的计划/依赖/验收标准，每一步有独立状态。
       // 它仍复用 run_stage() 的同一套 MCP Tool Calling 底层执行器。
-      detail::PlanManager manager(options.max_plan_steps);
+      detail::PlanManager manager(options.max_plan_steps,options.max_replans);
       manager.initialize(invoke("plan", original_input, plan_prompt, false,
                                 0, options.planner_model));
       result.plan = manager.steps();
@@ -330,13 +345,22 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
     }
     }
 
+    // A non-cooperative custom Model may return after the deadline.
+    // Do not commit a timed-out response as a successful answer.
+    if (cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded");
     // Optional final speech output is generated only for successful runs.
     if (!options.speech_output.empty()) {
-      if (options.cancelled && options.cancelled())
+      if (cancelled())
         throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
-      speak(result.answer, options.speech_output, options.speech_voice);
+      const auto remaining=remaining_time?remaining_time():std::chrono::milliseconds{0};
+      if(remaining_time && remaining.count()<=0)
+        throw detail::LoopAbort(LoopStatus::Cancelled,"Speech output deadline exceeded");
+      speak(result.answer, options.speech_output, options.speech_voice,remaining);
       result.speech_output = options.speech_output;
     }
+    if (cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after output");
     if (options.commit_to_history) {
       // 压缩在 working 中发生时，提交已压缩的原始历史而不是重新使用
       // 未压缩的 history_；只保留原始会话及本次最终答案，不回写内部工具轨迹。

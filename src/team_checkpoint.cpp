@@ -1,9 +1,20 @@
 #include "team_checkpoint.hpp"
+#include "file_io.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iterator>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#else
+#define NOMINMAX
+#include <windows.h>
+#endif
 namespace myagent::detail {
 namespace json = mymcp::json;
 namespace {
@@ -85,28 +96,16 @@ void save_team_checkpoint(const std::filesystem::path& path,
     {"format","myagent-team-checkpoint-v2"},{"tasks",task_graph(tasks)},
     {"completed_records",records},{"prior_attempts",failures},{"inflight",running}});
   if(serialized.size()>8*1024*1024)throw std::runtime_error("Checkpoint > 8 MiB");
-  auto temp=path;temp+=".tmp";
-  {
-    std::ofstream out(temp,std::ios::binary|std::ios::trunc);
-    if(!out)throw std::runtime_error("Cannot open checkpoint temporary file");
-    out.write(serialized.data(),static_cast<std::streamsize>(serialized.size()));
-    out.flush();
-    if(!out)throw std::runtime_error("Failed to write checkpoint");
-  }
-  // 同目录 rename，避免写出半截 JSON。宿主仍需保证目录可信和权限正确。
-  std::filesystem::rename(temp,path);
+  // A cross-process lock refuses overlapping checkpoint writers. If the
+  // process dies, the stale *.lock directory must be cleared by the host.
+  detail::atomic_replace(path,serialized,true);
 }
 RestoredTeamCheckpoint load_team_checkpoint(
     const std::filesystem::path& path,const std::vector<TeamTask>& tasks,
     const std::function<TaskValidation(const TeamTask&,const DelegationResult&)>& validator) {
   if(!validator)throw std::runtime_error(
     "Checkpoint resume requires a host validator for external side effects");
-  if(!std::filesystem::exists(path))throw std::runtime_error("Checkpoint missing");
-  if(std::filesystem::file_size(path)>8*1024*1024)
-    throw std::runtime_error("Checkpoint too large");
-  std::ifstream in(path,std::ios::binary);
-  if(!in)throw std::runtime_error("Cannot read checkpoint");
-  const auto text=std::string(std::istreambuf_iterator<char>(in),{});
+  const auto text=detail::read_regular_file(path,8*1024*1024);
   const auto data=json::parse(text);
   if(!data.is_object()||data.at("format").as_string()!="myagent-team-checkpoint-v2"||
      json::serialize(data.at("tasks"))!=json::serialize(task_graph(tasks)))

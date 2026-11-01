@@ -1,5 +1,7 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
+#include "workspace_io.hpp"
+#include "file_io.hpp"
 #include "httplib.h"
 #include "yaml-cpp/yaml.h"
 #include <algorithm>
@@ -19,6 +21,35 @@ namespace {
 constexpr std::size_t MaxMediaBytes = 20 * 1024 * 1024;
 constexpr std::size_t MaxSkillBytes = 128 * 1024;
 constexpr std::size_t MaxToolResultBytes = 256 * 1024;
+constexpr std::size_t MaxHttpJsonBytes = 8 * 1024 * 1024;
+constexpr std::size_t MaxMcpPages = 64;
+constexpr std::size_t MaxMcpToolsHard = 512;
+constexpr std::size_t MaxMcpToolBytesHard = 128 * 1024;
+constexpr std::size_t MaxMcpCatalogBytesHard = 2 * 1024 * 1024;
+
+// Conservative preflight traversal avoids serializing arbitrarily large
+// external MCP JSON. Each member consumes a little structural overhead; the
+// exact encoded JSON length is checked again after this fast bounded walk.
+bool fits_json_budget(const Json& value,std::size_t& remaining,unsigned depth=0) {
+  if(depth>48 || remaining<16)return false;
+  remaining-=16;
+  if(value.is_string()) {
+    const auto text=value.as_string_view();
+    if(text.size()>remaining)return false;
+    remaining-=text.size();
+  } else if(value.is_array()) {
+    for(const auto& item:value.array_range())
+      if(!fits_json_budget(item,remaining,depth+1))return false;
+  } else if(value.is_object()) {
+    for(const auto& entry:value.object_range()) {
+      const auto key=entry.key();
+      if(key.size()>remaining)return false;
+      remaining-=key.size();
+      if(!fits_json_budget(entry.value(),remaining,depth+1))return false;
+    }
+  }
+  return true;
+}
 
 std::string as_string(const Json& v, const std::string& key, std::string fallback = {}) {
   const Json* p = json::if_contains(v, key);
@@ -34,21 +65,9 @@ std::string trim(std::string s) {
   return s;
 }
 std::string read_bounded_file(const std::filesystem::path& file, std::size_t limit) {
-  if (!std::filesystem::is_regular_file(file))
-    throw std::runtime_error("Not a regular file: " + file.string());
-  if (std::filesystem::file_size(file) > limit)
-    throw std::runtime_error("File exceeds configured safety limit: " + file.string());
-  std::ifstream in(file, std::ios::binary);
-  if (!in) throw std::runtime_error("Cannot read: " + file.string());
-  std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  if (s.size() > limit) throw std::runtime_error("File exceeds limit");
-  return s;
+  return detail::read_regular_file(file,limit);
 }
-void write_file(const std::filesystem::path& file, const std::string& data) {
-  std::ofstream out(file, std::ios::binary | std::ios::trunc);
-  if (!out || !out.write(data.data(), static_cast<std::streamsize>(data.size())))
-    throw std::runtime_error("Cannot write: " + file.string());
-}
+// Persisted outputs are written through detail::atomic_replace.
 std::string base64(const std::string& input) {
   static constexpr char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -105,19 +124,33 @@ httplib::Headers headers(const Config& config) {
   return {{"Authorization", "Bearer " + config.api_key}};
 }
 void check_http(const httplib::Result& result, const std::string& endpoint) {
-  if (!result) throw std::runtime_error("HTTP transport failed at " + endpoint + ": " +
+  const auto safe_endpoint=endpoint.substr(0,endpoint.find('?'));
+  if (!result) throw std::runtime_error("HTTP transport failed at " + safe_endpoint + ": " +
                                         httplib::to_string(result.error()));
   if (result->status < 200 || result->status >= 300) {
-    // HTTP error bodies may include external text, but not the Authorization header.
-    std::string body = result->body.substr(0, 1024);
-    throw std::runtime_error(endpoint + " HTTP " + std::to_string(result->status) + ": " + body);
+    // Error bodies and URL queries may contain or echo credentials.
+    throw std::runtime_error(safe_endpoint + " HTTP " + std::to_string(result->status));
   }
 }
-void configure(httplib::Client& client, unsigned timeout_seconds = 60) {
+void configure(httplib::Client& client, unsigned timeout_seconds = 60,
+               std::chrono::milliseconds remaining = {}) {
   if (!timeout_seconds) throw std::invalid_argument("HTTP timeout must be positive");
-  client.set_connection_timeout(std::min(timeout_seconds, 10u));
-  client.set_read_timeout(timeout_seconds);
-  client.set_write_timeout(timeout_seconds);
+  if(remaining.count()>0) {
+    const auto max_transport=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::seconds(timeout_seconds));
+    const auto actual=std::min(remaining,max_transport);
+    const auto seconds=static_cast<time_t>(actual.count()/1000);
+    const auto micros=static_cast<time_t>((actual.count()%1000)*1000);
+    const auto connection=std::min(actual,std::chrono::milliseconds(10000));
+    client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
+                                  static_cast<time_t>((connection.count()%1000)*1000));
+    client.set_read_timeout(seconds,micros);
+    client.set_write_timeout(seconds,micros);
+  } else {
+    client.set_connection_timeout(std::min(timeout_seconds,10u));
+    client.set_read_timeout(timeout_seconds);
+    client.set_write_timeout(timeout_seconds);
+  }
   client.set_follow_location(false); // Never forward a bearer token on redirects.
 }
 std::string media_type(const std::filesystem::path& file) {
@@ -155,6 +188,39 @@ std::string output_text(const Json& response) {
   }
   if (text.empty()) text = as_string(response, "output_text");
   return text;
+}
+// Refuse malformed imported histories and orphaned tool outputs.
+void validate_history(const Json& history) {
+  std::set<std::string> pending;
+  for(const auto& entry:history.array_range()) {
+    if(!entry.is_object())throw std::runtime_error("Invalid history entry");
+    const auto type=as_string(entry,"type");
+    if(type=="function_call") {
+      const auto id=as_string(entry,"call_id");
+      if(id.empty() || as_string(entry,"name").empty() ||
+         !json::if_contains(entry,"arguments") ||
+         !entry.at("arguments").is_string() || !pending.insert(id).second)
+        throw std::runtime_error("Invalid or duplicate function call in history");
+    } else if(type=="function_call_output") {
+      const auto id=as_string(entry,"call_id");
+      if(id.empty() || !pending.erase(id) ||
+         !json::if_contains(entry,"output") || !entry.at("output").is_string())
+        throw std::runtime_error("Orphan or invalid function output in history");
+    } else if(type=="message" || type.empty()) {
+      const auto role=as_string(entry,"role");
+      if(role!="user" && role!="assistant")
+        throw std::runtime_error("Invalid history role");
+      const auto* content=json::if_contains(entry,"content");
+      if(!content || (!content->is_string() && !content->is_array()))
+        throw std::runtime_error("Invalid history content");
+      if(type=="message" && !content->is_array())
+        throw std::runtime_error("Responses message content must be an array");
+    } else if(type!="reasoning") {
+      throw std::runtime_error("Unsupported history message type: "+type);
+    }
+  }
+  if(!pending.empty())
+    throw std::runtime_error("Unpaired tool calls in history");
 }
 } // namespace
 
@@ -256,10 +322,11 @@ std::size_t utf8_chars(const std::string& value, const std::filesystem::path& fi
   return count;
 }
 YAML::Node read_frontmatter(const std::filesystem::path& file) {
-  if (std::filesystem::file_size(file) > MaxSkillBytes)
+  const auto raw=detail::workspace_read(file.parent_path(),
+                                           file.filename().string());
+  if (raw.size() > MaxSkillBytes)
     throw skill_error(file, "SKILL.md exceeds the 128 KiB limit");
-  std::ifstream in(file, std::ios::binary);
-  if (!in) throw skill_error(file, "cannot open SKILL.md");
+  std::istringstream in(raw);
   std::string line;
   if (!std::getline(in, line))
     throw skill_error(file, "SKILL.md is empty");
@@ -336,7 +403,11 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
     if (std::filesystem::exists(codex)) {
       if (!std::filesystem::is_regular_file(codex) || std::filesystem::is_symlink(codex))
         throw skill_error(codex, "expected a regular agents/openai.yaml file");
-      const auto text = read_bounded_file(codex, MaxSkillBytes);
+      // Use the same descriptor/handle-based traversal as SKILL.md and
+      // supporting files, not a check-then-open path.
+      const auto text = detail::workspace_read(codex.parent_path(),"openai.yaml");
+      if(text.size()>MaxSkillBytes)
+        throw skill_error(codex,"agents/openai.yaml exceeds 128 KiB");
       const auto doc = yaml_unique_map(yaml_document(text, codex, 0), codex, "agents/openai.yaml");
       const auto policy = doc["policy"];
       if (policy.IsDefined()) {
@@ -398,7 +469,10 @@ const Skill& SkillLibrary::get(const std::string& name) const {
 }
 std::string SkillLibrary::read(const std::string& name) const {
   const auto& skill = get(name);
-  std::string contents = read_bounded_file(skill.source, MaxSkillBytes);
+  std::string contents = detail::workspace_read(skill.source.parent_path(),
+                                                skill.source.filename().string());
+  if(contents.size()>MaxSkillBytes)
+    throw std::runtime_error("Skill exceeds 128 KiB");
   contents.erase(std::remove(contents.begin(), contents.end(), '\r'), contents.end());
   return contents;
 }
@@ -443,10 +517,25 @@ std::string SkillLibrary::read_file(const std::string& name,
     if (fs::is_symlink(path))
       throw std::invalid_argument("Skill symlinks are not permitted");
   }
-  auto content = read_bounded_file(path, MaxSkillBytes);
+  auto content = detail::workspace_read(root, rel.generic_string());
+  if(content.size()>MaxSkillBytes)
+    throw std::runtime_error("Skill support file exceeds 128 KiB");
   if (content.find('\0') != std::string::npos)
     throw std::invalid_argument("Binary Skill asset cannot be read as text");
   return content;
+}
+
+std::string audio_target(const Config& config, const std::string& endpoint) {
+  if(config.audio_base_url.empty())return "/v1/audio/"+endpoint;
+  const auto url=parse_base_url(config.audio_base_url);
+  std::string path=url.path;
+  while(path.size()>1 && path.back()=='/')path.pop_back();
+  if(path=="/")path.clear();
+  if(!path.ends_with("/v1/audio")) {
+    if(path.ends_with("/v1"))path+="/audio";
+    else path+="/v1/audio";
+  }
+  return path+"/"+endpoint+url.query;
 }
 
 OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
@@ -455,30 +544,46 @@ OpenAIResponses::OpenAIResponses(Config config) : config_(std::move(config)) {
   if (config_.base_url.empty())
     throw std::invalid_argument("OpenAI base URL is required: set Config::base_url explicitly");
   (void)parse_base_url(config_.base_url);
+  if(!config_.audio_base_url.empty())
+    (void)parse_base_url(config_.audio_base_url);
 }
 Json OpenAIResponses::create(const Json& request) {
+  return create_with_timeout(request,{});
+}
+Json OpenAIResponses::create_with_timeout(const Json& request,
+    std::chrono::milliseconds timeout) {
   const auto url = parse_base_url(config_.base_url);
   const auto target = responses_target(config_, url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
-  auto result = client.Post(target, headers(config_),
-                            json::serialize(request), "application/json");
-  check_http(result, target);
-  return json::parse(result->body);
+  configure(client, config_.http_timeout_seconds, timeout);
+  // Receive incrementally: limiting result->body after Post is too late.
+  std::string body;bool oversized=false;
+  auto result=client.Post(target,headers(config_),json::serialize(request),
+      "application/json",[&](const char* chunk,std::size_t n) {
+        if(n>MaxHttpJsonBytes-body.size()) {oversized=true;return false;}
+        body.append(chunk,n);
+        return true;
+      });
+  if(oversized)throw std::runtime_error("Model HTTP response exceeds 8 MiB");
+  check_http(result,target);
+  return json::parse(body);
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
-                                        const std::string& model) const {
+                                        const std::string& model,
+                                        std::chrono::milliseconds timeout) const {
   const std::string bytes = read_bounded_file(file, MaxMediaBytes);
-  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
-  const auto url = parse_base_url(config_.base_url);
+  // The optional audio gateway can have its own origin and route prefix.
+  const auto url = parse_base_url(config_.audio_base_url.empty()?
+      config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
+  configure(client, config_.http_timeout_seconds,timeout);
   httplib::UploadFormDataItems items = {
     {"file", bytes, file.filename().string(), "application/octet-stream"},
     {"model", model, "", ""}
   };
-  auto result = client.Post("/v1/audio/transcriptions", headers(config_), items);
-  check_http(result, "/v1/audio/transcriptions");
+  const auto target=audio_target(config_,"transcriptions");
+  auto result = client.Post(target, headers(config_), items);
+  check_http(result, target);
   const auto body = json::parse(result->body);
   const auto text = as_string(body, "text");
   if (text.empty()) throw std::runtime_error("Audio transcription returned no text");
@@ -486,17 +591,24 @@ std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
 }
 void OpenAIResponses::speech(const std::string& text,
                              const std::filesystem::path& output,
-                             const std::string& voice, const std::string& model) const {
-  // Audio APIs are separate endpoints on the same origin, not Responses URLs.
-  const auto url = parse_base_url(config_.base_url);
+                             const std::string& voice, const std::string& model,
+                             std::chrono::milliseconds timeout) const {
+  const auto url = parse_base_url(config_.audio_base_url.empty()?
+      config_.base_url:config_.audio_base_url);
   httplib::Client client(url.origin);
-  configure(client, config_.http_timeout_seconds);
+  configure(client, config_.http_timeout_seconds,timeout);
   const Json request = json::object{{"model", model}, {"voice", voice},
                                     {"input", text}, {"response_format", "mp3"}};
-  auto result = client.Post("/v1/audio/speech", headers(config_),
-                            json::serialize(request), "application/json");
-  check_http(result, "/v1/audio/speech");
-  write_file(output, result->body); // MP3 bytes; caller chooses destination filename.
+  const auto target=audio_target(config_,"speech");
+  std::string audio;bool oversized=false;
+  auto result=client.Post(target,headers(config_),json::serialize(request),
+      "application/json",[&](const char* chunk,std::size_t n) {
+        if(n>MaxMediaBytes-audio.size()){oversized=true;return false;}
+        audio.append(chunk,n);return true;
+      });
+  if(oversized)throw std::runtime_error("Speech output exceeds 20 MiB");
+  check_http(result,target);
+  detail::atomic_replace(output,audio); // Never leave a partial MP3.
 }
 
 Agent::Agent(Config config, std::shared_ptr<Model> model)
@@ -595,24 +707,67 @@ std::string Agent::instructions() const {
 }
 Json Agent::tool_definitions(std::map<std::string, Route>& routes) {
   Json tools = json::array{};
+  const auto max_tools=std::min(config_.max_mcp_tools,MaxMcpToolsHard);
+  const auto max_tool_bytes=std::min(config_.max_mcp_tool_bytes,MaxMcpToolBytesHard);
+  const auto max_catalog_bytes=std::min(config_.max_mcp_catalog_bytes,MaxMcpCatalogBytesHard);
+  if(!max_tools || max_tool_bytes<256 || max_catalog_bytes<max_tool_bytes)
+    throw std::invalid_argument("Invalid MCP catalog limits");
+  std::size_t catalog_left=max_catalog_bytes;
+  std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
     endpoint.client->discover();
-    const Json catalog = endpoint.client->list_all("tools/list", "tools");
-    for (const auto& tool : catalog.array_range()) {
-      const auto name = as_string(tool, "name");
-      const auto qualified = endpoint.prefix + "__" + safe_tool_name(name);
-      if (qualified.size() > 64 || routes.count(qualified))
-        throw std::runtime_error("MCP tool name too long or colliding: " + qualified);
-      // 拒绝的工具不出现在模型可见目录中；执行前仍会再次做权限检查。
-      if (config_.tool_policy.access(qualified) == ToolAccess::Deny) continue;
-      routes.emplace(qualified, Route{endpoint.client, name});
-      const Json* schema = json::if_contains(tool, "inputSchema");
-      tools.push_back(json::object{{"type", "function"}, {"name", qualified},
-          {"description", as_string(tool, "description")},
-          {"parameters", schema && schema->is_object() ? *schema :
-                           Json(json::object{{"type", "object"}, {"properties", json::object{}}})},
-          {"strict", false}});
+    Json params=json::object{};
+    std::set<std::string> cursors;
+    bool exhausted=false;
+    for(std::size_t page=0;page<MaxMcpPages;++page) {
+      // Request one page at a time: Client::list_all would first accumulate
+      // every tool, potentially 10,000 pages, before enforcing our limits.
+      const Json result=endpoint.client->request("tools/list",params);
+      const Json* entries=json::if_contains(result,"tools");
+      if(!entries || !entries->is_array())
+        throw std::runtime_error("Invalid MCP tools/list page");
+      if(entries->size()>max_tools-seen_tools)
+        throw std::runtime_error("MCP tool count exceeds configured limit");
+      for(const auto& tool:entries->array_range()) {
+        if(!tool.is_object())
+          throw std::runtime_error("Malformed MCP tool description");
+        std::size_t remaining=max_tool_bytes;
+        if(!fits_json_budget(tool,remaining))
+          throw std::runtime_error("MCP tool schema/description exceeds configured limit");
+        // The walk is a cheap allocation guard; only exact encoded bytes
+        // count against the externally configurable catalog budget.
+        const auto exact_bytes=json::serialize(tool).size();
+        if(exact_bytes>max_tool_bytes || exact_bytes>catalog_left)
+          throw std::runtime_error("MCP aggregate/per-tool encoded budget exceeded");
+        catalog_left-=exact_bytes;
+        ++seen_tools;
+        const auto name=as_string(tool,"name");
+        const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
+        if(qualified.size()>64 || routes.count(qualified))
+          throw std::runtime_error("MCP tool name too long or colliding: "+qualified);
+        if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
+        routes.emplace(qualified,Route{endpoint.client,name});
+        const Json* schema=json::if_contains(tool,"inputSchema");
+        tools.push_back(json::object{{"type","function"},{"name",qualified},
+          {"description",as_string(tool,"description")},
+          {"parameters",schema && schema->is_object()?*schema:
+             Json(json::object{{"type","object"},{"properties",json::object{}}})},
+          {"strict",false}});
+      }
+      const Json* next=json::if_contains(result,"nextCursor");
+      if(!next || next->is_null()) {
+        exhausted=true;
+        break;
+      }
+      if(!next->is_string() || next->as_string_view().empty() ||
+         next->as_string_view().size()>1024)
+        throw std::runtime_error("Invalid MCP pagination cursor");
+      const std::string cursor(next->as_string());
+      if(!cursors.insert(cursor).second)
+        throw std::runtime_error("Repeated MCP pagination cursor");
+      params=json::object{{"cursor",cursor}};
     }
+    if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
   }
   if (config_.auto_skill_selection && !skills_.all().empty()) {
     // Keep built-in Skill tools separate from externally registered MCP routes.
@@ -647,25 +802,47 @@ std::string Agent::execute_tool(const Route& route, const Json& call) {
     const auto raw = as_string(call, "arguments", "{}");
     const auto args = json::parse(raw);
     if (!args.is_object()) throw std::invalid_argument("Tool arguments must be a JSON object");
-    auto result = json::serialize(route.client->call(route.native_name, args));
-    if (result.size() > MaxToolResultBytes)
+    const Json value=route.client->call(route.native_name,args);
+    std::size_t available=MaxToolResultBytes;
+    if(!fits_json_budget(value,available))
+      return R"({"isError":true,"message":"Tool output exceeds 256 KiB budget"})";
+    auto result=json::serialize(value);
+    if(result.size()>MaxToolResultBytes)
       return R"({"isError":true,"message":"Tool output exceeds 256 KiB limit"})";
     return result;
   } catch (const std::exception& e) {
-    return json::serialize(json::object{{"isError", true}, {"message", e.what()}});
+    return json::serialize(json::object{{"isError", true},
+      {"message", std::string(e.what()).substr(0,1024)}});
   }
 }
-std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls) {
+std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
+                       std::chrono::milliseconds max_duration) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
+  std::set<std::string> executed_effects;
+  const LoopOptions safe_defaults; // Same protection as run_loop(), including ask().
+  const auto deadline=max_duration.count()>0
+      ? std::chrono::steady_clock::now()+max_duration
+      : std::chrono::steady_clock::time_point::max();
+  const auto cancelled=[&](){return std::chrono::steady_clock::now()>=deadline;};
+  const std::function<std::chrono::milliseconds()> remaining=[&]() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline-std::chrono::steady_clock::now());
+  };
   const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
       model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
-      {}, nullptr, {}, "ask");
+      max_duration.count()>0?std::function<bool()>(cancelled):std::function<bool()>{},
+      nullptr, {}, "ask",nullptr,nullptr,nullptr,nullptr,
+      nullptr,&executed_effects,&safe_defaults.non_idempotent_tools,
+      &safe_defaults.idempotent_tools,safe_defaults.protect_unclassified_tools,
+      max_duration.count()>0?remaining:std::function<std::chrono::milliseconds()>{});
+  if(max_duration.count()>0 && cancelled())
+    throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after response");
   history_ = std::move(working);
   last_response_ = turn.response;
   return turn.answer;
@@ -680,11 +857,28 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     Json* step_tool_results, TokenUsage* run_usage,
     std::map<std::string, TokenUsage>* usage_by_phase,
     std::map<std::string, TokenUsage>* usage_by_model,
-    Json* compacted_history_prefix) {
+    Json* compacted_history_prefix,
+    std::set<std::string>* executed_effects,
+    const std::set<std::string>* protected_tools,
+    const std::set<std::string>* idempotent_tools,
+    bool protect_unclassified_tools,
+    const std::function<std::chrono::milliseconds()>& remaining_time) {
   // Transactional at turn granularity: unsuccessful turns do not modify working.
+  const auto model_timeout=[&]() {
+    if(!remaining_time)return std::chrono::milliseconds{0};
+    const auto left=remaining_time();
+    if(left.count()<=0)
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Model request deadline exceeded");
+    return left;
+  };
   Json proposed = working;
   proposed.push_back(json::object{{"role", "user"}, {"content", std::move(user_content)}});
   std::map<std::string, Route> routes;
+  // Discovery itself can perform I/O; enforce budgets before starting it.
+  if(cancelled && cancelled())
+    throw detail::LoopAbort(LoopStatus::Cancelled,"Agent loop cancelled");
+  if(model_calls>=max_model_calls)
+    throw detail::LoopAbort(LoopStatus::LimitReached,"Model call budget exhausted");
   const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
   std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
   const auto emit = [&](const Json& event) {
@@ -706,11 +900,12 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           throw detail::LoopAbort(LoopStatus::Cancelled, "Context compression cancelled");
         if (model_calls >= max_model_calls)
           throw detail::LoopAbort(LoopStatus::LimitReached, "Context compression budget exhausted");
+        const auto request_timeout=model_timeout();
         summary_request["model"] = config_.context.summary_model.empty()
             ? config_.model : config_.context.summary_model;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
-        const Json summary_response = model_->create(summary_request);
+        const Json summary_response = model_->create_with_timeout(summary_request,request_timeout);
         const auto usage = parse_token_usage(summary_response);
         total_usage_.add(usage);
         last_usage_.add(usage);
@@ -787,9 +982,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     if(model_calls >= max_model_calls)
       throw detail::LoopAbort(LoopStatus::LimitReached,
         "Model budget exhausted after context compression");
+    const auto request_timeout=model_timeout(); // No attempt yet if already expired.
     ++model_calls; // Charge attempts, even when the request fails.
     if (phase == "ask") ++last_model_attempts_;
-    const Json response = model_->create(request);
+    const Json response = model_->create_with_timeout(request,request_timeout);
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
@@ -817,13 +1013,32 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const Json* output = json::if_contains(response, "output");
     if (!output || !output->is_array())
       throw std::runtime_error("Model response missing output array");
-    bool has_calls = false;
-    for (const auto& item : output->array_range()) {
-      proposed.push_back(item);
-      if (as_string(item, "type") == "function_call") has_calls = true;
+    // Reject invalid/duplicate calls as a batch BEFORE the first tool runs.
+    bool has_calls=false;
+    std::set<std::string> batch_ids;
+    for(const auto& item:output->array_range()) {
+      if(!item.is_object())
+        throw std::runtime_error("Model output item must be an object");
+      if(as_string(item,"type")!="function_call")continue;
+      has_calls=true;
+      const auto* id=json::if_contains(item,"call_id");
+      const auto* name=json::if_contains(item,"name");
+      const auto* args=json::if_contains(item,"arguments");
+      if(!id || !id->is_string() || id->as_string_view().empty() ||
+         id->as_string_view().size()>128 ||
+         !std::all_of(id->as_string_view().begin(),id->as_string_view().end(),
+           [](unsigned char ch){return ch>=33 && ch<=126;}) ||
+         !batch_ids.insert(std::string(id->as_string())).second ||
+         !name || !name->is_string() || name->as_string_view().empty() ||
+         !args || !args->is_string() ||
+         args->as_string_view().size()>MaxToolResultBytes)
+        throw std::runtime_error("Invalid or duplicate model tool call metadata");
     }
+    for(const auto& item:output->array_range())proposed.push_back(item);
     if (!has_calls) {
       auto answer = output_text(response);
+      if(answer.empty())
+        throw std::runtime_error("Model returned no final answer text");
       working = std::move(proposed);
       return TurnResult{std::move(answer), response};
     }
@@ -848,9 +1063,25 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         if (!args.is_object()) throw std::invalid_argument("Tool arguments must be object");
         permitted = config_.tool_policy.authorize(ToolRequest{config_.agent_id, name, args, phase});
       } catch (const std::exception&) { permitted = false; }
+      bool duplicate_effect=false;
+      const bool read_only=(name=="agent_skill_load" ||
+           name=="agent_skill_read_file" ||
+           (idempotent_tools && idempotent_tools->count(name)));
+      const bool protect_effect=(protected_tools && protected_tools->count(name)) ||
+           (protect_unclassified_tools && !read_only);
+      if(permitted && executed_effects && protect_effect) {
+        // Persist the intent before making the tool call. Even if the call's
+        // result is unknown, an automatic replan must not replay that intent.
+        const auto canonical=json::serialize(
+            json::parse(as_string(item,"arguments","{}")));
+        duplicate_effect=!executed_effects->insert(name+"\n"+canonical).second;
+      }
       if (!permitted) {
         tool_output = R"({"isError":true,"message":"Tool permission denied or approval missing"})";
         emit(json::object{{"phase",phase},{"event","tool_denied"},{"name",name}});
+      } else if(duplicate_effect) {
+        tool_output=R"({"isError":true,"message":"Repeated non-idempotent tool call blocked"})";
+        emit(json::object{{"phase",phase},{"event","tool_replay_blocked"},{"name",name}});
       } else if (name == "agent_skill_load" || name == "agent_skill_read_file") {
         if (!config_.auto_skill_selection || skills_.all().empty())
           throw std::runtime_error("Skill tools are disabled");
@@ -908,13 +1139,17 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
   throw detail::LoopAbort(LoopStatus::LimitReached, "Tool round limit reached");
 }
 
-Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript) {
+Json Agent::prepare_loop_input(const LoopInput& input, std::string& transcript,
+    const std::function<std::chrono::milliseconds()>& remaining_time) {
   std::string text = input.text;
   if (!input.audio.empty()) {
     const auto backend = std::dynamic_pointer_cast<OpenAIResponses>(model_);
     if (!backend)
       throw std::logic_error("Audio input requires OpenAIResponses transcription backend");
-    transcript = backend->transcribe(input.audio);
+    const auto remaining=remaining_time?remaining_time():std::chrono::milliseconds{0};
+    if(remaining_time && remaining.count()<=0)
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Audio transcription deadline exceeded");
+    transcript = backend->transcribe(input.audio,"gpt-4o-mini-transcribe",remaining);
     if (!text.empty()) text += "\n\n";
     text += "Audio transcript:\n" + transcript;
   }
@@ -937,6 +1172,10 @@ std::string Agent::ask_without_tools(const std::string& text) { return run(text,
 std::string Agent::ask_without_tools(const std::string& text, unsigned max_model_calls) {
   return run(text, false, max_model_calls);
 }
+std::string Agent::ask_without_tools(const std::string& text,unsigned max_model_calls,
+    std::chrono::milliseconds max_duration) {
+  return run(text,false,max_model_calls,max_duration);
+}
 std::string Agent::ask_parts(Json content) {
   if (!content.is_array() || content.empty())
     throw std::invalid_argument("ask_parts requires a nonempty array of content parts");
@@ -958,10 +1197,10 @@ std::string Agent::ask_audio(const std::filesystem::path& file, const std::strin
              transcript);
 }
 void Agent::speak(const std::string& text, const std::filesystem::path& output,
-                  const std::string& voice) {
+                  const std::string& voice,std::chrono::milliseconds timeout) {
   auto openai = std::dynamic_pointer_cast<OpenAIResponses>(model_);
   if (!openai) throw std::logic_error("speak requires OpenAIResponses model backend");
-  openai->speech(text, output, voice);
+  openai->speech(text, output, voice,"gpt-4o-mini-tts",timeout);
 }
 CompressionResult Agent::compress_context() {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
@@ -1007,16 +1246,49 @@ void Agent::clear_history() {
 }
 void Agent::save_history(const std::filesystem::path& file) const {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  write_file(file, json::serialize(history_));
+  // v2 identifies the protocol and model, allowing incompatible restores to
+  // fail closed instead of silently sending history to a different backend.
+  const Json envelope=json::object{
+    {"format","myagent-history-v2"},
+    {"model",config_.model},
+    {"protocol",static_cast<int>(config_.model_protocol)},
+    {"messages",history_}};
+  const auto content=json::serialize(envelope);
+  if(content.size()>8*1024*1024)
+    throw std::runtime_error("History save exceeds the 8 MiB load limit");
+  const auto destination=std::filesystem::absolute(file).lexically_normal();
+  const std::string* expected=has_history_revision_ && destination==history_revision_path_
+      ? &history_revision_bytes_:nullptr;
+  detail::atomic_replace(file,content,true,expected);
+  history_revision_path_=destination;
+  history_revision_bytes_=content;
+  has_history_revision_=true;
 }
 void Agent::load_history(const std::filesystem::path& file) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
-  Json data = json::parse(read_bounded_file(file, 8 * 1024 * 1024));
+  const auto bytes=read_bounded_file(file,8*1024*1024);
+  Json data=json::parse(bytes);
+  if(data.is_object()) {
+    if(as_string(data,"format")!="myagent-history-v2" ||
+       as_string(data,"model")!=config_.model ||
+       !json::if_contains(data,"protocol") ||
+       !data.at("protocol").is_int64() ||
+       data.at("protocol").as<int>()!=static_cast<int>(config_.model_protocol) ||
+       !json::if_contains(data,"messages"))
+      throw std::runtime_error("History format, model or protocol mismatch");
+    // Copy the nested array before replacing its parent JSON object.
+    // Assigning directly from data.at("messages") invalidates the source.
+    Json messages=data.at("messages");
+    data=std::move(messages);
+  }
+  // Legacy array-only histories are allowed after strict structural validation.
   if (!data.is_array() || data.size() > config_.max_history_items)
     throw std::runtime_error("Invalid history file");
-  for (const auto& entry : data.array_range())
-    if (!entry.is_object()) throw std::runtime_error("Invalid history entry");
+  validate_history(data);
   history_ = std::move(data);
+  history_revision_path_=std::filesystem::absolute(file).lexically_normal();
+  history_revision_bytes_=bytes;
+  has_history_revision_=true;
   last_response_ = nullptr;
   context_.clear_stats();
 }
