@@ -619,6 +619,10 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
           ? std::shared_ptr<Model>(std::make_shared<ChatCompletionsModel>(config_))
           : std::shared_ptr<Model>(std::make_shared<OpenAIResponses>(config_)))),
     local_("agent-local", "1.0.0") {
+  if(!config_.mcp_timeout_seconds ||
+     config_.max_mcp_wire_bytes<config_.max_mcp_catalog_bytes ||
+     config_.max_mcp_wire_bytes>64*1024*1024)
+    throw std::invalid_argument("MCP wire limits must cover catalog and have positive timeout");
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
@@ -891,6 +895,20 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     throw detail::LoopAbort(LoopStatus::Cancelled,"Agent loop cancelled");
   if(model_calls>=max_model_calls)
     throw detail::LoopAbort(LoopStatus::LimitReached,"Model call budget exhausted");
+  // Limit each managed SDK request to the remaining Agent/Loop time.
+  const auto configure_mcp=[&](const std::shared_ptr<Client>& client) {
+    auto timeout=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::seconds(config_.mcp_timeout_seconds));
+    if(remaining_time) {
+      const auto left=remaining_time();
+      if(left.count()<=0)
+        throw detail::LoopAbort(LoopStatus::Cancelled,"MCP deadline exceeded");
+      timeout=std::min(timeout,left);
+    }
+    client->set_transport_limits({timeout,config_.max_mcp_wire_bytes});
+  };
+  for(const auto& endpoint:endpoints_)
+    if(endpoint.managed_transport) configure_mcp(endpoint.client);
   const Json tools = allow_tools ? tool_definitions(routes) : Json(json::array{});
   std::set<std::string> loaded_skills; // A Skill is selected only within a turn.
   const auto emit = [&](const Json& event) {
@@ -1130,6 +1148,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         const auto route = routes.find(name);
         if (route == routes.end())
           throw std::runtime_error("Unknown tool: " + name);
+        for(const auto& endpoint:endpoints_)
+          if(endpoint.managed_transport && endpoint.client==route->second.client)
+            configure_mcp(endpoint.client);
         tool_output = execute_tool(route->second, item);
       }
       proposed.push_back(json::object{
