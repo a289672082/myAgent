@@ -807,11 +807,12 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           throw detail::LoopAbort(LoopStatus::Cancelled, "Context compression cancelled");
         if (model_calls >= max_model_calls)
           throw detail::LoopAbort(LoopStatus::LimitReached, "Context compression budget exhausted");
+        const auto request_timeout=model_timeout();
         summary_request["model"] = config_.context.summary_model.empty()
             ? config_.model : config_.context.summary_model;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
-        const Json summary_response = model_->create_with_timeout(summary_request,model_timeout());
+        const Json summary_response = model_->create_with_timeout(summary_request,request_timeout);
         const auto usage = parse_token_usage(summary_response);
         total_usage_.add(usage);
         last_usage_.add(usage);
@@ -888,9 +889,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     if(model_calls >= max_model_calls)
       throw detail::LoopAbort(LoopStatus::LimitReached,
         "Model budget exhausted after context compression");
+    const auto request_timeout=model_timeout(); // No attempt yet if already expired.
     ++model_calls; // Charge attempts, even when the request fails.
     if (phase == "ask") ++last_model_attempts_;
-    const Json response = model_->create_with_timeout(request,model_timeout());
+    const Json response = model_->create_with_timeout(request,request_timeout);
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
