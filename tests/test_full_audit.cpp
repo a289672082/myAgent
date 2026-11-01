@@ -233,6 +233,28 @@ static void test_memory_save_and_metadata(const fs::path& root) {
     assert(false);
   }catch(const std::invalid_argument&){}
   assert(memory.all().size()==2);
+  // Replacements and deletions must also update the exact save-size ledger.
+  memory.remember({"note","updated",j::object{}});
+  assert(memory.forget("more"));
+  memory.save(file);
+  loaded.load(file);
+  assert(loaded.all().size()==1);
+  assert(loaded.all().front().content=="updated");
+
+  // A 32 MiB in-memory state is always serializable. The *next* record is
+  // rejected before it can poison subsequent save() operations.
+  MemoryStore capped;
+  const std::string body(16300,'x');
+  bool hit_limit=false;
+  for(unsigned i=0;i<2300;++i) {
+    try {capped.remember({std::to_string(i),body,j::object{}});}
+    catch(const std::runtime_error&) {hit_limit=true;break;}
+  }
+  assert(hit_limit);
+  capped.save(file);
+  MemoryStore restored;
+  restored.load(file);
+  assert(restored.all().size()==capped.all().size());
 }
 static void test_handoff_budget(const fs::path& root) {
   auto model=std::make_shared<Mock>();
