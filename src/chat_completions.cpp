@@ -95,10 +95,24 @@ Json ChatCompletionsModel::create(const Json& request) {
      (url.rfind("http://",0)==0?7u:0u);
   if(!scheme||url.find('@',scheme)!=std::string::npos||url.find('#')!=std::string::npos)
     throw std::invalid_argument("Invalid Chat base_url");
-  const auto slash=url.find('/',scheme);
-  const auto origin=url.substr(0,slash);
-  const std::string target=config_.append_responses_path?"/v1/chat/completions":
-      (slash==std::string::npos?"/":url.substr(slash));
+  const auto boundary=url.find_first_of("/?",scheme);
+  const auto origin=url.substr(0,boundary);
+  if(origin.size()==scheme)
+    throw std::invalid_argument("Chat base_url requires a host");
+  const auto query_at=url.find('?',scheme);
+  const auto path_end=query_at==std::string::npos?url.size():query_at;
+  std::string path=(boundary!=std::string::npos && url[boundary]=='/')?
+      url.substr(boundary,path_end-boundary):"/";
+  const std::string query=query_at==std::string::npos?"":url.substr(query_at);
+  if(config_.append_responses_path) {
+    while(path.size()>1 && path.back()=='/')path.pop_back();
+    if(!path.ends_with("/chat/completions")) {
+      // An existing /v1 API prefix must not become /v1/v1.
+      path+=(path.ends_with("/v1")?"":"/v1");
+      path+="/chat/completions";
+    }
+  }
+  const std::string target=path+query;
   const auto* input=j::if_contains(request,"input");
   if(!input||!input->is_array())throw std::invalid_argument("Responses input required");
   Json payload=j::object{{"model",request.at("model")},
@@ -144,8 +158,12 @@ Json ChatCompletionsModel::create(const Json& request) {
         {"call_id",call.at("id")},{"name",function.at("name")},
         {"arguments",function.at("arguments")}});
     }
-  Json converted=j::object{{"status",field(choice,"finish_reason")=="length"?
-      "incomplete":"completed"},{"output",std::move(outputs)}};
+  const auto finish=field(choice,"finish_reason");
+  // Only a normal stop or a tool-call handoff represents a completed turn.
+  // content_filter, length and nonstandard/unknown reasons are not success.
+  const bool complete=(finish=="stop" || finish=="tool_calls");
+  Json converted=j::object{{"status",complete?"completed":"incomplete"},
+      {"output",std::move(outputs)}};
   if(const auto* usage=j::if_contains(json,"usage")) {
     const auto normalized=convert_usage(*usage);
     if(!normalized.is_null())converted["usage"]=normalized;

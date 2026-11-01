@@ -40,13 +40,17 @@ void checked_add(std::uint64_t& dst, std::uint64_t src) {
 } // namespace
 
 void TokenUsage::add(const TokenUsage& other) {
-  checked_add(input_tokens, other.input_tokens);
-  checked_add(output_tokens, other.output_tokens);
-  checked_add(total_tokens, other.total_tokens);
-  checked_add(cached_input_tokens, other.cached_input_tokens);
-  checked_add(reasoning_output_tokens, other.reasoning_output_tokens);
-  checked_add(reported_calls, other.reported_calls);
-  checked_add(unreported_calls, other.unreported_calls);
+  // Strong exception guarantee: a later counter overflow must not leave
+  // an earlier counter already incremented.
+  TokenUsage updated = *this;
+  checked_add(updated.input_tokens, other.input_tokens);
+  checked_add(updated.output_tokens, other.output_tokens);
+  checked_add(updated.total_tokens, other.total_tokens);
+  checked_add(updated.cached_input_tokens, other.cached_input_tokens);
+  checked_add(updated.reasoning_output_tokens, other.reasoning_output_tokens);
+  checked_add(updated.reported_calls, other.reported_calls);
+  checked_add(updated.unreported_calls, other.unreported_calls);
+  *this = updated;
 }
 
 TokenUsage parse_token_usage(const Json& response) {
