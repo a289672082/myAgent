@@ -95,6 +95,17 @@ static void test_history_format(const fs::path& root) {
   Agent restored(settings(),model);
   restored.load_history(file);
   assert(restored.history().size()==agent.history().size());
+  // A second session must not overwrite a newer revision that another Agent
+  // saved after both sessions had loaded the old version.
+  Agent newer(settings(),model);
+  newer.load_history(file);
+  assert(newer.ask("new conversation turn")=="ok");
+  newer.save_history(file);
+  try {
+    restored.save_history(file);
+    assert(false);
+  }catch(const std::runtime_error&){}
+  assert(restored.history().size()==agent.history().size());
   // Reject malformed restored messages without destroying the prior history.
   data["messages"][0]["role"]="system";
   {std::ofstream out(file);out<<j::serialize(data);}
