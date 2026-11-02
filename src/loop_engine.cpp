@@ -2,6 +2,7 @@
 #include "loop_internal.hpp"
 #include "execution_journal.hpp"
 #include "plan_manager.hpp"
+#include "trace_spans.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -51,11 +52,20 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   struct ResetActive {
     std::function<void()> reset;
     ~ResetActive(){reset();}
-  } reset_active{[&]{active_journal_=nullptr;active_loop_options_=nullptr;}};
+  } reset_active{[&]{active_journal_=nullptr;active_loop_options_=nullptr;
+                       active_trace_id_.clear();}};
   std::unique_ptr<detail::ExecutionJournal> journal;
   Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
   std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
+  retries_used_=0;last_cost_usd_=0;
+  active_trace_id_=options.trace_id.empty()?detail::trace_hex(16):options.trace_id;
+  if(active_trace_id_.size()!=32 ||
+     !std::all_of(active_trace_id_.begin(),active_trace_id_.end(),[](char c) {
+       return (c>='0'&&c<='9')||(c>='a'&&c<='f');
+     }))
+    throw std::invalid_argument("Trace ID must be 32 lowercase hex characters");
+  result.trace_id=active_trace_id_;
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
   Json latest_response = nullptr;
@@ -399,6 +409,11 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       last_response_ = std::move(latest_response);
     }
     result.status = LoopStatus::Completed;
+    for(const auto& [model,usage]:result.usage_by_model) {
+      const double cost=usage_cost(model,usage);
+      result.estimated_cost_by_model[model]=cost;
+      result.estimated_cost_usd+=cost;
+    }
     if(journal)journal->mark("completed");
     return result;
   } catch (const detail::LoopAbort& e) {
@@ -414,6 +429,14 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   } catch (const std::exception& e) {
     result.status = LoopStatus::Failed;
     result.error = e.what();
+  }
+  // 失败/暂停时已发生的模型费用仍应进入估算账本，不能视为零成本。
+  for(const auto& [model,usage]:result.usage_by_model) {
+    try {
+      const double cost=usage_cost(model,usage);
+      result.estimated_cost_by_model[model]=cost;
+      result.estimated_cost_usd+=cost;
+    }catch(...) { /* 主要错误原因优先保留。 */ }
   }
   // No commit on error: partial tool side effects cannot be automatically reverted.
   return result;

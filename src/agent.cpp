@@ -2,6 +2,7 @@
 #include "loop_internal.hpp"
 #include "execution_journal.hpp"
 #include "sse_stream.hpp"
+#include "trace_spans.hpp"
 #include <exception>
 #include "workspace_io.hpp"
 #include "file_io.hpp"
@@ -14,6 +15,9 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <random>
+#include <thread>
+#include <cmath>
 #include <sstream>
 #include <set>
 #include <stdexcept>
@@ -667,6 +671,17 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
+  for(const auto& [phase,route]:config_.phase_routes) {
+    if(phase.empty() || route.model.empty() || route.base_url.empty() || route.api_key.empty())
+      throw std::invalid_argument("Phase model route requires phase/model/base_url/api_key");
+    Config c=config_;
+    c.model=route.model;c.base_url=route.base_url;c.api_key=route.api_key;
+    c.model_protocol=route.protocol;c.append_responses_path=route.append_path;
+    phase_models_[phase]=route.protocol==ModelProtocol::Responses
+        ?std::shared_ptr<Model>(std::make_shared<OpenAIResponses>(c))
+        :std::shared_ptr<Model>(std::make_shared<ChatCompletionsModel>(c));
+    phase_model_names_[phase]=route.model;
+  }
   if (config_.auto_discover_skills) skills_.discover();
 }
 void Agent::validate_mcp_prefix(const std::string& prefix) const {
@@ -684,7 +699,8 @@ void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
      !client->has_bounded_transport())
     throw std::invalid_argument("Strict isolation requires bounded MCP transport (stdio/HTTP)");
   validate_mcp_prefix(prefix);
-  endpoints_.push_back({std::move(prefix), std::move(client)});
+  endpoints_.push_back({std::move(prefix), std::move(client),
+                        std::make_shared<std::atomic_bool>(false)});
 }
 void Agent::add_mcp_http(std::string prefix, std::string url,
                          std::string bearer_token,
@@ -692,8 +708,22 @@ void Agent::add_mcp_http(std::string prefix, std::string url,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
   if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
+  // 严格进程隔离要求 SDK 自己控制所有回调截止时间。不能为缓存
+  // 安装不受 SDK 约束的用户态通知回调；严格模式改用 TTL/显式刷新。
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(Client::http(url,std::move(bearer_token))));
+    return;
+  }
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http(url, std::move(bearer_token), std::move(on_notification))));
+    Client::http(url, std::move(bearer_token), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::add_mcp_stdio(std::string prefix, std::string executable,
                           std::vector<std::string> args,
@@ -701,8 +731,21 @@ void Agent::add_mcp_stdio(std::string prefix, std::string executable,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Reject collisions before starting a process.
   if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(
+       Client::process(executable,std::move(args))));
+    return;
+  }
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::process(executable, std::move(args), std::move(on_notification))));
+    Client::process(executable, std::move(args), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::add_mcp_oauth(std::string prefix, std::string url,
                           std::shared_ptr<mymcp::oauth::Session> session,
@@ -711,8 +754,21 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
   validate_mcp_prefix(prefix);
   if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
   if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(
+       Client::http_oauth(url,std::move(session))));
+    return;
+  }
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http_oauth(url, std::move(session), std::move(on_notification))));
+    Client::http_oauth(url, std::move(session), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
@@ -721,10 +777,49 @@ void Agent::tool(std::string name, std::string description,
     throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
   local_.add_tool(std::move(name), std::move(description),
                   std::move(schema), std::move(handler));
+  catalog_cache_.erase("local");
 }
 void Agent::load_skills(const std::filesystem::path& directory) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   skills_.load(directory);
+}
+void Agent::set_phase_model(std::string phase,std::shared_ptr<Model> model,
+                            std::string model_name) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(phase.empty() || !model || model_name.empty())
+    throw std::invalid_argument("set_phase_model requires phase/provider/model name");
+  if(config_.strict_process_isolation && !model->supports_request_deadline())
+    throw std::invalid_argument("Strict isolation requires bounded phase Model");
+  phase_model_names_[phase]=std::move(model_name);
+  phase_models_[std::move(phase)]=std::move(model);
+}
+void Agent::invalidate_mcp_catalog(const std::string& prefix) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(prefix.empty()) {
+    catalog_cache_.clear();
+    for(const auto& endpoint:endpoints_)
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+  } else {
+    catalog_cache_.erase(prefix);
+    bool found=false;
+    for(const auto& endpoint:endpoints_)if(endpoint.prefix==prefix) {
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+      found=true;
+    }
+    if(!found)throw std::out_of_range("Unknown MCP cache prefix");
+  }
+}
+void Agent::set_mcp_catalog_version(const std::string& prefix,std::string version) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  for(auto& endpoint:endpoints_)if(endpoint.prefix==prefix) {
+    if(endpoint.catalog_version!=version) {
+      endpoint.catalog_version=std::move(version);
+      catalog_cache_.erase(prefix);
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+    }
+    return;
+  }
+  throw std::out_of_range("Unknown MCP version prefix");
 }
 void Agent::use_skill(const std::string& name) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
@@ -745,6 +840,178 @@ void Agent::LoadAgentsMdFileFormString(const std::string& content) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   agents_md_contents_=content;
 }
+
+// 单 Agent 模型重试器。只重试模型 HTTP，请求执行发生在工具前；
+// 对已经有 SSE delta 的流禁止重试，避免 UI 展示重复内容。
+void Agent::emit_span(const std::string& name,const std::string& status,
+                 std::uint64_t start_unix_ns,std::uint64_t duration_ns,
+                 const std::string& model_name) {
+  if(!active_loop_options_ ||
+     (!active_loop_options_->on_span && active_loop_options_->otel_jsonl_path.empty()))
+    return;
+  const Json span=json::object{
+    {"traceId",active_trace_id_},{"spanId",detail::trace_hex(8)},
+    {"parentSpanId",""},{"name",name},{"status",status},
+    {"startTimeUnixNano",std::to_string(start_unix_ns)},
+    {"endTimeUnixNano",std::to_string(start_unix_ns+duration_ns)},
+    {"attributes",json::object{{"gen_ai.model",model_name},
+                                {"agent.phase",name}}}
+  };
+  detail::export_span(*active_loop_options_,span);
+}
+Json Agent::call_model(const std::string& phase,const Json& request,
+    std::chrono::milliseconds timeout,
+    const std::function<void(const std::string&)>& on_delta,
+    unsigned* model_call_count,unsigned max_model_calls) {
+  // 上层执行器在准备发送前预占一次调用，若本地策略拒绝，
+  // 必须撤销该占位；只有已真正发起的尝试才计入模型调用预算。
+  const auto refund_preflight=[&]() {
+    if(model_call_count && *model_call_count>0)--*model_call_count;
+    if(!active_loop_options_ && last_model_attempts_>0)--last_model_attempts_;
+  };
+  const auto route=phase_models_.find(phase);
+  const auto selected=route==phase_models_.end()?model_:route->second;
+  const auto policy=config_.retry;
+  if(policy.max_retries_per_request>20 || policy.max_total_retries>100 ||
+     policy.base_delay_ms>60000 || policy.max_delay_ms>60000 ||
+     (policy.max_delay_ms && policy.base_delay_ms>policy.max_delay_ms))
+    throw std::invalid_argument("Invalid model retry policy");
+  if(config_.max_estimated_cost_usd>0 && last_cost_usd_>=config_.max_estimated_cost_usd) {
+    refund_preflight();
+    throw detail::LoopAbort(LoopStatus::LimitReached,"Estimated model cost budget reached");
+  }
+  const auto deadline=timeout.count()>0
+      ?std::chrono::steady_clock::now()+timeout
+      :std::chrono::steady_clock::time_point::max();
+  auto remaining=[&](){
+    if(deadline==std::chrono::steady_clock::time_point::max())
+      return std::chrono::milliseconds{0};
+    const auto left=std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline-std::chrono::steady_clock::now());
+    if(left.count()<=0)throw std::runtime_error("Model retry deadline reached");
+    return left;
+  };
+  // RPM 以及指数退避等待也属于可取消的 Loop；避免默认休眠 60 秒。
+  const auto check_cancelled=[&]() {
+    if(active_loop_options_ && active_loop_options_->cancelled &&
+       active_loop_options_->cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Model retry cancelled");
+  };
+  const auto interruptible_sleep=[&](std::chrono::milliseconds delay) {
+    const auto until=std::chrono::steady_clock::now()+delay;
+    for(;;) {
+      check_cancelled();
+      const auto now=std::chrono::steady_clock::now();
+      if(deadline!=std::chrono::steady_clock::time_point::max() && now>=deadline)
+        throw detail::LoopAbort(LoopStatus::LimitReached,"Model retry deadline reached");
+      if(now>=until)break;
+      auto step=std::chrono::duration_cast<std::chrono::milliseconds>(until-now);
+      if(step.count()<=0)break;
+      std::this_thread::sleep_for(std::min(step,std::chrono::milliseconds(25)));
+    }
+  };
+  std::mt19937 generator(std::random_device{}());
+  const auto started=std::chrono::steady_clock::now();
+  const auto started_ns=detail::unix_nanos();
+  const std::string route_model=std::string(request.at("model").as_string());
+  for(unsigned attempt=0;;) {
+    try {check_cancelled();}
+    catch(...) {if(attempt==0)refund_preflight();throw;}
+    // 每个 Agent 的全部 Provider 共享 RPM 限流；不阻塞工具回放。
+    if(policy.requests_per_minute) {
+      const auto now=std::chrono::steady_clock::now();
+      while(!recent_model_requests_.empty() &&
+            now-recent_model_requests_.front()>=std::chrono::minutes(1))
+        recent_model_requests_.pop_front();
+      if(recent_model_requests_.size()>=policy.requests_per_minute) {
+        const auto wait=std::chrono::duration_cast<std::chrono::milliseconds>(
+            recent_model_requests_.front()+std::chrono::minutes(1)-now);
+        if(deadline!=std::chrono::steady_clock::time_point::max() &&
+           wait>=remaining()) {
+          if(attempt==0)refund_preflight();
+          throw std::runtime_error("Model rate limit exceeds deadline");
+        }
+        try {interruptible_sleep(wait);}
+        catch(...) {if(attempt==0)refund_preflight();throw;}
+        // 等待 RPM 空档不算一次尝试/重试。
+        continue;
+      }
+      recent_model_requests_.push_back(now);
+    }
+    bool emitted=false;
+    try {
+      const auto left=remaining();
+      if(attempt>0 && model_call_count) {
+        if(*model_call_count>=max_model_calls)
+          throw detail::LoopAbort(LoopStatus::LimitReached,"Retry reached model call budget");
+        ++*model_call_count;
+        if(!active_loop_options_)++last_model_attempts_;
+      }
+      if(active_loop_options_ && active_loop_options_->allow_model_request &&
+         !active_loop_options_->allow_model_request()) {
+        refund_preflight();
+        throw detail::LoopAbort(LoopStatus::LimitReached,"Global model-call budget reached");
+      }
+      Json reply;
+      if(on_delta)reply=selected->create_stream(request,left,[&](const std::string& delta){
+        if(!delta.empty())emitted=true;
+        on_delta(delta);
+      });
+      else reply=selected->create_with_timeout(request,left);
+      const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now()-started).count();
+      emit_span("model."+phase,"ok",started_ns,static_cast<std::uint64_t>(elapsed),route_model);
+      return reply;
+    } catch(const std::exception& e) {
+      const std::string reason=e.what();
+      const bool transient=reason.find("HTTP 429")!=std::string::npos ||
+          reason.find("HTTP 500")!=std::string::npos ||
+          reason.find("HTTP 502")!=std::string::npos ||
+          reason.find("HTTP 503")!=std::string::npos ||
+          reason.find("HTTP 504")!=std::string::npos ||
+          reason.find("transport failed")!=std::string::npos ||
+          reason.find("HTTP transport failed")!=std::string::npos;
+      if(!transient || emitted || attempt>=policy.max_retries_per_request ||
+         retries_used_>=policy.max_total_retries) {
+        const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now()-started).count();
+        emit_span("model."+phase,"error",started_ns,static_cast<std::uint64_t>(elapsed),route_model);
+        throw;
+      }
+      ++retries_used_;
+      const unsigned shift=std::min(attempt,10u);
+      const std::uint64_t cap=std::min<std::uint64_t>(
+          policy.max_delay_ms,static_cast<std::uint64_t>(policy.base_delay_ms)<<shift);
+      std::uniform_int_distribution<std::uint64_t> jitter(0,cap);
+      const auto sleep=std::chrono::milliseconds(jitter(generator));
+      if(deadline!=std::chrono::steady_clock::time_point::max() &&
+         sleep>=remaining())throw;
+      interruptible_sleep(sleep);
+      ++attempt;
+    }
+  }
+}
+double Agent::usage_cost(const std::string& model,const TokenUsage& usage) const {
+  const auto rate=config_.model_prices.find(model);
+  if(rate==config_.model_prices.end()) {
+    if(config_.max_estimated_cost_usd>0)
+      throw std::invalid_argument("Missing configured pricing for model: "+model);
+    return 0;
+  }
+  if(usage.unreported_calls && config_.max_estimated_cost_usd>0)
+    throw std::runtime_error("Cannot enforce cost budget when model usage is missing");
+  const auto& p=rate->second;
+  if(!std::isfinite(p.input_per_million)||!std::isfinite(p.output_per_million)||
+     !std::isfinite(p.cached_input_per_million)||p.input_per_million<0||
+     p.output_per_million<0||p.cached_input_per_million<0)
+    throw std::invalid_argument("Invalid model pricing");
+  const auto uncached=usage.input_tokens>=usage.cached_input_tokens
+      ?usage.input_tokens-usage.cached_input_tokens:0;
+  return (uncached*p.input_per_million+
+          usage.cached_input_tokens*p.cached_input_per_million+
+          usage.output_tokens*p.output_per_million)/1e6;
+}
+
 std::string Agent::instructions() const {
   std::string result = config_.instructions;
   if(!agents_md_contents_.empty())
@@ -783,59 +1050,84 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
   std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
     if(config_.strict_process_isolation && endpoint.prefix=="local")continue;
-    endpoint.client->discover(request_options);
-    Json params=json::object{};
-    std::set<std::string> cursors;
-    bool exhausted=false;
-    for(std::size_t page=0;page<MaxMcpPages;++page) {
-      // Request one page at a time: Client::list_all would first accumulate
-      // every tool, potentially 10,000 pages, before enforcing our limits.
-      const Json result=endpoint.client->request("tools/list",params,request_options);
-      const Json* entries=json::if_contains(result,"tools");
-      if(!entries || !entries->is_array())
-        throw std::runtime_error("Invalid MCP tools/list page");
-      if(entries->size()>max_tools-seen_tools)
-        throw std::runtime_error("MCP tool count exceeds configured limit");
-      for(const auto& tool:entries->array_range()) {
-        if(!tool.is_object())
-          throw std::runtime_error("Malformed MCP tool description");
-        std::size_t remaining=max_tool_bytes;
-        if(!fits_json_budget(tool,remaining))
-          throw std::runtime_error("MCP tool schema/description exceeds configured limit");
-        // The walk is a cheap allocation guard; only exact encoded bytes
-        // count against the externally configurable catalog budget.
-        const auto exact_bytes=json::serialize(tool).size();
-        if(exact_bytes>max_tool_bytes || exact_bytes>catalog_left)
-          throw std::runtime_error("MCP aggregate/per-tool encoded budget exceeded");
-        catalog_left-=exact_bytes;
-        ++seen_tools;
-        const auto name=as_string(tool,"name");
-        const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
-        if(qualified.size()>64 || routes.count(qualified))
-          throw std::runtime_error("MCP tool name too long or colliding: "+qualified);
-        if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
-        routes.emplace(qualified,Route{endpoint.client,name});
-        const Json* schema=json::if_contains(tool,"inputSchema");
-        tools.push_back(json::object{{"type","function"},{"name",qualified},
-          {"description",as_string(tool,"description")},
-          {"parameters",schema && schema->is_object()?*schema:
-             Json(json::object{{"type","object"},{"properties",json::object{}}})},
-          {"strict",false}});
+    Json schemas=json::array{};
+    const auto now=std::chrono::steady_clock::now();
+    const auto old=catalog_cache_.find(endpoint.prefix);
+    const bool invalidated=endpoint.catalog_invalidated->exchange(
+        false,std::memory_order_acq_rel);
+    const bool hit=config_.mcp_catalog_ttl_seconds>0 && !invalidated &&
+        old!=catalog_cache_.end() && now<old->second.expiry &&
+        old->second.version==endpoint.catalog_version;
+    if(hit) schemas=old->second.schemas;
+    else {
+      endpoint.client->discover(request_options);
+      Json params=json::object{};
+      std::set<std::string> cursors;
+      bool exhausted=false;
+      // 每页接收后立即检查数量和编码大小，禁止先把不受信任的
+      // Schema 跨多页累加到缓存，最后才验证总体限额。
+      std::size_t staged_bytes=0;
+      for(std::size_t page=0;page<MaxMcpPages;++page) {
+        // SDK 接收层仍独立执行网络报文上限；这里是解码后的 Schema 限额。
+        const Json result=endpoint.client->request("tools/list",params,request_options);
+        const Json* entries=json::if_contains(result,"tools");
+        if(!entries || !entries->is_array())
+          throw std::runtime_error("Invalid MCP tools/list page");
+        if(seen_tools>max_tools || schemas.size()>max_tools-seen_tools ||
+           entries->size()>max_tools-seen_tools-schemas.size())
+          throw std::runtime_error("MCP catalog tool count exceeds limit");
+        for(const auto& item:entries->array_range()) {
+          if(!item.is_object())
+            throw std::runtime_error("Malformed MCP tool description");
+          std::size_t remaining=max_tool_bytes;
+          if(!fits_json_budget(item,remaining))
+            throw std::runtime_error("MCP tool schema exceeds configured size");
+          const auto bytes=json::serialize(item).size();
+          if(bytes>max_tool_bytes || staged_bytes>catalog_left ||
+             bytes>catalog_left-staged_bytes)
+            throw std::runtime_error("MCP catalog budget exceeded");
+          staged_bytes+=bytes;
+          schemas.push_back(item);
+        }
+        const Json* next=json::if_contains(result,"nextCursor");
+        if(!next || next->is_null()) {exhausted=true;break;}
+        if(!next->is_string() || next->as_string_view().empty() ||
+           next->as_string_view().size()>1024)
+          throw std::runtime_error("Invalid MCP catalog cursor");
+        const std::string cursor(next->as_string());
+        if(!cursors.insert(cursor).second)
+          throw std::runtime_error("Repeated MCP catalog cursor");
+        params=json::object{{"cursor",cursor}};
       }
-      const Json* next=json::if_contains(result,"nextCursor");
-      if(!next || next->is_null()) {
-        exhausted=true;
-        break;
-      }
-      if(!next->is_string() || next->as_string_view().empty() ||
-         next->as_string_view().size()>1024)
-        throw std::runtime_error("Invalid MCP pagination cursor");
-      const std::string cursor(next->as_string());
-      if(!cursors.insert(cursor).second)
-        throw std::runtime_error("Repeated MCP pagination cursor");
-      params=json::object{{"cursor",cursor}};
+      if(!exhausted)throw std::runtime_error("MCP catalog exceeds page limit");
     }
-    if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
+    // 缓存命中也必须重新计算当前调用的全局预算、权限和冲突。
+    for(const auto& tool:schemas.array_range()) {
+      if(!tool.is_object())throw std::runtime_error("Malformed MCP tool description");
+      std::size_t remaining=max_tool_bytes;
+      if(!fits_json_budget(tool,remaining))
+        throw std::runtime_error("MCP tool schema exceeds configured size");
+      const auto bytes=json::serialize(tool).size();
+      if(bytes>max_tool_bytes || bytes>catalog_left || seen_tools>=max_tools)
+        throw std::runtime_error("MCP catalog budget exceeded");
+      catalog_left-=bytes;++seen_tools;
+      const auto name=as_string(tool,"name");
+      const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
+      if(qualified.size()>64 || routes.count(qualified))
+        throw std::runtime_error("MCP tool name too long or colliding");
+      if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
+      routes.emplace(qualified,Route{endpoint.client,name});
+      const Json* schema=json::if_contains(tool,"inputSchema");
+      tools.push_back(json::object{{"type","function"},{"name",qualified},
+        {"description",as_string(tool,"description")},
+        {"parameters",schema && schema->is_object()?*schema:
+            Json(json::object{{"type","object"},{"properties",json::object{}}})},
+        {"strict",false}});
+    }
+    if(!hit && config_.mcp_catalog_ttl_seconds>0)
+      catalog_cache_[endpoint.prefix]={std::move(schemas),
+          now+std::chrono::seconds(config_.mcp_catalog_ttl_seconds),
+          endpoint.catalog_version};
   }
   if (!config_.strict_process_isolation &&
       config_.auto_skill_selection && !skills_.all().empty()) {
@@ -890,6 +1182,7 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
+  retries_used_=0;last_cost_usd_=0;
   last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
@@ -992,18 +1285,28 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         if (model_calls >= max_model_calls)
           throw detail::LoopAbort(LoopStatus::LimitReached, "Context compression budget exhausted");
         const auto request_timeout=model_timeout();
-        summary_request["model"] = config_.context.summary_model.empty()
-            ? config_.model : config_.context.summary_model;
+        const auto routed_summary=phase_model_names_.find("context_compression");
+        summary_request["model"]=routed_summary==phase_model_names_.end()
+            ?(config_.context.summary_model.empty()?config_.model:config_.context.summary_model)
+            :routed_summary->second;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
         Json summary_response;
         bool replayed=active_journal_ && active_journal_->replay_model(summary_request,summary_response);
         if(!replayed) {
-          summary_response=model_->create_with_timeout(summary_request,request_timeout);
+          summary_response=call_model("context_compression",summary_request,request_timeout,
+                                      {},&model_calls,max_model_calls);
           if(active_journal_)active_journal_->record_model(summary_request,summary_response);
         }
         const auto usage = parse_token_usage(summary_response);
-        if(!replayed)total_usage_.add(usage);
+        if(!replayed) {
+          total_usage_.add(usage);
+          if(active_loop_options_ && active_loop_options_->on_model_usage)
+            active_loop_options_->on_model_usage(
+                std::string(summary_request.at("model").as_string()),usage,
+                usage_cost(std::string(summary_request.at("model").as_string()),usage));
+        }
+        last_cost_usd_+=usage_cost(std::string(summary_request.at("model").as_string()),usage);
         last_usage_.add(usage);
         if (run_usage) run_usage->add(usage);
         if (usage_by_phase) (*usage_by_phase)["context_compression"].add(usage);
@@ -1065,8 +1368,11 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         throw detail::LoopAbort(LoopStatus::LimitReached,
           "Context budget exceeded after compaction and prompt construction");
     }
+    const auto route_name=phase_model_names_.find(phase);
+    const std::string actual_model=route_name==phase_model_names_.end()
+        ?(model_override.empty()?config_.model:model_override):route_name->second;
     Json request = json::object{
-      {"model", model_override.empty() ? config_.model : model_override},
+      {"model", actual_model},
       {"instructions", prompt},
       {"input", proposed},
       {"store", false},
@@ -1087,28 +1393,34 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
     if(!replayed) {
       if(active_loop_options_ && active_loop_options_->on_text_delta) {
-        response=model_->create_stream(request,request_timeout,
+        response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
             active_loop_options_->on_text_delta(phase,delta);
-          });
-      } else response=model_->create_with_timeout(request,request_timeout);
+          },&model_calls,max_model_calls);
+      } else response=call_model(phase,request,request_timeout,
+                                  {},&model_calls,max_model_calls);
       if(active_journal_)active_journal_->record_model(request,response);
     }
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
     const TokenUsage received = parse_token_usage(response);
-    if(!replayed)total_usage_.add(received);
+    if(!replayed) {
+      total_usage_.add(received);
+      if(active_loop_options_ && active_loop_options_->on_model_usage)
+        active_loop_options_->on_model_usage(actual_model,received,
+                                           usage_cost(actual_model,received));
+    }
+    last_cost_usd_+=usage_cost(actual_model,received);
     last_usage_.add(received);
     if (run_usage) run_usage->add(received);
     if (usage_by_phase) (*usage_by_phase)[phase].add(received);
     if (usage_by_model) {
-      const std::string requested_model = model_override.empty() ? config_.model : model_override;
-      (*usage_by_model)[requested_model].add(received);
+      (*usage_by_model)[actual_model].add(received);
     }
     if (trace || on_event) {
       emit(json::object{{"phase", phase}, {"event", "model_usage"},
-        {"model", model_override.empty() ? config_.model : model_override},
+        {"model", actual_model},
         {"input_tokens", received.input_tokens}, {"output_tokens", received.output_tokens},
         {"total_tokens", received.total_tokens}, {"cached_input_tokens", received.cached_input_tokens},
         {"reasoning_output_tokens", received.reasoning_output_tokens},
@@ -1167,6 +1479,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       if (id.empty()) throw std::runtime_error("Missing tool call ID");
       ++tool_calls;
       std::string tool_output;
+      const auto tool_started=std::chrono::steady_clock::now();
+      const auto tool_started_ns=detail::unix_nanos();
       const Json tool_request=json::object{{"name",name},{"call_id",id},
                                            {"arguments",as_string(item,"arguments","{}")}};
       const ToolApprovalRequest approval_request{name,id,
@@ -1219,6 +1533,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           throw detail::LoopAbort(LoopStatus::Paused,"Tool approval pending: "+name);
         }
         if(decision==ToolDecision::Deny)permitted=false;
+        if(permitted && !duplicate_effect && active_loop_options_ &&
+           active_loop_options_->allow_tool_execution &&
+           !active_loop_options_->allow_tool_execution())
+          throw detail::LoopAbort(LoopStatus::LimitReached,"Global tool-call budget reached");
         if(active_journal_)active_journal_->begin_tool(tool_request);
       }
       if (replayed_tool) {
@@ -1271,6 +1589,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       }
       if(active_journal_ && !replayed_tool)
         active_journal_->complete_tool(tool_output);
+      if(!replayed_tool) {
+        const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-tool_started).count();
+        const bool error=tool_output.find("\"isError\":true")!=std::string::npos;
+        emit_span("tool."+name,error?"error":"ok",tool_started_ns,
+                  static_cast<std::uint64_t>(elapsed));
+      }
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
         {"output", tool_output}

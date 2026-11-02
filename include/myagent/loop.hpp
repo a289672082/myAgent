@@ -83,6 +83,15 @@ struct LoopOptions {
   std::function<bool()> cancelled;
   std::chrono::milliseconds timeout{0}; // 0=无限；调用间检查；HTTP 在 Config 内设置传输超时。
   std::function<void(const Json&)> on_event;
+  // 安全追踪仅包含模型/工具名、耗时、错误类别，不复制提示词及响应正文。
+  std::function<void(const Json&)> on_span;
+  std::string trace_id; // 可选的外部 Trace ID（32 个十六进制字符），用于多 Agent 关联。
+  // 嵌套子 Agent 可复用原子全局配额；false 时拒绝新的实际模型/工具操作。
+  std::function<bool()> allow_model_request;
+  std::function<bool()> allow_tool_execution;
+  // 每条真实模型响应计入全局预算，Checkpoint 回放不会再次计费。
+  std::function<void(const std::string&,const TokenUsage&,double)> on_model_usage;
+  std::filesystem::path otel_jsonl_path; // 可选 OTEL 兼容 span JSONL，调用方负责保护文件。
 };
 
 struct LoopResult {
@@ -102,5 +111,8 @@ struct LoopResult {
   TokenUsage usage;
   std::map<std::string, TokenUsage> usage_by_phase; // plan/execute/reflect/evaluate...
   std::map<std::string, TokenUsage> usage_by_model; // 按实际请求的模型名汇总
+  double estimated_cost_usd=0;
+  std::map<std::string,double> estimated_cost_by_model;
+  std::string trace_id;
 };
 } // namespace myagent

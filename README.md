@@ -768,3 +768,86 @@ ctest --test-dir build -R 'myagent_agent_(checkpoint|streaming)_demo' --output-o
 ```
 
 `MYAGENT_BUILD_EXAMPLES=OFF` 时，这两个示例和对应的 CTest 不会构建或注册。
+
+
+## Agent 高级扩展：多模型路由、重试限流、MCP 缓存、多级委派、Trace 和费用
+
+这六项功能默认关闭或不改变旧的行为。**仅配置所需项**，不需要迁移现有 Demo。
+
+### 8. 按阶段切换模型、端点与密钥
+
+在 `myagent::Config::phase_routes` 中按阶段名填入完整路由，例如 `plan`、
+`execute`、`synthesize`、`reflect`、`evaluate`、`context_compression`。
+每条路由都有独立的 model / base_url / api_key / protocol / append_path；
+未匹配的阶段使用默认 Model。实际密钥由程序从安全渠道提供，**不要提交到仓库**。
+还可以使用 `agent.set_phase_model("evaluate", custom_model, "review-model")`
+为一个阶段注入自定义 C++ Provider。
+
+### 9. 模型 HTTP 退避重试与限流
+
+`Config::retry` 支持 `max_retries_per_request`、`max_total_retries`、
+`base_delay_ms`、`max_delay_ms` 和 `requests_per_minute`（0 为关闭）。
+只针对 429、500、502、503、504 和暂时性传输异常，使用指数退避与随机抖动；
+已发送 SSE 文本增量的流不自动重试。Retry 仅包裹**模型请求**，绝不重放工具调用。
+RPM 限流按 Agent 实例共享全部模型端点，不是跨程序全局云端配额。
+模型重试与原有多 Agent 的任务级重试是独立的策略。
+
+### 10. MCP 工具 Schema 缓存
+
+`Config::mcp_catalog_ttl_seconds` 默认 0（关闭）。
+非零时第一次发现后缓存 `tools/list` 的受限结果；同一实例内下一轮复用，
+到期或收到 `notifications/tools/list_changed` 会刷新。
+还可通过 `agent.invalidate_mcp_catalog()` 全部失效，或传入某个 MCP prefix
+按需失效。每次命中仍重新执行当前 Schema/数量/总大小/权限/名称冲突校验。
+对于没有提供变更通知的服务，采用 TTL 与显式失效；不承诺即时一致性。
+
+### 11. 多级 Agent 委派
+
+`AgentSpec::allowed_children` 指定子 Agent 名称白名单。父 Agent 可调用受限工具
+`local__agent_delegate(child, task)` 继续委派。使用 `AgentTeam::delegate_tree(root,task,
+max_depth,max_model_calls,max_tool_calls)` 启动自主树形委派；`TeamOptions::max_depth`
+可设置 1～8 层（旧值 1 默认不变）。
+所有实际模型请求、重试尝试和工具执行共享线程安全计数配额，支持白名单与循环检查。
+工具由本进程回调驱动，不支持 `strict_process_isolation=true`；若需要强隔离须使用 MCP
+stdio 子进程。团队账本包含嵌套子任务的 reported usage。
+
+### 12. Trace / Span / OTEL JSONL
+
+设置 `LoopOptions::on_span` 即可获得模型 Span 的 `traceId`、`spanId`、
+状态、开始/结束纳秒时间和模型名；`LoopResult::trace_id` 用于关联任务。
+`LoopOptions::otel_jsonl_path` 可离线导出兼容 OTEL 字段的 JSONL，
+**不自动上传**，不包含提示词、密钥、工具参数与回答正文。
+可由应用自行桥接为 OTLP。需要对产生的追踪文件配置权限和保留周期。
+
+### 13. 模型价格与费用软预算
+
+`Config::model_prices["model-name"] = {input_per_million, output_per_million,
+cached_input_per_million}`，价格由宿主自行维护（单位 USD/百万 Token）。
+`Config::max_estimated_cost_usd` 非零时，在每次获得 reported usage 后
+更新预算；到达阈值阻止下一次模型请求，**不能提前阻止本次账单超过预算**。
+未知价格或没有 reported usage 时选择拒绝继续预算模式，而不是估算为零。
+`LoopResult::estimated_cost_usd` 与 `estimated_cost_by_model` 用于报告；
+缓存输入 Token 是输入 Token 的子集，按配置的缓存价格替代而不是重复收费。
+
+### 构建与运行六个独立 Demo
+
+```bash
+cmake -S . -B build
+cmake --build build --config Debug --target run_model_routing_demo run_model_retry_demo run_mcp_catalog_cache_demo run_nested_agents_demo run_agent_trace_demo run_agent_cost_demo
+
+# Linux:
+./build/run_model_routing_demo
+./build/run_model_retry_demo
+./build/run_mcp_catalog_cache_demo
+./build/run_nested_agents_demo
+./build/run_agent_trace_demo
+./build/run_agent_cost_demo
+
+# Windows: .\build\Debug\run_model_routing_demo.exe 等
+ctest --test-dir build -R "myagent_(model_routing|model_retry|mcp_catalog_cache|nested_agents|agent_trace|agent_cost)_demo" --output-on-failure
+```
+
+每个示例都有独立 `run_xxx_demo()` 入口及详细中文注释。运行时不会使用真实
+API Key、外部 MCP 服务或联网模型；所有示例都被注册为 CTest。
+
+严格隔离模式不安装额外的 MCP 通知回调（SDK 认为任意进程内回调不能保证硬截止时间）；此模式下请采用 TTL 或 `invalidate_mcp_catalog()` / `set_mcp_catalog_version(prefix,version)` 显式刷新。

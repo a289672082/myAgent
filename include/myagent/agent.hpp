@@ -7,6 +7,7 @@
 #include "myagent/memory.hpp"
 #include <chrono>
 #include <atomic>
+#include <deque>
 #include <mutex>
 #include <filesystem>
 #include <functional>
@@ -28,6 +29,26 @@ namespace json = mymcp::json;
 // Supply API credentials and endpoint explicitly; no environment variable fallback.
 // Credentials are not written to conversation history or saved by save_history().
 enum class ModelProtocol { Responses, ChatCompletions };
+// 每个执行阶段的独立模型端点；密钥必须由宿主注入，不能写入日志/Checkpoint。
+struct ModelRoute {
+  std::string model;
+  std::string base_url;
+  std::string api_key;
+  ModelProtocol protocol=ModelProtocol::Responses;
+  bool append_path=true;
+};
+struct ModelRetryPolicy {
+  unsigned max_retries_per_request=0; // 默认不重试；仅对暂时性模型 HTTP 错误重试。
+  unsigned max_total_retries=0;       // 单次 Agent Loop 的所有模型请求共享此上限。
+  unsigned base_delay_ms=100;
+  unsigned max_delay_ms=2000;
+  unsigned requests_per_minute=0;     // 0=不限速；针对该 Agent 的所有模型端点。
+};
+struct ModelPrice {
+  double input_per_million=0;
+  double output_per_million=0;
+  double cached_input_per_million=0;
+};
 struct Config {
   std::string api_key;  // Required for the OpenAI backend; supplied by the application.
   std::string agent_id; // 宿主用于日志/工具审批的标识，不能由模型修改。
@@ -41,6 +62,13 @@ struct Config {
   bool append_responses_path = true;
   ModelProtocol model_protocol = ModelProtocol::Responses; // 其他协议通过 Model 注入扩展。
   unsigned max_tool_rounds = 8;
+  // "plan"/"execute"/"reflect"/"evaluate" 等阶段可以使用独立 endpoint 和 key。
+  std::map<std::string,ModelRoute> phase_routes;
+  ModelRetryPolicy retry;
+  std::map<std::string,ModelPrice> model_prices;
+  double max_estimated_cost_usd=0; // 0=不限；基于 usage 的软阈值，不能预测请求最终费用。
+  // MCP Schema 缓存：0=禁用；收到 tools/list_changed 时自动失效。
+  unsigned mcp_catalog_ttl_seconds=0;
   std::size_t max_history_items = 200; // Reject overflow instead of silently dropping tool calls.
   bool auto_discover_skills = true;   // Scan project/user Skill folders on construction.
   bool auto_skill_selection = true;  // Offer on-demand Skill tools to the model.
@@ -191,6 +219,7 @@ public:
       throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
+    catalog_cache_.erase("local"); // 本地动态注册后，不能继续使用旧 Schema。
   }
   Server& local_mcp_server() {
     if(config_.strict_process_isolation)
@@ -200,6 +229,11 @@ public:
 
   void load_skills(const std::filesystem::path& directory);
   void use_skill(const std::string& name);
+  // 运行中可为特定阶段注入自定义 Provider（方便离线测试和厂商路由）。
+  void set_phase_model(std::string phase,std::shared_ptr<Model> model,std::string model_name);
+  void invalidate_mcp_catalog(const std::string& prefix = {});
+  // 从 SDK/宿主拿到新的远端目录版本时设置；版本变化触发对应缓存失效。
+  void set_mcp_catalog_version(const std::string& prefix,std::string version);
   // Load project-level instructions from a regular Markdown file (max 128 KiB).
   // Replaces the previously loaded AGENTS.md section; leaves Config::instructions intact.
   void LoadAgentsMdFile(const std::filesystem::path& path);
@@ -252,6 +286,7 @@ public:
   // clear_history() 不清除 Token 用量，避免统计口径与实际账单不一致。
   const TokenUsage& last_usage() const { return last_usage_; }
   const TokenUsage& total_usage() const { return total_usage_; }
+  double last_estimated_cost_usd() const { return last_cost_usd_; }
   void reset_usage(); // 仅手动清除统计，不修改对话历史。
 
   // 对话摘要压缩：不删除孤立工具结果，也不推测实际 Token 消耗。
@@ -271,6 +306,13 @@ private:
   struct Endpoint {
     std::string prefix;
     std::shared_ptr<Client> client;
+    std::shared_ptr<std::atomic_bool> catalog_invalidated;
+    std::string catalog_version;
+  };
+  struct CachedCatalog {
+    Json schemas=json::array{};
+    std::chrono::steady_clock::time_point expiry;
+    std::string version;
   };
   struct Route {
     std::shared_ptr<Client> client;
@@ -282,6 +324,12 @@ private:
   std::string execute_tool(const Route& route, const Json& call,
                            const mymcp::RequestOptions& request_options);
   std::string instructions() const;
+  Json call_model(const std::string& phase,const Json& request,
+                  std::chrono::milliseconds timeout,
+                  const std::function<void(const std::string&)>& on_delta={},
+                  unsigned* model_call_count=nullptr,
+                  unsigned max_model_calls=std::numeric_limits<unsigned>::max());
+  double usage_cost(const std::string& model,const TokenUsage& usage) const;
   std::string run(Json user_content, bool allow_tools = true,
                   unsigned max_model_calls = std::numeric_limits<unsigned>::max(),
                   std::chrono::milliseconds max_duration = {});
@@ -316,6 +364,17 @@ private:
   std::shared_ptr<Model> model_;
   Server local_;
   std::vector<Endpoint> endpoints_;
+  std::map<std::string,CachedCatalog> catalog_cache_;
+  std::map<std::string,std::shared_ptr<Model>> phase_models_;
+  std::map<std::string,std::string> phase_model_names_;
+  unsigned retries_used_=0;
+  std::deque<std::chrono::steady_clock::time_point> recent_model_requests_;
+  double last_cost_usd_=0;
+  std::string active_trace_id_;
+  void emit_span(const std::string& name,const std::string& status,
+                 std::uint64_t start_unix_ns,
+                 std::uint64_t duration_ns,
+                 const std::string& model_name="");
   SkillLibrary skills_;
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   std::string agents_md_contents_; // Explicit AGENTS.md rules, separate from Skill catalog.

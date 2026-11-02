@@ -166,7 +166,54 @@ static void test_compaction_attempt_usage() {
   assert(context.stats(history).compression_usage.reported_calls == 2);
   assert(context.stats(history).compression_count == 0);
 }
+// 回归：普通 ask() 的自动摘要与重试也必须全部计入
+// last_model_attempts()，供团队协调器正确继承剩余模型调用预算。
+static void test_summary_retry_attempt_accounting() {
+  auto filler=std::make_shared<Mock>();
+  Agent previous(settings(),filler);
+  for(int i=0;i<6;++i)
+    previous.ask("历史轮次 "+std::to_string(i)+
+                 "：维护 C++ 项目，保证回归测试、权限隔离与日志安全。");
+  const auto file=std::filesystem::temp_directory_path()/
+                  "myagent-context-summary-retry.json";
+  previous.save_history(file);
+  struct RetrySummary final: Model {
+    unsigned attempts=0,summary_attempts=0;
+    Json create(const Json& request) override {
+      ++attempts;
+      const auto* instructions=j::if_contains(request,"instructions");
+      if(instructions && instructions->is_string() &&
+         std::string(instructions->as_string()).find(
+             "Summarize older conversation")!=std::string::npos) {
+        ++summary_attempts;
+        if(summary_attempts==1)throw std::runtime_error("Chat HTTP 429");
+        return response("压缩摘要：原始任务约束已记录。",20);
+      }
+      return response("完成",10);
+    }
+  };
+  auto retry=std::make_shared<RetrySummary>();
+  Config cfg=settings();
+  cfg.context.auto_compress=true;
+  cfg.context.max_context_tokens=1000;
+  cfg.context.reserve_output_tokens=30;
+  cfg.context.compress_threshold=0.30;
+  cfg.retry.max_retries_per_request=1;
+  cfg.retry.max_total_retries=1;
+  cfg.retry.base_delay_ms=0;
+  cfg.retry.max_delay_ms=1;
+  Agent agent(cfg,retry);
+  agent.load_history(file);
+  std::filesystem::remove(file);
+  try { (void)agent.ask("继续执行任务"); }
+  catch(const std::exception&) {
+    // 即使压缩后仍超出硬预算，也已经真实发起了摘要请求。
+  }
+  assert(retry->summary_attempts==2);
+  assert(agent.last_model_attempts()==retry->attempts);
+}
 int main() {
+  test_summary_retry_attempt_accounting();
   test_manual_and_stats();
   test_auto_and_working_history();
   test_preserve_full_tool_turn();
