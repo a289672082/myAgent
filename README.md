@@ -720,3 +720,51 @@ const auto result = agent.react("解释这段代码", options);
 Chat `choices[].delta.content`，由服务端真正逐段推送。
 离线回归包含 `myagent_streaming`（本机模拟 SSE HTTP）和
 `myagent_full_audit`（审批暂停、日志恢复、崩溃未确认副作用不自动重放）。
+
+
+## 可恢复执行与 SSE 的两个独立 Demo
+
+新增两个独立的 C++20 可执行程序：`run_agent_checkpoint_demo()` 和 `run_agent_streaming_demo()`。无需真实 API Key、命令行参数或外网。
+
+### 1. run_agent_checkpoint_demo
+
+源码：`examples/run_agent_checkpoint_demo.cpp`，覆盖功能 1、2、4：
+
+- Checkpoint：`LoopOptions::checkpoint_path` 持久化普通 ReAct Loop。
+- 人工审批：`on_tool_approval` 返回 `ToolDecision::Pause`，演示 GUI 非阻塞等待人工确认。
+- 恢复：`agent.resume()` 读取 Checkpoint，已记录的模型响应不会重复请求。
+- 副作用保护：工具只执行一次；已完成的 Checkpoint 拒绝二次恢复。
+- 崩溃故障注入：在临时快照中模拟尚未确认结果的 `pending` 工具；必须经宿主通过 `reconcile_tool` 提供经真实证据核实的结果后才能继续。
+
+故障注入仅用于演示，生产环境不能直接修改 Checkpoint JSON，也不得未经核实就返回成功；示例使用 RAII 清理临时文件，不会修改用户项目。
+
+### 2. run_agent_streaming_demo
+
+源码：`examples/run_agent_streaming_demo.cpp`，覆盖功能 5：
+
+- 使用 `httplib::Server` 在 `127.0.0.1` 随机端口提供本机 SSE 测试响应。
+- 分别调用内置 OpenAI Responses 和 Chat Completions 模型客户端。
+- 通过 `LoopOptions::on_text_delta(phase, delta)` 显示服务端逐段发送的文本增量。
+- 验证增量拼接与最终完整回答一致，并检查 Chat 的 usage 统计。
+- 不读取模型隐藏推理，也不会把完整回答拆分成伪造的网络流式增量。
+
+### 构建与运行
+
+```bash
+cmake -S . -B build
+cmake --build build --target run_agent_checkpoint_demo run_agent_streaming_demo --config Debug
+
+# Linux
+./build/run_agent_checkpoint_demo
+./build/run_agent_streaming_demo
+
+# Windows (PowerShell)
+# .\build\Debug\run_agent_checkpoint_demo.exe
+# .\build\Debug\run_agent_streaming_demo.exe
+
+# Linux: 单独运行两个示例的 CTest
+ctest --test-dir build -R 'myagent_agent_(checkpoint|streaming)_demo' --output-on-failure
+# Windows: 额外指定 -C Debug
+```
+
+`MYAGENT_BUILD_EXAMPLES=OFF` 时，这两个示例和对应的 CTest 不会构建或注册。
