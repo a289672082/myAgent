@@ -891,11 +891,32 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     if(left.count()<=0)throw std::runtime_error("Model retry deadline reached");
     return left;
   };
+  // RPM 以及指数退避等待也属于可取消的 Loop；避免默认休眠 60 秒。
+  const auto check_cancelled=[&]() {
+    if(active_loop_options_ && active_loop_options_->cancelled &&
+       active_loop_options_->cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled,"Model retry cancelled");
+  };
+  const auto interruptible_sleep=[&](std::chrono::milliseconds delay) {
+    const auto until=std::chrono::steady_clock::now()+delay;
+    for(;;) {
+      check_cancelled();
+      const auto now=std::chrono::steady_clock::now();
+      if(deadline!=std::chrono::steady_clock::time_point::max() && now>=deadline)
+        throw detail::LoopAbort(LoopStatus::LimitReached,"Model retry deadline reached");
+      if(now>=until)break;
+      auto step=std::chrono::duration_cast<std::chrono::milliseconds>(until-now);
+      if(step.count()<=0)break;
+      std::this_thread::sleep_for(std::min(step,std::chrono::milliseconds(25)));
+    }
+  };
   std::mt19937 generator(std::random_device{}());
   const auto started=std::chrono::steady_clock::now();
   const auto started_ns=detail::unix_nanos();
   const std::string route_model=std::string(request.at("model").as_string());
   for(unsigned attempt=0;;) {
+    try {check_cancelled();}
+    catch(...) {if(attempt==0)refund_preflight();throw;}
     // 每个 Agent 的全部 Provider 共享 RPM 限流；不阻塞工具回放。
     if(policy.requests_per_minute) {
       const auto now=std::chrono::steady_clock::now();
@@ -910,7 +931,8 @@ Json Agent::call_model(const std::string& phase,const Json& request,
           if(attempt==0)refund_preflight();
           throw std::runtime_error("Model rate limit exceeds deadline");
         }
-        std::this_thread::sleep_for(wait);
+        try {interruptible_sleep(wait);}
+        catch(...) {if(attempt==0)refund_preflight();throw;}
         // 等待 RPM 空档不算一次尝试/重试。
         continue;
       }
@@ -964,7 +986,7 @@ Json Agent::call_model(const std::string& phase,const Json& request,
       const auto sleep=std::chrono::milliseconds(jitter(generator));
       if(deadline!=std::chrono::steady_clock::time_point::max() &&
          sleep>=remaining())throw;
-      std::this_thread::sleep_for(sleep);
+      interruptible_sleep(sleep);
       ++attempt;
     }
   }
