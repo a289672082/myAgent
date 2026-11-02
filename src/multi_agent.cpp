@@ -420,6 +420,9 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if(out.tool_calls >= options.max_tool_calls && options.max_tool_calls != 0) return "tool calls";
     if(options.max_reported_tokens && out.usage.total_tokens >= options.max_reported_tokens)
       return "reported tokens";
+    if(options.max_estimated_cost_usd>0 &&
+       out.estimated_cost_usd>=options.max_estimated_cost_usd)
+      return "estimated cost";
     return "";
   };
   // Keep accumulated usage and completed tasks if scheduling fails mid-flight.
@@ -718,12 +721,14 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
         reply=coordinator_->ask_without_tools(prompt,remaining,time_left);
       } catch(...) {
         add_usage(result,"coordinator",coordinator_->last_usage());
+        result.estimated_cost_usd+=coordinator_->last_estimated_cost_usd();
         result.model_calls+=coordinator_->last_model_attempts();
         throw;
       }
       // Do not double count an already completed call when the deadline
       // expires after the response was received.
       add_usage(result,"coordinator",coordinator_->last_usage());
+      result.estimated_cost_usd+=coordinator_->last_estimated_cost_usd();
       result.model_calls+=coordinator_->last_model_attempts();
       if(cancelled())
         throw std::runtime_error("Coordinator cancelled or timed out after response");
@@ -778,6 +783,14 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     }
     if(options.max_reported_tokens)
       bounded.max_reported_tokens-=result.usage.total_tokens;
+    if(options.max_estimated_cost_usd>0) {
+      if(result.estimated_cost_usd>=options.max_estimated_cost_usd) {
+        result.status=TeamStatus::LimitReached;
+        result.error="Coordinator reached estimated cost budget";
+        return result;
+      }
+      bounded.max_estimated_cost_usd=options.max_estimated_cost_usd-result.estimated_cost_usd;
+    }
     bounded.max_model_calls=options.max_model_calls>result.model_calls ?
          options.max_model_calls-result.model_calls:0;
     if(bounded.max_model_calls==0) {
