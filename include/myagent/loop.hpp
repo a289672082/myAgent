@@ -85,6 +85,11 @@ struct LoopOptions {
   std::function<void(const Json&)> on_event;
   // 安全追踪仅包含模型/工具名、耗时、错误类别，不复制提示词及响应正文。
   std::function<void(const Json&)> on_span;
+  // 嵌套子 Agent 可复用原子全局配额；false 时拒绝新的实际模型/工具操作。
+  std::function<bool()> allow_model_request;
+  std::function<bool()> allow_tool_execution;
+  // 每条真实模型响应计入全局预算，Checkpoint 回放不会再次计费。
+  std::function<void(const std::string&,const TokenUsage&,double)> on_model_usage;
   std::filesystem::path otel_jsonl_path; // 可选 OTEL 兼容 span JSONL，调用方负责保护文件。
 };
 
