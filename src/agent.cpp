@@ -876,6 +876,9 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     bool emitted=false;
     try {
       const auto left=remaining();
+      if(active_loop_options_ && active_loop_options_->allow_model_request &&
+         !active_loop_options_->allow_model_request())
+        throw detail::LoopAbort(LoopStatus::LimitReached,"Global model-call budget reached");
       Json reply;
       if(on_delta)reply=selected->create_stream(request,left,[&](const std::string& delta){
         if(!delta.empty())emitted=true;
@@ -1204,6 +1207,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         const auto usage = parse_token_usage(summary_response);
         if(!replayed) {
           total_usage_.add(usage);
+          if(active_loop_options_ && active_loop_options_->on_model_usage)
+            active_loop_options_->on_model_usage(
+                std::string(summary_request.at("model").as_string()),usage,
+                usage_cost(std::string(summary_request.at("model").as_string()),usage));
         }
         last_cost_usd_+=usage_cost(std::string(summary_request.at("model").as_string()),usage);
         last_usage_.add(usage);
@@ -1305,6 +1312,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const TokenUsage received = parse_token_usage(response);
     if(!replayed) {
       total_usage_.add(received);
+      if(active_loop_options_ && active_loop_options_->on_model_usage)
+        active_loop_options_->on_model_usage(actual_model,received,
+                                           usage_cost(actual_model,received));
     }
     last_cost_usd_+=usage_cost(actual_model,received);
     last_usage_.add(received);
@@ -1426,6 +1436,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           throw detail::LoopAbort(LoopStatus::Paused,"Tool approval pending: "+name);
         }
         if(decision==ToolDecision::Deny)permitted=false;
+        if(permitted && !duplicate_effect && active_loop_options_ &&
+           active_loop_options_->allow_tool_execution &&
+           !active_loop_options_->allow_tool_execution())
+          throw detail::LoopAbort(LoopStatus::LimitReached,"Global tool-call budget reached");
         if(active_journal_)active_journal_->begin_tool(tool_request);
       }
       if (replayed_tool) {
