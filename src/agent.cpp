@@ -860,7 +860,8 @@ void Agent::emit_span(const std::string& name,const std::string& status,
 }
 Json Agent::call_model(const std::string& phase,const Json& request,
     std::chrono::milliseconds timeout,
-    const std::function<void(const std::string&)>& on_delta) {
+    const std::function<void(const std::string&)>& on_delta,
+    unsigned* model_call_count,unsigned max_model_calls) {
   const auto route=phase_models_.find(phase);
   const auto selected=route==phase_models_.end()?model_:route->second;
   const auto policy=config_.retry;
@@ -907,6 +908,12 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     bool emitted=false;
     try {
       const auto left=remaining();
+      if(attempt>0 && model_call_count) {
+        if(*model_call_count>=max_model_calls)
+          throw detail::LoopAbort(LoopStatus::LimitReached,"Retry reached model call budget");
+        ++*model_call_count;
+        if(phase=="ask")++last_model_attempts_;
+      }
       if(active_loop_options_ && active_loop_options_->allow_model_request &&
          !active_loop_options_->allow_model_request())
         throw detail::LoopAbort(LoopStatus::LimitReached,"Global model-call budget reached");
@@ -1236,7 +1243,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         Json summary_response;
         bool replayed=active_journal_ && active_journal_->replay_model(summary_request,summary_response);
         if(!replayed) {
-          summary_response=call_model("context_compression",summary_request,request_timeout);
+          summary_response=call_model("context_compression",summary_request,request_timeout,
+                                      {},&model_calls,max_model_calls);
           if(active_journal_)active_journal_->record_model(summary_request,summary_response);
         }
         const auto usage = parse_token_usage(summary_response);
@@ -1337,8 +1345,9 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
             active_loop_options_->on_text_delta(phase,delta);
-          });
-      } else response=call_model(phase,request,request_timeout);
+          },&model_calls,max_model_calls);
+      } else response=call_model(phase,request,request_timeout,
+                                  {},&model_calls,max_model_calls);
       if(active_journal_)active_journal_->record_model(request,response);
     }
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
