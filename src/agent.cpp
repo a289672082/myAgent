@@ -845,59 +845,66 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
   std::size_t seen_tools=0;
   for (const auto& endpoint : endpoints_) {
     if(config_.strict_process_isolation && endpoint.prefix=="local")continue;
-    endpoint.client->discover(request_options);
-    Json params=json::object{};
-    std::set<std::string> cursors;
-    bool exhausted=false;
-    for(std::size_t page=0;page<MaxMcpPages;++page) {
-      // Request one page at a time: Client::list_all would first accumulate
-      // every tool, potentially 10,000 pages, before enforcing our limits.
-      const Json result=endpoint.client->request("tools/list",params,request_options);
-      const Json* entries=json::if_contains(result,"tools");
-      if(!entries || !entries->is_array())
-        throw std::runtime_error("Invalid MCP tools/list page");
-      if(entries->size()>max_tools-seen_tools)
-        throw std::runtime_error("MCP tool count exceeds configured limit");
-      for(const auto& tool:entries->array_range()) {
-        if(!tool.is_object())
-          throw std::runtime_error("Malformed MCP tool description");
-        std::size_t remaining=max_tool_bytes;
-        if(!fits_json_budget(tool,remaining))
-          throw std::runtime_error("MCP tool schema/description exceeds configured limit");
-        // The walk is a cheap allocation guard; only exact encoded bytes
-        // count against the externally configurable catalog budget.
-        const auto exact_bytes=json::serialize(tool).size();
-        if(exact_bytes>max_tool_bytes || exact_bytes>catalog_left)
-          throw std::runtime_error("MCP aggregate/per-tool encoded budget exceeded");
-        catalog_left-=exact_bytes;
-        ++seen_tools;
-        const auto name=as_string(tool,"name");
-        const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
-        if(qualified.size()>64 || routes.count(qualified))
-          throw std::runtime_error("MCP tool name too long or colliding: "+qualified);
-        if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
-        routes.emplace(qualified,Route{endpoint.client,name});
-        const Json* schema=json::if_contains(tool,"inputSchema");
-        tools.push_back(json::object{{"type","function"},{"name",qualified},
-          {"description",as_string(tool,"description")},
-          {"parameters",schema && schema->is_object()?*schema:
-             Json(json::object{{"type","object"},{"properties",json::object{}}})},
-          {"strict",false}});
+    Json schemas=json::array{};
+    const auto now=std::chrono::steady_clock::now();
+    const auto old=catalog_cache_.find(endpoint.prefix);
+    const bool invalidated=endpoint.catalog_invalidated->exchange(
+        false,std::memory_order_acq_rel);
+    const bool hit=config_.mcp_catalog_ttl_seconds>0 && !invalidated &&
+        old!=catalog_cache_.end() && now<old->second.expiry;
+    if(hit) schemas=old->second.schemas;
+    else {
+      endpoint.client->discover(request_options);
+      Json params=json::object{};
+      std::set<std::string> cursors;
+      bool exhausted=false;
+      for(std::size_t page=0;page<MaxMcpPages;++page) {
+        // 增量请求和校验，禁止先让 SDK 无上限收集成千上万条工具。
+        const Json result=endpoint.client->request("tools/list",params,request_options);
+        const Json* entries=json::if_contains(result,"tools");
+        if(!entries || !entries->is_array())
+          throw std::runtime_error("Invalid MCP tools/list page");
+        if(entries->size()>max_tools-schemas.size())
+          throw std::runtime_error("MCP catalog tool count exceeds limit");
+        for(const auto& item:entries->array_range())schemas.push_back(item);
+        const Json* next=json::if_contains(result,"nextCursor");
+        if(!next || next->is_null()) {exhausted=true;break;}
+        if(!next->is_string() || next->as_string_view().empty() ||
+           next->as_string_view().size()>1024)
+          throw std::runtime_error("Invalid MCP catalog cursor");
+        const std::string cursor(next->as_string());
+        if(!cursors.insert(cursor).second)
+          throw std::runtime_error("Repeated MCP catalog cursor");
+        params=json::object{{"cursor",cursor}};
       }
-      const Json* next=json::if_contains(result,"nextCursor");
-      if(!next || next->is_null()) {
-        exhausted=true;
-        break;
-      }
-      if(!next->is_string() || next->as_string_view().empty() ||
-         next->as_string_view().size()>1024)
-        throw std::runtime_error("Invalid MCP pagination cursor");
-      const std::string cursor(next->as_string());
-      if(!cursors.insert(cursor).second)
-        throw std::runtime_error("Repeated MCP pagination cursor");
-      params=json::object{{"cursor",cursor}};
+      if(!exhausted)throw std::runtime_error("MCP catalog exceeds page limit");
     }
-    if(!exhausted)throw std::runtime_error("MCP discovery exceeded page limit");
+    // 缓存命中也必须重新计算当前调用的全局预算、权限和冲突。
+    for(const auto& tool:schemas.array_range()) {
+      if(!tool.is_object())throw std::runtime_error("Malformed MCP tool description");
+      std::size_t remaining=max_tool_bytes;
+      if(!fits_json_budget(tool,remaining))
+        throw std::runtime_error("MCP tool schema exceeds configured size");
+      const auto bytes=json::serialize(tool).size();
+      if(bytes>max_tool_bytes || bytes>catalog_left || seen_tools>=max_tools)
+        throw std::runtime_error("MCP catalog budget exceeded");
+      catalog_left-=bytes;++seen_tools;
+      const auto name=as_string(tool,"name");
+      const auto qualified=endpoint.prefix+"__"+safe_tool_name(name);
+      if(qualified.size()>64 || routes.count(qualified))
+        throw std::runtime_error("MCP tool name too long or colliding");
+      if(config_.tool_policy.access(qualified)==ToolAccess::Deny)continue;
+      routes.emplace(qualified,Route{endpoint.client,name});
+      const Json* schema=json::if_contains(tool,"inputSchema");
+      tools.push_back(json::object{{"type","function"},{"name",qualified},
+        {"description",as_string(tool,"description")},
+        {"parameters",schema && schema->is_object()?*schema:
+            Json(json::object{{"type","object"},{"properties",json::object{}}})},
+        {"strict",false}});
+    }
+    if(!hit && config_.mcp_catalog_ttl_seconds>0)
+      catalog_cache_[endpoint.prefix]={std::move(schemas),
+          now+std::chrono::seconds(config_.mcp_catalog_ttl_seconds)};
   }
   if (!config_.strict_process_isolation &&
       config_.auto_skill_selection && !skills_.all().empty()) {
