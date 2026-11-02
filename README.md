@@ -659,3 +659,64 @@ ctest --test-dir build -R myagent_agents_md_demo --output-on-failure
 ```
 
 CMake 自动指定样例资源目录，因此 Demo 不依赖当前工作目录。该示例只展示**手动指定规则文件**，不会自动搜索多级 AGENTS.md。
+
+## 可恢复 Agent Loop、暂停审批与 SSE 流式文本
+
+普通 `Agent::run_loop()` 现可使用 `LoopOptions::checkpoint_path` 持久化模型响应与工具执行日志。
+记录采用写前日志：**开始执行工具前**先持久化 `pending` 意图，完成后再持久化结果。
+恢复时已经记录完成的模型响应/工具输出会被回放，不会再次调用工具；如果崩溃发生在
+`pending` 状态，则**绝不自动重试**，而是返回 `LoopStatus::Paused`，
+直到宿主在 `reconcile_tool` 中核实外部状态并提供已确认的结果。
+
+```cpp
+myagent::LoopOptions options;
+options.checkpoint_path = "./task-checkpoint.json";
+options.on_tool_approval = [](const myagent::ToolApprovalRequest& request) {
+    // GUI 可显示 request.name / request.arguments。
+    // 未收到人工批准时返回 Pause，立即交还控制权，不阻塞执行线程。
+    return myagent::ToolDecision::Pause;
+};
+auto result = agent.react("检查并修改 C++ 代码", options);
+if (result.status == myagent::LoopStatus::Paused) {
+    // 用户点击“继续”后，重新提供明确的批准决策。
+    myagent::LoopOptions next;
+    next.on_tool_approval = [](const myagent::ToolApprovalRequest&) {
+        return myagent::ToolDecision::Approve;
+    };
+    next.reconcile_tool = [](const myagent::ToolApprovalRequest& call)
+        -> std::optional<std::string> {
+        // 只针对已经核实结果的不确定工具返回输出。
+        // 无法证实时返回 std::nullopt，继续保持暂停，绝不自动重放。
+        return std::nullopt;
+    };
+    result = agent.resume("./task-checkpoint.json", next);
+}
+```
+
+应用还可从其他线程调用 `agent.pause()`，在下一安全边界暂停。
+此操作不是抢占式终止：正在执行的非合作 C++ 回调或网络请求仍需由各自的取消机制处理。
+`resume()` 需要相同的模型配置、工具注册、初始会话历史和项目指令；
+将任务迁移到新进程时应先重新配置这些依赖。已完成的 Checkpoint 禁止重复恢复。
+
+> 安全限制：第一版 Checkpoint 仅支持**纯文本** `LoopInput`，单文件 16 MiB 上限。
+> 快照会包含模型请求、提示词、历史和工具输出，可能含有项目机密；
+> 应放在受控目录，设置文件访问权限，不应提交到 Git。
+> 不能把 `reconcile_tool` 用作“总是批准重试”；它必须核实真实副作用状态。
+
+内置 Responses 和 Chat Completions HTTP 客户端支持真实 SSE 文本增量回调：
+
+```cpp
+myagent::LoopOptions options;
+options.on_text_delta = [](const std::string& phase, const std::string& delta) {
+    // phase 表示 react / plan / execute / evaluate 等阶段；
+    // delta 只包含模型提供的公开输出文本，不含隐藏推理内容。
+    std::cout << "[" << phase << "] " << delta << std::flush;
+};
+const auto result = agent.react("解释这段代码", options);
+```
+
+`Model::create_stream` 可由自定义 Provider 重写；默认实现只返回完整结果，
+不会伪造 token 流。具体内容为 Responses `response.output_text.delta`、
+Chat `choices[].delta.content`，由服务端真正逐段推送。
+离线回归包含 `myagent_streaming`（本机模拟 SSE HTTP）和
+`myagent_full_audit`（审批暂停、日志恢复、崩溃未确认副作用不自动重放）。
