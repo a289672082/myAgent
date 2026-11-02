@@ -2,6 +2,9 @@
 #include "team_checkpoint.hpp"
 #include "loop_internal.hpp"
 #include "task_scheduler.hpp"
+#include <atomic>
+#include <mutex>
+#include <memory>
 #include "workspace_io.hpp"
 #include <algorithm>
 #include <atomic>
@@ -109,8 +112,53 @@ LoopMode parse_mode(const Json& v) {
 }
 void validate_options(const TeamOptions& o) {
   if (!o.max_delegations || !o.max_parallel_agents || !o.max_model_calls ||
-      o.max_depth != 1 || !o.max_handoff_chars)
-    throw std::invalid_argument("TeamOptions requires positive budgets and max_depth=1");
+      o.max_depth==0 || o.max_depth>8 || !o.max_handoff_chars)
+    throw std::invalid_argument("TeamOptions requires positive budgets and max_depth in 1..8");
+}
+} // namespace
+
+// 团队树级预算。每次实际发送模型请求或执行工具时，先原子占用一次配额。
+namespace {
+struct NestedBudget {
+  unsigned depth_limit=1,models_limit=0,tools_limit=0;
+  std::atomic<unsigned> model_calls{0},tool_calls{0};
+  std::mutex results_mutex;
+  TokenUsage child_usage;
+  unsigned child_model_calls=0,child_tool_calls=0;
+  double child_cost=0;
+};
+bool acquire(std::atomic<unsigned>& count,unsigned limit) {
+  auto current=count.load(std::memory_order_relaxed);
+  while(current<limit) {
+    if(count.compare_exchange_weak(current,current+1,std::memory_order_acq_rel))
+      return true;
+  }
+  return false;
+}
+struct NestedContext {
+  AgentTeam* owner;
+  std::shared_ptr<NestedBudget> budget;
+  unsigned depth;
+  std::set<std::string> stack;
+  LoopOptions loop;
+};
+thread_local NestedContext* current_nested=nullptr;
+struct NestedGuard {
+  NestedContext* previous=current_nested;
+  explicit NestedGuard(NestedContext& next){current_nested=&next;}
+  ~NestedGuard(){current_nested=previous;}
+};
+void install_tree_budget(LoopOptions& options,const std::shared_ptr<NestedBudget>& budget) {
+  const auto original_model=options.allow_model_request;
+  const auto original_tool=options.allow_tool_execution;
+  options.allow_model_request=[budget,original_model] {
+    if(original_model && !original_model())return false;
+    return acquire(budget->model_calls,budget->models_limit);
+  };
+  options.allow_tool_execution=[budget,original_tool] {
+    if(original_tool && !original_tool())return false;
+    return acquire(budget->tool_calls,budget->tools_limit);
+  };
 }
 } // namespace
 
@@ -172,6 +220,39 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
   worker->spec = std::move(spec);
   worker->instance = std::make_unique<Agent>(worker->spec.config,std::move(model));
   if (!worker->spec.workspace.empty()) register_workspace_tools(*worker);
+  if(!worker->spec.allowed_children.empty()) {
+    if(worker->spec.config.strict_process_isolation)
+      throw std::invalid_argument("Nested delegation tool is in-process and forbidden in strict isolation");
+    // 子 Agent 可以通过受限工具委派；永远不能自行指定模型密钥或目标白名单。
+    const auto parent=worker->spec.name;
+    const auto children=worker->spec.allowed_children;
+    worker->instance->tool("agent_delegate","委派给授权子 Agent（消耗共享深度与预算）",
+      [this,parent,children](const std::string& child,const std::string& task) {
+        auto* current=current_nested;
+        if(!current || current->owner!=this)
+          throw std::runtime_error("Nested delegation requires a bounded team execution");
+        if(!std::count(children.begin(),children.end(),child))
+          throw std::runtime_error("Child is not in delegated whitelist");
+        if(current->depth>=current->budget->depth_limit)
+          throw std::runtime_error("Maximum Agent delegation depth reached");
+        if(current->stack.count(child))
+          throw std::runtime_error("Cyclic Agent delegation refused");
+        if(task.size()>6000)throw std::runtime_error("Nested task exceeds bounded handoff");
+        NestedContext next{this,current->budget,current->depth+1,current->stack,current->loop};
+        next.stack.insert(child);
+        NestedGuard guard(next);
+        auto outcome=delegate(child,task,LoopMode::ReAct,next.loop);
+        {
+          std::lock_guard<std::mutex> lock(next.budget->results_mutex);
+          next.budget->child_usage.add(outcome.usage);
+          next.budget->child_model_calls+=outcome.model_calls;
+          next.budget->child_tool_calls+=outcome.tool_calls;
+        }
+        if(outcome.status!=LoopStatus::Completed)
+          throw std::runtime_error("Delegated child failed: "+outcome.error);
+        return outcome.answer;
+      },mymcp::arg<std::string>("child"),mymcp::arg<std::string>("task"));
+  }
   // AgentSpec 声明式配置：按角色加载 Skills 和 MCP；失败则整项注册回滚。
   for (const auto& directory : worker->spec.skill_directories)
     worker->instance->load_skills(directory);
@@ -208,6 +289,31 @@ DelegationResult AgentTeam::delegate(const std::string& name, const std::string&
                                     LoopMode mode, const LoopOptions& options) {
   return delegate(name,LoopInput{task,{},{}},mode,options);
 }
+
+DelegationResult AgentTeam::delegate_tree(const std::string& root,const std::string& task,
+    unsigned max_depth,unsigned max_model_calls,unsigned max_tool_calls,
+    const LoopOptions& options) {
+  if(max_depth==0||max_depth>8||max_model_calls==0)
+    throw std::invalid_argument("Tree delegation requires depth 1..8 and positive model budget");
+  auto budget=std::make_shared<NestedBudget>();
+  budget->depth_limit=max_depth;
+  budget->models_limit=max_model_calls;
+  budget->tools_limit=max_tool_calls;
+  LoopOptions bounded=options;
+  bounded.max_model_calls=std::min(bounded.max_model_calls,max_model_calls);
+  bounded.max_tool_calls=std::min(bounded.max_tool_calls,max_tool_calls);
+  install_tree_budget(bounded,budget);
+  NestedContext context{this,budget,1,{root},bounded};
+  NestedGuard guard(context);
+  DelegationResult result=delegate(root,task,LoopMode::ReAct,bounded);
+  {
+    std::lock_guard<std::mutex> lock(budget->results_mutex);
+    result.usage.add(budget->child_usage);
+    result.model_calls+=budget->child_model_calls;
+    result.tool_calls+=budget->child_tool_calls;
+  }
+  return result;
+}
 void AgentTeam::add_usage(TeamResult& r, const std::string& name, const TokenUsage& u) {
   r.usage.add(u);
   r.usage_by_agent[name].add(u);
@@ -215,6 +321,10 @@ void AgentTeam::add_usage(TeamResult& r, const std::string& name, const TokenUsa
 TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
                                     const TeamOptions& options) {
   validate_options(options);
+  const auto tree=std::make_shared<NestedBudget>();
+  tree->depth_limit=options.max_depth;
+  tree->models_limit=options.max_model_calls;
+  tree->tools_limit=options.max_tool_calls;
   if (tasks.empty() || tasks.size() > options.max_delegations)
     throw std::invalid_argument("Delegation count outside TeamOptions");
   std::set<std::string> seen;
@@ -405,6 +515,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       add_context("Artifacts",t.context.artifacts);
       add_context("Constraints",t.context.constraints);
       LoopOptions worker_options=options.worker_loop;
+      if(options.max_depth>1)install_tree_budget(worker_options,tree);
       worker_options.max_model_calls=std::min(share,worker_options.max_model_calls);
       worker_options.max_tool_calls=std::min(tool_share,worker_options.max_tool_calls);
       // Preserve the worker's own cancellation hook as well as the team's.
@@ -429,6 +540,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
                        t.fallback_agents[fallback_index[t.id]-1]),
          id=t.id,description=std::move(context),
          mode=t.mode,worker_options,max_task_retries=options.max_task_retries]() mutable {
+          NestedContext root{this,tree,1,{name},worker_options};
+          NestedGuard guard(root);
           auto result=delegate(name,description,mode,worker_options);
           result.id=id;
           result.attempts=1;
@@ -511,6 +624,13 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
   } catch(const std::exception& e) {
     out.status=cancelled()?TeamStatus::Cancelled:TeamStatus::Failed;
     out.error=e.what();
+  }
+  if(options.max_depth>1) {
+    // 嵌套子任务的用量作为团队账本额外记录，不得遗漏或双计父 Agent 用量。
+    std::lock_guard<std::mutex> lock(tree->results_mutex);
+    out.model_calls+=tree->child_model_calls;
+    out.tool_calls+=tree->child_tool_calls;
+    add_usage(out,"nested_children",tree->child_usage);
   }
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
