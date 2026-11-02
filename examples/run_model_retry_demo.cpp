@@ -58,21 +58,24 @@ int run_model_retry_demo() {
          "RPM 限流未阻止第二次请求，或重复执行工具");
   // 第二次模型请求被 RPM 限流时应可中断，而不是无响应地休眠 60 秒。
   auto cancel_model=std::make_shared<Mock>();
-  auto first_request_at=std::chrono::steady_clock::time_point{};
   cancel_model->handler=[&](const Json& request) {
     if(has_tool_result(request))return answer("unexpected second request");
-    first_request_at=std::chrono::steady_clock::now();
     return tool_call("local__single_effect","cancel-tool");
   };
   Agent cancel_agent(cfg,cancel_model);
   unsigned cancel_effects=0;
+  auto effect_at=std::chrono::steady_clock::time_point{};
   cancel_agent.tool("single_effect","one side effect",
-                    [&](){++cancel_effects;return 1;});
+                    [&](){
+                      ++cancel_effects;
+                      effect_at=std::chrono::steady_clock::now();
+                      return 1;
+                    });
   LoopOptions cancel_options;
   cancel_options.timeout=std::chrono::seconds(2);
   cancel_options.cancelled=[&] {
-    return first_request_at!=std::chrono::steady_clock::time_point{} &&
-           std::chrono::steady_clock::now()-first_request_at>
+    return effect_at!=std::chrono::steady_clock::time_point{} &&
+           std::chrono::steady_clock::now()-effect_at>
                std::chrono::milliseconds(80);
   };
   const auto cancelled=cancel_agent.react("cancel rpm wait",cancel_options);
