@@ -1,5 +1,6 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
+#include "execution_journal.hpp"
 #include "plan_manager.hpp"
 #include <algorithm>
 #include <cmath>
@@ -46,6 +47,12 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                            const LoopOptions& options) {
   const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
+  // 指针仅在持有 session_mutex_ 的本次 Loop 内有效；异常也必须清理。
+  struct ResetActive {
+    std::function<void()> reset;
+    ~ResetActive(){reset();}
+  } reset_active{[&]{active_journal_=nullptr;active_loop_options_=nullptr;}};
+  std::unique_ptr<detail::ExecutionJournal> journal;
   Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
   std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
@@ -54,6 +61,18 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   Json latest_response = nullptr;
   try {
     validate_options(options);
+    if(options.resume_checkpoint && options.checkpoint_path.empty())
+      throw std::invalid_argument("resume_checkpoint requires checkpoint_path");
+    if(!options.checkpoint_path.empty()) {
+      // V1 快照只接受文本任务：多媒体文件内容会变化，不允许无校验重放。
+      if(!input.images.empty() || !input.audio.empty())
+        throw std::invalid_argument("Checkpoint currently supports text-only LoopInput");
+      journal=std::make_unique<detail::ExecutionJournal>(
+          options.checkpoint_path,options.resume_checkpoint,input.text,mode,
+          history_,config_.model);
+      active_journal_=journal.get();
+    }
+    active_loop_options_=&options;
     const auto deadline = options.timeout.count() > 0
         ? std::chrono::steady_clock::now() + options.timeout
         : std::chrono::steady_clock::time_point::max();
@@ -70,6 +89,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           });
     if (cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
+    if(pause_requested_.load(std::memory_order_acquire))
+      throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before task preparation");
     original_input = prepare_loop_input(input, result.audio_transcript,remaining_time);
     if(cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled,"Agent deadline exceeded during input preparation");
@@ -82,6 +103,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                       const std::string& prompt, bool tools_enabled,
                       unsigned max_rounds, const std::string& override_model = {},
                       Json* step_tool_results = nullptr) {
+      if(pause_requested_.load(std::memory_order_acquire))
+        throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before phase: "+phase);
       trace_event(result, options, phase, "started", result.iterations);
       const auto turn = run_stage(std::move(content), working, prompt, override_model,
           tools_enabled, result.model_calls, result.tool_calls,
@@ -131,6 +154,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       // ReAct 强调“观察结果改变下一步行动”，Tool Calling Loop 则是
       // 发起工具调用和回传结果的基础设施，两者共用 run_stage() 即可。
       // 只记录可观察的工具事件，不索要或公开模型内部隐藏推理。
+      if(pause_requested_.load(std::memory_order_acquire))
+        throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before ReAct");
       trace_event(result, options, "react", "started", 0);
       const auto turn = run_stage(original_input, working,
         "Solve the task by choosing necessary actions, observing tool results "
@@ -374,16 +399,31 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       last_response_ = std::move(latest_response);
     }
     result.status = LoopStatus::Completed;
+    if(journal)journal->mark("completed");
     return result;
   } catch (const detail::LoopAbort& e) {
     result.status = e.status;
     result.error = e.what();
+    if(journal && e.status==LoopStatus::Paused) {
+      try {journal->mark("paused");}
+      catch(const std::exception& failure) {
+        result.status=LoopStatus::Failed;
+        result.error=std::string("Checkpoint write failed: ")+failure.what();
+      }
+    }
   } catch (const std::exception& e) {
     result.status = LoopStatus::Failed;
     result.error = e.what();
   }
   // No commit on error: partial tool side effects cannot be automatically reverted.
   return result;
+}
+LoopResult Agent::resume(const std::filesystem::path& checkpoint,LoopOptions options) {
+  const auto descriptor=detail::ExecutionJournal::inspect(checkpoint);
+  options.checkpoint_path=checkpoint;
+  options.resume_checkpoint=true;
+  pause_requested_.store(false,std::memory_order_release);
+  return run_loop(descriptor.task,descriptor.mode,options);
 }
 LoopResult Agent::run_loop(const std::string& task, LoopMode mode,
                            const LoopOptions& options) {
