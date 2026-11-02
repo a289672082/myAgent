@@ -419,6 +419,56 @@ static void test_explicit_agents_md(const fs::path& root) {
   assert(agent.ask("test4")=="ok");
   assert(observed.find("VALID_RULE")!=std::string::npos);
 }
+// Agent Loop 可恢复执行：审批暂停后，重放模型响应但不会重复执行工具。
+static void test_loop_checkpoint_approval(const fs::path& root) {
+  const auto file=root/"agent-loop-checkpoint.json";
+  auto model=std::make_shared<Mock>();
+  int tool_calls=0;
+  model->reply=[&](const Json& request)->Json {
+    const auto& input=request.at("input");
+    bool saw_output=false;
+    for(const auto& item:input.array_range()) {
+      if(item.is_object()) {
+        const auto* type=j::if_contains(item,"type");
+        if(type&&type->is_string()&&type->as_string()=="function_call_output")
+          saw_output=true;
+      }
+    }
+    if(saw_output)return answer("completed after approval");
+    return j::object{{"status","completed"},{"output",j::array{
+      j::object{{"type","function_call"},{"call_id","approval-call-1"},
+        {"name","local__write_demo"},{"arguments","{}"}}}}};
+  };
+  auto config=settings();
+  Agent agent(config,model);
+  agent.tool("write_demo","test mock side effect",[&](){++tool_calls;return "saved";});
+  LoopOptions opts;
+  opts.checkpoint_path=file;
+  opts.on_tool_approval=[](const ToolApprovalRequest&) {
+    return ToolDecision::Pause;
+  };
+  const auto first=agent.react("write to file",opts);
+  assert(first.status==LoopStatus::Paused);
+  assert(tool_calls==0);
+  assert(fs::exists(file));
+  const auto first_model_calls=model->calls.load();
+
+  LoopOptions resumed=opts;
+  resumed.on_tool_approval=[](const ToolApprovalRequest&) {
+    return ToolDecision::Approve;
+  };
+  const auto second=agent.resume(file,resumed);
+  assert(second.status==LoopStatus::Completed);
+  assert(second.answer=="completed after approval");
+  assert(tool_calls==1);
+  // 恢复时复用第一个模型响应，不能再次请求模型规划同一项副作用。
+  assert(model->calls.load()==first_model_calls+1);
+  // 完成的 checkpoint 不允许再次恢复，以免重复工具副作用。
+  const auto third=agent.resume(file,resumed);
+  assert(third.status==LoopStatus::Failed);
+  assert(tool_calls==1);
+}
+
 int main() {
   const auto root=fs::temp_directory_path()/
       ("myagent-full-audit-"+std::to_string(std::chrono::steady_clock::now()
@@ -436,6 +486,7 @@ int main() {
     test_memory_save_and_metadata(root);
     test_mcp_catalog_and_result_limits();
     test_handoff_budget(root);
+    test_loop_checkpoint_approval(root);
     test_explicit_agents_md(root);
   }catch(...){fs::remove_all(root);throw;}
   fs::remove_all(root);
