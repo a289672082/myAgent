@@ -777,6 +777,7 @@ void Agent::tool(std::string name, std::string description,
     throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
   local_.add_tool(std::move(name), std::move(description),
                   std::move(schema), std::move(handler));
+  catalog_cache_.erase("local");
 }
 void Agent::load_skills(const std::filesystem::path& directory) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
