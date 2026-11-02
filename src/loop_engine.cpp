@@ -59,7 +59,12 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
   last_usage_ = {}; // 即使因取消/限制而失败，返回的 usage 仍是本次 Loop。
   retries_used_=0;last_cost_usd_=0;
-  active_trace_id_=detail::trace_hex(16);
+  active_trace_id_=options.trace_id.empty()?detail::trace_hex(16):options.trace_id;
+  if(active_trace_id_.size()!=32 ||
+     !std::all_of(active_trace_id_.begin(),active_trace_id_.end(),[](char c) {
+       return (c>='0'&&c<='9')||(c>='a'&&c<='f');
+     }))
+    throw std::invalid_argument("Trace ID must be 32 lowercase hex characters");
   result.trace_id=active_trace_id_;
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
