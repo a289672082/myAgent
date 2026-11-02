@@ -363,6 +363,11 @@ private:
   unsigned retries_used_=0;
   std::deque<std::chrono::steady_clock::time_point> recent_model_requests_;
   double last_cost_usd_=0;
+  std::string active_trace_id_;
+  void emit_span(const std::string& name,const std::string& status,
+                 std::uint64_t start_unix_ns,
+                 std::uint64_t duration_ns,
+                 const std::string& model_name="");
   SkillLibrary skills_;
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
   std::string agents_md_contents_; // Explicit AGENTS.md rules, separate from Skill catalog.
