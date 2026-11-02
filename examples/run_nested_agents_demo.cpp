@@ -45,6 +45,12 @@ int run_nested_agents_demo() {
   ensure(leaf_model->calls==before,"层级上限没有阻止三级委派");
   ensure(limited.model_calls<=8 && limited.tool_calls<=4,
          "嵌套任务预算超出上限");
+  const auto before_budget=leaf_model->calls;
+  const auto exhausted=team.delegate_tree("root","strict global budget",3,2,2);
+  ensure(exhausted.model_calls<=2 && exhausted.tool_calls<=2,
+         "全局限额耗尽仍继续执行子 Agent");
+  ensure(leaf_model->calls==before_budget,
+         "请求额度耗尽后仍调用了更深层的 Agent");
   std::cout<<"run_nested_agents_demo: 白名单 / 3 层委派 / 全局预算通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
