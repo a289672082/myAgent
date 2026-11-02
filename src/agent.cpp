@@ -1,5 +1,6 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
+#include "execution_journal.hpp"
 #include "workspace_io.hpp"
 #include "file_io.hpp"
 #include "httplib.h"
@@ -954,9 +955,14 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
             ? config_.model : config_.context.summary_model;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
-        const Json summary_response = model_->create_with_timeout(summary_request,request_timeout);
+        Json summary_response;
+        bool replayed=active_journal_ && active_journal_->replay_model(summary_request,summary_response);
+        if(!replayed) {
+          summary_response=model_->create_with_timeout(summary_request,request_timeout);
+          if(active_journal_)active_journal_->record_model(summary_request,summary_response);
+        }
         const auto usage = parse_token_usage(summary_response);
-        total_usage_.add(usage);
+        if(!replayed)total_usage_.add(usage);
         last_usage_.add(usage);
         if (run_usage) run_usage->add(usage);
         if (usage_by_phase) (*usage_by_phase)["context_compression"].add(usage);
@@ -1031,15 +1037,27 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     if(model_calls >= max_model_calls)
       throw detail::LoopAbort(LoopStatus::LimitReached,
         "Model budget exhausted after context compression");
+    if(pause_requested_.load(std::memory_order_acquire))
+      throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before model request");
     const auto request_timeout=model_timeout(); // No attempt yet if already expired.
     ++model_calls; // Charge attempts, even when the request fails.
     if (phase == "ask") ++last_model_attempts_;
-    const Json response = model_->create_with_timeout(request,request_timeout);
+    Json response;
+    const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
+    if(!replayed) {
+      if(active_loop_options_ && active_loop_options_->on_text_delta) {
+        response=model_->create_stream(request,request_timeout,
+          [&](const std::string& delta) {
+            active_loop_options_->on_text_delta(phase,delta);
+          });
+      } else response=model_->create_with_timeout(request,request_timeout);
+      if(active_journal_)active_journal_->record_model(request,response);
+    }
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
     const TokenUsage received = parse_token_usage(response);
-    total_usage_.add(received);
+    if(!replayed)total_usage_.add(received);
     last_usage_.add(received);
     if (run_usage) run_usage->add(received);
     if (usage_by_phase) (*usage_by_phase)[phase].add(received);
@@ -1101,11 +1119,33 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         throw detail::LoopAbort(LoopStatus::Cancelled, "Agent loop cancelled");
       if (tool_calls >= max_tool_calls)
         throw detail::LoopAbort(LoopStatus::LimitReached, "Tool call budget exhausted");
+      if(pause_requested_.load(std::memory_order_acquire))
+        throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before tool execution");
       const auto id = as_string(item, "call_id");
       const auto name = as_string(item, "name");
       if (id.empty()) throw std::runtime_error("Missing tool call ID");
       ++tool_calls;
       std::string tool_output;
+      const Json tool_request=json::object{{"name",name},{"call_id",id},
+                                           {"arguments",as_string(item,"arguments","{}")}};
+      const ToolApprovalRequest approval_request{name,id,
+        json::parse(as_string(item,"arguments","{}"))};
+      detail::ExecutionJournal::ToolState replay_state=
+          detail::ExecutionJournal::ToolState::New;
+      if(active_journal_)
+        replay_state=active_journal_->inspect_tool(tool_request,tool_output);
+      bool replayed_tool=replay_state==detail::ExecutionJournal::ToolState::Complete;
+      if(replay_state==detail::ExecutionJournal::ToolState::Unknown) {
+        const auto reconcile=active_loop_options_
+            ? active_loop_options_->reconcile_tool : decltype(LoopOptions::reconcile_tool){};
+        const auto resolved=reconcile ? reconcile(approval_request) : std::nullopt;
+        if(!resolved)
+          throw detail::LoopAbort(LoopStatus::Paused,
+            "Tool outcome uncertain after crash; host reconciliation required");
+        active_journal_->reconcile(*resolved);
+        tool_output=*resolved;
+        replayed_tool=true;
+      }
       bool permitted = false;
       try {
         const auto args = json::parse(as_string(item, "arguments", "{}"));
@@ -1125,7 +1165,24 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
             json::parse(as_string(item,"arguments","{}")));
         duplicate_effect=!executed_effects->insert(name+"\n"+canonical).second;
       }
-      if (!permitted) {
+      if(!replayed_tool) {
+        // Approval can pause a Loop without blocking on a UI condition variable.
+        // A resumed approval is distinguishable from a tool already in flight.
+        ToolDecision decision=ToolDecision::Approve;
+        if(active_loop_options_ && active_loop_options_->on_tool_approval)
+          decision=active_loop_options_->on_tool_approval(approval_request);
+        else if(replay_state==detail::ExecutionJournal::ToolState::ApprovalPending)
+          decision=ToolDecision::Pause;
+        if(decision==ToolDecision::Pause) {
+          if(active_journal_)active_journal_->awaiting_approval(tool_request);
+          throw detail::LoopAbort(LoopStatus::Paused,"Tool approval pending: "+name);
+        }
+        if(decision==ToolDecision::Deny)permitted=false;
+        if(active_journal_)active_journal_->begin_tool(tool_request);
+      }
+      if (replayed_tool) {
+        // Previously recorded tool result; no callback or MCP side effect runs again.
+      } else if (!permitted) {
         tool_output = R"({"isError":true,"message":"Tool permission denied or approval missing"})";
         emit(json::object{{"phase",phase},{"event","tool_denied"},{"name",name}});
       } else if(duplicate_effect) {
@@ -1171,6 +1228,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
           throw std::runtime_error("Unknown tool: " + name);
         tool_output = execute_tool(route->second, item, mcp_options());
       }
+      if(active_journal_ && !replayed_tool)
+        active_journal_->complete_tool(tool_output);
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
         {"output", tool_output}
