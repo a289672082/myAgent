@@ -807,6 +807,103 @@ void Agent::LoadAgentsMdFileFormString(const std::string& content) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   agents_md_contents_=content;
 }
+
+// 单 Agent 模型重试器。只重试模型 HTTP，请求执行发生在工具前；
+// 对已经有 SSE delta 的流禁止重试，避免 UI 展示重复内容。
+Json Agent::call_model(const std::string& phase,const Json& request,
+    std::chrono::milliseconds timeout,
+    const std::function<void(const std::string&)>& on_delta) {
+  const auto route=phase_models_.find(phase);
+  const auto selected=route==phase_models_.end()?model_:route->second;
+  const auto policy=config_.retry;
+  if(policy.max_retries_per_request>20 || policy.max_total_retries>100 ||
+     policy.base_delay_ms>60000 || policy.max_delay_ms>60000 ||
+     (policy.max_delay_ms && policy.base_delay_ms>policy.max_delay_ms))
+    throw std::invalid_argument("Invalid model retry policy");
+  if(config_.max_estimated_cost_usd>0 && last_cost_usd_>=config_.max_estimated_cost_usd)
+    throw detail::LoopAbort(LoopStatus::LimitReached,"Estimated model cost budget reached");
+  const auto deadline=timeout.count()>0
+      ?std::chrono::steady_clock::now()+timeout
+      :std::chrono::steady_clock::time_point::max();
+  auto remaining=[&](){
+    if(deadline==std::chrono::steady_clock::time_point::max())
+      return std::chrono::milliseconds{0};
+    const auto left=std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline-std::chrono::steady_clock::now());
+    if(left.count()<=0)throw std::runtime_error("Model retry deadline reached");
+    return left;
+  };
+  std::mt19937 generator(std::random_device{}());
+  for(unsigned attempt=0;;++attempt) {
+    // 每个 Agent 的全部 Provider 共享 RPM 限流；不阻塞工具回放。
+    if(policy.requests_per_minute) {
+      const auto now=std::chrono::steady_clock::now();
+      while(!recent_model_requests_.empty() &&
+            now-recent_model_requests_.front()>=std::chrono::minutes(1))
+        recent_model_requests_.pop_front();
+      if(recent_model_requests_.size()>=policy.requests_per_minute) {
+        const auto wait=std::chrono::duration_cast<std::chrono::milliseconds>(
+            recent_model_requests_.front()+std::chrono::minutes(1)-now);
+        if(deadline!=std::chrono::steady_clock::time_point::max() &&
+           wait>=remaining())
+          throw std::runtime_error("Model rate limit exceeds deadline");
+        std::this_thread::sleep_for(wait);
+        continue;
+      }
+      recent_model_requests_.push_back(now);
+    }
+    bool emitted=false;
+    try {
+      const auto left=remaining();
+      if(on_delta)return selected->create_stream(request,left,[&](const std::string& delta){
+        if(!delta.empty())emitted=true;
+        on_delta(delta);
+      });
+      return selected->create_with_timeout(request,left);
+    } catch(const std::exception& e) {
+      const std::string reason=e.what();
+      const bool transient=reason.find("HTTP 429")!=std::string::npos ||
+          reason.find("HTTP 500")!=std::string::npos ||
+          reason.find("HTTP 502")!=std::string::npos ||
+          reason.find("HTTP 503")!=std::string::npos ||
+          reason.find("HTTP 504")!=std::string::npos ||
+          reason.find("transport failed")!=std::string::npos ||
+          reason.find("HTTP transport failed")!=std::string::npos;
+      if(!transient || emitted || attempt>=policy.max_retries_per_request ||
+         retries_used_>=policy.max_total_retries)throw;
+      ++retries_used_;
+      const unsigned shift=std::min(attempt,10u);
+      const std::uint64_t cap=std::min<std::uint64_t>(
+          policy.max_delay_ms,static_cast<std::uint64_t>(policy.base_delay_ms)<<shift);
+      std::uniform_int_distribution<std::uint64_t> jitter(0,cap);
+      const auto sleep=std::chrono::milliseconds(jitter(generator));
+      if(deadline!=std::chrono::steady_clock::time_point::max() &&
+         sleep>=remaining())throw;
+      std::this_thread::sleep_for(sleep);
+    }
+  }
+}
+double Agent::usage_cost(const std::string& model,const TokenUsage& usage) const {
+  const auto rate=config_.model_prices.find(model);
+  if(rate==config_.model_prices.end()) {
+    if(config_.max_estimated_cost_usd>0)
+      throw std::invalid_argument("Missing configured pricing for model: "+model);
+    return 0;
+  }
+  if(usage.unreported_calls && config_.max_estimated_cost_usd>0)
+    throw std::runtime_error("Cannot enforce cost budget when model usage is missing");
+  const auto& p=rate->second;
+  if(!std::isfinite(p.input_per_million)||!std::isfinite(p.output_per_million)||
+     !std::isfinite(p.cached_input_per_million)||p.input_per_million<0||
+     p.output_per_million<0||p.cached_input_per_million<0)
+    throw std::invalid_argument("Invalid model pricing");
+  const auto uncached=usage.input_tokens>=usage.cached_input_tokens
+      ?usage.input_tokens-usage.cached_input_tokens:0;
+  return (uncached*p.input_per_million+
+          usage.cached_input_tokens*p.cached_input_per_million+
+          usage.output_tokens*p.output_per_million)/1e6;
+}
+
 std::string Agent::instructions() const {
   std::string result = config_.instructions;
   if(!agents_md_contents_.empty())
@@ -959,6 +1056,7 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Legacy ask() uses the same stage executor as all loop strategies.
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
+  retries_used_=0;last_cost_usd_=0;
   last_model_attempts_ = 0;
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
@@ -1068,11 +1166,14 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         Json summary_response;
         bool replayed=active_journal_ && active_journal_->replay_model(summary_request,summary_response);
         if(!replayed) {
-          summary_response=model_->create_with_timeout(summary_request,request_timeout);
+          summary_response=call_model("context_compression",summary_request,request_timeout);
           if(active_journal_)active_journal_->record_model(summary_request,summary_response);
         }
         const auto usage = parse_token_usage(summary_response);
-        if(!replayed)total_usage_.add(usage);
+        if(!replayed) {
+          total_usage_.add(usage);
+          last_cost_usd_+=usage_cost(std::string(summary_request.at("model").as_string()),usage);
+        }
         last_usage_.add(usage);
         if (run_usage) run_usage->add(usage);
         if (usage_by_phase) (*usage_by_phase)["context_compression"].add(usage);
@@ -1134,8 +1235,11 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         throw detail::LoopAbort(LoopStatus::LimitReached,
           "Context budget exceeded after compaction and prompt construction");
     }
+    const auto route_name=phase_model_names_.find(phase);
+    const std::string actual_model=route_name==phase_model_names_.end()
+        ?(model_override.empty()?config_.model:model_override):route_name->second;
     Json request = json::object{
-      {"model", model_override.empty() ? config_.model : model_override},
+      {"model", actual_model},
       {"instructions", prompt},
       {"input", proposed},
       {"store", false},
@@ -1156,28 +1260,30 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
     if(!replayed) {
       if(active_loop_options_ && active_loop_options_->on_text_delta) {
-        response=model_->create_stream(request,request_timeout,
+        response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
             active_loop_options_->on_text_delta(phase,delta);
           });
-      } else response=model_->create_with_timeout(request,request_timeout);
+      } else response=call_model(phase,request,request_timeout);
       if(active_journal_)active_journal_->record_model(request,response);
     }
     // 每次 Responses 调用独立记账：包括工具调用轮次、规划、评估和修订。
     // 在检查 status/output 之前记账：模型已经返回 usage，即使任务失败也有消耗。
     // 缺失 usage 明确记录为 unreported_calls，绝不按文字长度猜测 Token。
     const TokenUsage received = parse_token_usage(response);
-    if(!replayed)total_usage_.add(received);
+    if(!replayed) {
+      total_usage_.add(received);
+      last_cost_usd_+=usage_cost(actual_model,received);
+    }
     last_usage_.add(received);
     if (run_usage) run_usage->add(received);
     if (usage_by_phase) (*usage_by_phase)[phase].add(received);
     if (usage_by_model) {
-      const std::string requested_model = model_override.empty() ? config_.model : model_override;
-      (*usage_by_model)[requested_model].add(received);
+      (*usage_by_model)[actual_model].add(received);
     }
     if (trace || on_event) {
       emit(json::object{{"phase", phase}, {"event", "model_usage"},
-        {"model", model_override.empty() ? config_.model : model_override},
+        {"model", actual_model},
         {"input_tokens", received.input_tokens}, {"output_tokens", received.output_tokens},
         {"total_tokens", received.total_tokens}, {"cached_input_tokens", received.cached_input_tokens},
         {"reasoning_output_tokens", received.reasoning_output_tokens},
