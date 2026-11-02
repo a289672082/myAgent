@@ -31,6 +31,25 @@ int run_model_retry_demo() {
   const auto failed=fail_agent.react("temporary failure");
   ensure(failed.status==LoopStatus::Failed,"重试耗尽应返回失败");
   ensure(fail_model->calls==2,"重试上限没有生效");
+  // RPM 配额为 1，首次调用返回工具请求，下一模型轮次应因 50ms 截止时间
+  // 无法等待 60 秒令牌恢复而直接失败；工具绝不能被重新调用。
+  auto rate_model=std::make_shared<Mock>();
+  rate_model->handler=[](const Json& request) {
+    if(has_tool_result(request))return answer("should not be reached");
+    return tool_call("local__count_once","rate-test-call");
+  };
+  cfg.retry.max_retries_per_request=0;
+  cfg.retry.max_total_retries=0;
+  cfg.retry.requests_per_minute=1;
+  Agent rate_agent(cfg,rate_model);
+  unsigned side_effects=0;
+  rate_agent.tool("count_once","count side effects",[&](){++side_effects;return 1;});
+  LoopOptions timeout;
+  timeout.timeout=std::chrono::milliseconds(50);
+  const auto limited=rate_agent.react("rate limit test",timeout);
+  ensure(limited.status!=LoopStatus::Completed &&
+         rate_model->calls==1 && side_effects==1,
+         "RPM 限流未阻止第二次请求，或重复执行工具");
   std::cout<<"run_model_retry_demo: 429 退避与总重试预算通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
