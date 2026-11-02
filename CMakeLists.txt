@@ -79,6 +79,13 @@ if(MYAGENT_BUILD_EXAMPLES)
   target_compile_definitions(run_agent_delegation_demo PRIVATE
     MYAGENT_TEAM_DEMO_SKILLS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/agent_team_demo_skills")
 
+  # 普通 Loop 持久化/人工审批/崩溃恢复与 HTTP SSE 流式输出的独立 Demo。
+  # 所有请求都由离线 Mock Model 或 127.0.0.1 本机 HTTP 服务处理。
+  foreach(feature IN ITEMS agent_checkpoint agent_streaming)
+    add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
+    target_link_libraries(run_${feature}_demo PRIVATE myagent)
+  endforeach()
+
   # 新增运行时权限/断点恢复示例，均使用离线 Mock Model。
   foreach(feature IN ITEMS runtime_hardening team_checkpoint)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
@@ -139,6 +146,11 @@ if(MYAGENT_BUILD_TESTS)
   set_tests_properties(myagent_skills_yaml PROPERTIES TIMEOUT 30)
   if(MYAGENT_BUILD_EXAMPLES)
     # 用真实样例文件执行独立 Demo，验证成功退出及完整的离线流程。
+    # 保证演示不只能够编译，还会在各平台运行并验证断点恢复/流式结果。
+    foreach(feature IN ITEMS agent_checkpoint agent_streaming)
+      add_test(NAME myagent_${feature}_demo COMMAND run_${feature}_demo)
+      set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
+    endforeach()
     add_test(NAME myagent_agents_md_demo COMMAND run_agents_md_demo)
     set_tests_properties(myagent_agents_md_demo PROPERTIES TIMEOUT 30)
     add_test(NAME myagent_skill_yaml_demo COMMAND run_skill_yaml_demo)
