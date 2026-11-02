@@ -1511,7 +1511,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       if(!replayed_tool) {
         const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now()-tool_started).count();
-        const bool error=tool_output.find("\\"isError\\":true")!=std::string::npos;
+        const bool error=tool_output.find("\"isError\":true")!=std::string::npos;
         emit_span("tool."+name,error?"error":"ok",tool_started_ns,
                   static_cast<std::uint64_t>(elapsed));
       }
