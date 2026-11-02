@@ -2,6 +2,7 @@
 #include "loop_internal.hpp"
 #include "execution_journal.hpp"
 #include "sse_stream.hpp"
+#include "trace_spans.hpp"
 #include <exception>
 #include "workspace_io.hpp"
 #include "file_io.hpp"
@@ -810,6 +811,22 @@ void Agent::LoadAgentsMdFileFormString(const std::string& content) {
 
 // 单 Agent 模型重试器。只重试模型 HTTP，请求执行发生在工具前；
 // 对已经有 SSE delta 的流禁止重试，避免 UI 展示重复内容。
+void Agent::emit_span(const std::string& name,const std::string& status,
+                 std::uint64_t start_unix_ns,std::uint64_t duration_ns,
+                 const std::string& model_name) {
+  if(!active_loop_options_ ||
+     (!active_loop_options_->on_span && active_loop_options_->otel_jsonl_path.empty()))
+    return;
+  const Json span=json::object{
+    {"traceId",active_trace_id_},{"spanId",detail::trace_hex(8)},
+    {"parentSpanId",""},{"name",name},{"status",status},
+    {"startTimeUnixNano",std::to_string(start_unix_ns)},
+    {"endTimeUnixNano",std::to_string(start_unix_ns+duration_ns)},
+    {"attributes",json::object{{"gen_ai.model",model_name},
+                                {"agent.phase",name}}}
+  };
+  detail::export_span(*active_loop_options_,span);
+}
 Json Agent::call_model(const std::string& phase,const Json& request,
     std::chrono::milliseconds timeout,
     const std::function<void(const std::string&)>& on_delta) {
@@ -834,7 +851,10 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     return left;
   };
   std::mt19937 generator(std::random_device{}());
-  for(unsigned attempt=0;;++attempt) {
+  const auto started=std::chrono::steady_clock::now();
+  const auto started_ns=detail::unix_nanos();
+  const std::string route_model=std::string(request.at("model").as_string());
+  for(unsigned attempt=0;;) {
     // 每个 Agent 的全部 Provider 共享 RPM 限流；不阻塞工具回放。
     if(policy.requests_per_minute) {
       const auto now=std::chrono::steady_clock::now();
@@ -848,6 +868,7 @@ Json Agent::call_model(const std::string& phase,const Json& request,
            wait>=remaining())
           throw std::runtime_error("Model rate limit exceeds deadline");
         std::this_thread::sleep_for(wait);
+        // 等待 RPM 空档不算一次尝试/重试。
         continue;
       }
       recent_model_requests_.push_back(now);
@@ -855,11 +876,16 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     bool emitted=false;
     try {
       const auto left=remaining();
-      if(on_delta)return selected->create_stream(request,left,[&](const std::string& delta){
+      Json reply;
+      if(on_delta)reply=selected->create_stream(request,left,[&](const std::string& delta){
         if(!delta.empty())emitted=true;
         on_delta(delta);
       });
-      return selected->create_with_timeout(request,left);
+      else reply=selected->create_with_timeout(request,left);
+      const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now()-started).count();
+      emit_span("model."+phase,"ok",started_ns,static_cast<std::uint64_t>(elapsed),route_model);
+      return reply;
     } catch(const std::exception& e) {
       const std::string reason=e.what();
       const bool transient=reason.find("HTTP 429")!=std::string::npos ||
@@ -870,7 +896,12 @@ Json Agent::call_model(const std::string& phase,const Json& request,
           reason.find("transport failed")!=std::string::npos ||
           reason.find("HTTP transport failed")!=std::string::npos;
       if(!transient || emitted || attempt>=policy.max_retries_per_request ||
-         retries_used_>=policy.max_total_retries)throw;
+         retries_used_>=policy.max_total_retries) {
+        const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now()-started).count();
+        emit_span("model."+phase,"error",started_ns,static_cast<std::uint64_t>(elapsed),route_model);
+        throw;
+      }
       ++retries_used_;
       const unsigned shift=std::min(attempt,10u);
       const std::uint64_t cap=std::min<std::uint64_t>(
@@ -880,6 +911,7 @@ Json Agent::call_model(const std::string& phase,const Json& request,
       if(deadline!=std::chrono::steady_clock::time_point::max() &&
          sleep>=remaining())throw;
       std::this_thread::sleep_for(sleep);
+      ++attempt;
     }
   }
 }
@@ -1172,8 +1204,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         const auto usage = parse_token_usage(summary_response);
         if(!replayed) {
           total_usage_.add(usage);
-          last_cost_usd_+=usage_cost(std::string(summary_request.at("model").as_string()),usage);
         }
+        last_cost_usd_+=usage_cost(std::string(summary_request.at("model").as_string()),usage);
         last_usage_.add(usage);
         if (run_usage) run_usage->add(usage);
         if (usage_by_phase) (*usage_by_phase)["context_compression"].add(usage);
@@ -1273,8 +1305,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     const TokenUsage received = parse_token_usage(response);
     if(!replayed) {
       total_usage_.add(received);
-      last_cost_usd_+=usage_cost(actual_model,received);
     }
+    last_cost_usd_+=usage_cost(actual_model,received);
     last_usage_.add(received);
     if (run_usage) run_usage->add(received);
     if (usage_by_phase) (*usage_by_phase)[phase].add(received);
