@@ -469,6 +469,55 @@ static void test_loop_checkpoint_approval(const fs::path& root) {
   assert(tool_calls==1);
 }
 
+// 模拟工具已经开始执行但进程崩溃：恢复必须先由宿主核实副作用状态。
+static void test_uncertain_tool_recovery(const fs::path& root) {
+  const auto file=root/"agent-uncertain-checkpoint.json";
+  auto model=std::make_shared<Mock>();
+  model->reply=[](const Json& request)->Json {
+    const auto& input=request.at("input");
+    for(const auto& item:input.array_range()) {
+      if(item.is_object()) {
+        const auto* type=j::if_contains(item,"type");
+        if(type&&type->is_string()&&type->as_string()=="function_call_output")
+          return answer("host reconciled outcome");
+      }
+    }
+    return j::object{{"status","completed"},{"output",j::array{
+      j::object{{"type","function_call"},{"call_id","uncertain-call"},
+        {"name","local__side_effect"},{"arguments","{}"}}}}};
+  };
+  Agent agent(settings(),model);
+  int executions=0;
+  agent.tool("side_effect","must never repeat",[&](){++executions;return "effect";});
+  LoopOptions options;
+  options.checkpoint_path=file;
+  options.on_tool_approval=[](const ToolApprovalRequest&){return ToolDecision::Pause;};
+  assert(agent.react("recover unsafe action",options).status==LoopStatus::Paused);
+  assert(executions==0);
+  // 故障注入：把审批中状态改为 pending（如同执行前持久化后立即崩溃）。
+  std::ifstream in(file,std::ios::binary);
+  const std::string bytes((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+  in.close();
+  Json snapshot=j::parse(bytes);
+  assert(snapshot.at("events").size()>=2);
+  snapshot["events"][1]["status"]="pending";
+  std::ofstream out(file,std::ios::binary|std::ios::trunc);
+  out<<j::serialize(snapshot);out.close();
+  LoopOptions resume;
+  auto unresolved=agent.resume(file,resume);
+  assert(unresolved.status==LoopStatus::Paused);
+  assert(executions==0);
+  resume.reconcile_tool=[](const ToolApprovalRequest& request)
+      -> std::optional<std::string> {
+    assert(request.call_id=="uncertain-call");
+    return std::string("confirmed external outcome");
+  };
+  const auto resolved=agent.resume(file,resume);
+  assert(resolved.status==LoopStatus::Completed);
+  assert(resolved.answer=="host reconciled outcome");
+  assert(executions==0);
+}
+
 int main() {
   const auto root=fs::temp_directory_path()/
       ("myagent-full-audit-"+std::to_string(std::chrono::steady_clock::now()
@@ -487,6 +536,7 @@ int main() {
     test_mcp_catalog_and_result_limits();
     test_handoff_budget(root);
     test_loop_checkpoint_approval(root);
+    test_uncertain_tool_recovery(root);
     test_explicit_agents_md(root);
   }catch(...){fs::remove_all(root);throw;}
   fs::remove_all(root);
