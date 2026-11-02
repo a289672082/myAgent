@@ -2,6 +2,7 @@
 #include "team_checkpoint.hpp"
 #include "loop_internal.hpp"
 #include "task_scheduler.hpp"
+#include "trace_spans.hpp"
 #include <atomic>
 #include <mutex>
 #include <memory>
@@ -298,6 +299,7 @@ DelegationResult AgentTeam::delegate(const std::string& name, const LoopInput& i
                            result.usage,result.model_calls,result.tool_calls};
   delegated.details = json::object{{"plan",result.plan},{"evaluations",result.evaluations}};
   delegated.estimated_cost_usd=result.estimated_cost_usd;
+  delegated.trace_id=result.trace_id;
   return delegated;
 }
 DelegationResult AgentTeam::delegate(const std::string& name, const std::string& task,
@@ -315,6 +317,7 @@ DelegationResult AgentTeam::delegate_tree(const std::string& root,const std::str
   budget->models_limit=max_model_calls;
   budget->tools_limit=max_tool_calls;
   LoopOptions bounded=options;
+  if(bounded.trace_id.empty())bounded.trace_id=detail::trace_hex(16);
   bounded.max_model_calls=std::min(bounded.max_model_calls,max_model_calls);
   bounded.max_tool_calls=std::min(bounded.max_tool_calls,max_tool_calls);
   install_tree_budget(bounded,budget);
@@ -337,6 +340,9 @@ void AgentTeam::add_usage(TeamResult& r, const std::string& name, const TokenUsa
 TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
                                     const TeamOptions& options) {
   validate_options(options);
+  const std::string team_trace=options.trace_id.empty()
+      ?detail::trace_hex(16):options.trace_id;
+  if(team_trace.size()!=32)throw std::invalid_argument("Invalid team Trace ID");
   const auto tree=std::make_shared<NestedBudget>();
   tree->depth_limit=options.max_depth;
   tree->models_limit=options.max_model_calls;
@@ -535,6 +541,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       add_context("Artifacts",t.context.artifacts);
       add_context("Constraints",t.context.constraints);
       LoopOptions worker_options=options.worker_loop;
+      worker_options.trace_id=team_trace;
       if(options.max_depth>1)install_tree_budget(worker_options,tree);
       worker_options.max_model_calls=std::min(share,worker_options.max_model_calls);
       worker_options.max_tool_calls=std::min(tool_share,worker_options.max_tool_calls);
@@ -685,6 +692,7 @@ TeamResult AgentTeam::collaborate(const std::vector<TeamTask>& tasks,
 }
 TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
   TeamResult result;
+  result.trace_id=options.trace_id.empty()?detail::trace_hex(16):options.trace_id;
   // Keep the deadline available to error handling; classifying cancellation
   // by exception-message text is not reliable across HTTP backends.
   const auto deadline=options.timeout.count()>0
@@ -770,6 +778,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       return result;
     }
     TeamOptions bounded=options;
+    bounded.trace_id=result.trace_id;
     bounded.cancelled=cancelled;
     if(deadline!=std::chrono::steady_clock::time_point::max()) {
       const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
