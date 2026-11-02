@@ -867,7 +867,7 @@ Json Agent::call_model(const std::string& phase,const Json& request,
   // 必须撤销该占位；只有已真正发起的尝试才计入模型调用预算。
   const auto refund_preflight=[&]() {
     if(model_call_count && *model_call_count>0)--*model_call_count;
-    if(phase=="ask" && last_model_attempts_>0)--last_model_attempts_;
+    if(!active_loop_options_ && last_model_attempts_>0)--last_model_attempts_;
   };
   const auto route=phase_models_.find(phase);
   const auto selected=route==phase_models_.end()?model_:route->second;
@@ -945,7 +945,7 @@ Json Agent::call_model(const std::string& phase,const Json& request,
         if(*model_call_count>=max_model_calls)
           throw detail::LoopAbort(LoopStatus::LimitReached,"Retry reached model call budget");
         ++*model_call_count;
-        if(phase=="ask")++last_model_attempts_;
+        if(!active_loop_options_)++last_model_attempts_;
       }
       if(active_loop_options_ && active_loop_options_->allow_model_request &&
          !active_loop_options_->allow_model_request()) {
