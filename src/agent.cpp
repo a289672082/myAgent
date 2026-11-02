@@ -1,6 +1,8 @@
 #include "myagent/agent.hpp"
 #include "loop_internal.hpp"
 #include "execution_journal.hpp"
+#include "sse_stream.hpp"
+#include <exception>
 #include "workspace_io.hpp"
 #include "file_io.hpp"
 #include "httplib.h"
@@ -569,6 +571,45 @@ Json OpenAIResponses::create_with_timeout(const Json& request,
   if(oversized)throw std::runtime_error("Model HTTP response exceeds 8 MiB");
   check_http(result,target);
   return json::parse(body);
+}
+Json OpenAIResponses::create_stream(const Json& request,
+    std::chrono::milliseconds timeout,
+    const std::function<void(const std::string&)>& on_delta) {
+  const auto url=parse_base_url(config_.base_url);
+  const auto target=responses_target(config_,url);
+  httplib::Client client(url.origin);
+  configure(client,config_.http_timeout_seconds,timeout);
+  Json payload=request;
+  payload["stream"]=true;
+  detail::SseFrames frames;
+  Json completed=nullptr;
+  std::exception_ptr callback_error;
+  auto result=client.Post(target,headers(config_),json::serialize(payload),
+      "application/json",[&](const char* chunk,std::size_t size) {
+        try {
+          frames.feed(chunk,size,[&](const std::string& frame) {
+            if(frame=="[DONE]")return;
+            const Json event=json::parse(frame);
+            const auto kind=as_string(event,"type");
+            if(kind=="response.output_text.delta") {
+              const auto delta=as_string(event,"delta");
+              if(on_delta && !delta.empty())on_delta(delta);
+            } else if(kind=="response.completed") {
+              const auto* final=json::if_contains(event,"response");
+              if(!final || !final->is_object())
+                throw std::runtime_error("SSE completed event has no response");
+              completed=*final;
+            } else if(kind=="response.failed" || kind=="error") {
+              throw std::runtime_error("Model SSE reported failure");
+            }
+          });
+        }catch(...) {callback_error=std::current_exception();return false;}
+        return true;
+      });
+  if(callback_error)std::rethrow_exception(callback_error);
+  check_http(result,target);
+  if(completed.is_null())throw std::runtime_error("Model SSE ended without response.completed");
+  return completed;
 }
 std::string OpenAIResponses::transcribe(const std::filesystem::path& file,
                                         const std::string& model,
