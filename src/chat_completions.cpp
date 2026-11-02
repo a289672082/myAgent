@@ -1,5 +1,8 @@
 #include "myagent/agent.hpp"
 #include "httplib.h"
+#include "sse_stream.hpp"
+#include <exception>
+#include <map>
 #include <algorithm>
 #include <stdexcept>
 namespace myagent {
@@ -195,4 +198,135 @@ Json ChatCompletionsModel::create_with_timeout(const Json& request,
   }
   return converted;
 }
+
+// Chat Completions 流式适配：按 index 聚合分段 function_call；仅公开 delta.content。
+// SSE 必须收到 [DONE] 才视为传输完成，模型的 finish_reason 决定任务是否完成。
+Json ChatCompletionsModel::create_stream(const Json& request,
+    std::chrono::milliseconds timeout,
+    const std::function<void(const std::string&)>& on_delta) {
+  const auto& url=config_.base_url;
+  const auto scheme=url.rfind("https://",0)==0?8u:
+      (url.rfind("http://",0)==0?7u:0u);
+  if(!scheme || url.find('@',scheme)!=std::string::npos ||
+      url.find('#')!=std::string::npos)
+    throw std::invalid_argument("Invalid Chat base_url");
+  const auto boundary=url.find_first_of("/?",scheme);
+  const auto origin=url.substr(0,boundary);
+  if(origin.size()==scheme)throw std::invalid_argument("Chat base_url requires host");
+  const auto query_at=url.find('?',scheme);
+  const auto end=query_at==std::string::npos?url.size():query_at;
+  std::string path=(boundary!=std::string::npos && url[boundary]=='/')?
+      url.substr(boundary,end-boundary):"/";
+  const auto query=query_at==std::string::npos?std::string{}:url.substr(query_at);
+  if(config_.append_responses_path) {
+    while(path.size()>1&&path.back()=='/')path.pop_back();
+    if(path=="/")path.clear();
+    if(!path.ends_with("/chat/completions")) {
+      path+=(path.ends_with("/v1")?"":"/v1");
+      path+="/chat/completions";
+    }
+  }
+  const auto target=path+query;
+  const auto* input=j::if_contains(request,"input");
+  if(!input || !input->is_array())throw std::invalid_argument("Responses input required");
+  Json payload=j::object{{"model",request.at("model")},
+                         {"messages",chat_messages(*input,field(request,"instructions"))},
+                         {"stream",true},
+                         {"stream_options",j::object{{"include_usage",true}}}};
+  if(const auto* tools=j::if_contains(request,"tools");
+     tools && tools->is_array() && !tools->empty()) {
+    Json definitions=j::array{};
+    for(const auto& tool:tools->array_range()) {
+      definitions.push_back(j::object{{"type","function"},
+        {"function",j::object{{"name",tool.at("name")},
+                              {"description",tool.at("description")},
+                              {"parameters",tool.at("parameters")}}}});
+    }
+    payload["tools"]=std::move(definitions);
+  }
+  if(const auto* parallel=j::if_contains(request,"parallel_tool_calls");
+     parallel&&parallel->is_bool())payload["parallel_tool_calls"]=*parallel;
+  httplib::Client client(origin);
+  const auto configured=std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::seconds(config_.http_timeout_seconds));
+  const auto actual=timeout.count()>0?std::min(timeout,configured):configured;
+  const auto connection=std::min(actual,std::chrono::milliseconds(10000));
+  client.set_connection_timeout(static_cast<time_t>(connection.count()/1000),
+                                static_cast<time_t>((connection.count()%1000)*1000));
+  client.set_read_timeout(static_cast<time_t>(actual.count()/1000),
+                          static_cast<time_t>((actual.count()%1000)*1000));
+  client.set_write_timeout(static_cast<time_t>(actual.count()/1000),
+                           static_cast<time_t>((actual.count()%1000)*1000));
+  client.set_follow_location(false);
+  httplib::Headers headers={{"Authorization","Bearer "+config_.api_key}};
+  struct PartialCall {std::string id,name,arguments;};
+  std::map<unsigned,PartialCall> calls;
+  std::string text,finish;
+  Json usage=nullptr;
+  detail::SseFrames frames;
+  bool done=false;
+  std::exception_ptr callback_error;
+  auto result=client.Post(target,headers,j::serialize(payload),"application/json",
+    [&](const char* chunk,std::size_t size) {
+      try {
+        frames.feed(chunk,size,[&](const std::string& frame) {
+          if(frame=="[DONE]"){done=true;return;}
+          const Json event=j::parse(frame);
+          if(const auto* raw=j::if_contains(event,"usage");raw&&raw->is_object())
+            usage=convert_usage(*raw);
+          const auto* choices=j::if_contains(event,"choices");
+          if(!choices || !choices->is_array() || choices->empty())return;
+          const Json& choice=(*choices)[0];
+          if(const auto* reason=j::if_contains(choice,"finish_reason");
+             reason&&reason->is_string())finish=std::string(reason->as_string());
+          const auto* delta=j::if_contains(choice,"delta");
+          if(!delta||!delta->is_object())return;
+          if(const auto* content=j::if_contains(*delta,"content");
+             content&&content->is_string()) {
+            const auto fragment=std::string(content->as_string());
+            text+=fragment;
+            if(on_delta&&!fragment.empty())on_delta(fragment);
+          }
+          if(const auto* tool_calls=j::if_contains(*delta,"tool_calls");
+             tool_calls&&tool_calls->is_array()) {
+            for(const auto& part:tool_calls->array_range()) {
+              const auto* index=j::if_contains(part,"index");
+              if(!index||!index->is_number())throw std::runtime_error("Chat SSE tool index missing");
+              const auto i=index->as<unsigned>();
+              if(i>256)throw std::runtime_error("Chat SSE tool index out of bounds");
+              auto& partial=calls[i];
+              partial.id+=field(part,"id");
+              if(const auto* fn=j::if_contains(part,"function");fn&&fn->is_object()) {
+                partial.name+=field(*fn,"name");
+                partial.arguments+=field(*fn,"arguments");
+              }
+            }
+          }
+        });
+      }catch(...){callback_error=std::current_exception();return false;}
+      return true;
+    });
+  if(callback_error)std::rethrow_exception(callback_error);
+  if(!result)throw std::runtime_error("Chat SSE transport failed: "+
+                                      httplib::to_string(result.error()));
+  if(result->status<200||result->status>=300)
+    throw std::runtime_error("Chat SSE HTTP "+std::to_string(result->status));
+  if(!done)throw std::runtime_error("Chat SSE ended before [DONE]");
+  Json output=j::array{};
+  if(!text.empty())output.push_back(j::object{{"type","message"},{"role","assistant"},
+    {"content",j::array{j::object{{"type","output_text"},{"text",text}}}}});
+  for(const auto& [index,call]:calls) {
+    (void)index;
+    if(call.id.empty()||call.name.empty())
+      throw std::runtime_error("Chat SSE returned incomplete tool call");
+    output.push_back(j::object{{"type","function_call"},
+      {"call_id",call.id},{"name",call.name},{"arguments",call.arguments}});
+  }
+  const bool completed=finish=="stop"||finish=="tool_calls";
+  Json converted=j::object{{"status",completed?"completed":"incomplete"},
+                            {"output",std::move(output)}};
+  if(!usage.is_null())converted["usage"]=usage;
+  return converted;
+}
+
 } // namespace myagent
