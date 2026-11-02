@@ -188,6 +188,11 @@ public:
 
   void load_skills(const std::filesystem::path& directory);
   void use_skill(const std::string& name);
+  // Load project-level instructions from a regular Markdown file (max 128 KiB).
+  // Replaces the previously loaded AGENTS.md section; leaves Config::instructions intact.
+  void LoadAgentsMdFile(const std::filesystem::path& path);
+  // Load AGENTS.md instructions directly from Markdown text (max 128 KiB).
+  void LoadAgentsMdFileFormString(const std::string& content);
   const SkillLibrary& skills() const { return skills_; }
 
   // Four synchronous loop strategies; input may mix text, images and audio.
@@ -294,6 +299,7 @@ private:
   std::vector<Endpoint> endpoints_;
   SkillLibrary skills_;
   std::map<std::string, std::string> manual_skill_contents_; // Explicit use_skill() only.
+  std::string agents_md_contents_; // Explicit AGENTS.md rules, separate from Skill catalog.
   Json history_ = json::array{};
   mutable std::filesystem::path history_revision_path_;
   mutable std::string history_revision_bytes_;

@@ -20,6 +20,7 @@ namespace myagent {
 namespace {
 constexpr std::size_t MaxMediaBytes = 20 * 1024 * 1024;
 constexpr std::size_t MaxSkillBytes = 128 * 1024;
+constexpr std::size_t MaxAgentsMdBytes = 128 * 1024;
 constexpr std::size_t MaxToolResultBytes = 256 * 1024;
 constexpr std::size_t MaxHttpJsonBytes = 8 * 1024 * 1024;
 constexpr std::size_t MaxMcpPages = 64;
@@ -689,8 +690,23 @@ void Agent::use_skill(const std::string& name) {
   if (!manual_skill_contents_.count(name))
     manual_skill_contents_.emplace(name, skills_.read(name));
 }
+void Agent::LoadAgentsMdFile(const std::filesystem::path& path) {
+  // Use hardened file I/O to reject symlinks, non-regular files and oversized input.
+  std::string content=detail::read_regular_file(path,MaxAgentsMdBytes);
+  LoadAgentsMdFileFormString(content);
+}
+void Agent::LoadAgentsMdFileFormString(const std::string& content) {
+  if(content.size()>MaxAgentsMdBytes)
+    throw std::invalid_argument("AGENTS.md content exceeds 128 KiB");
+  if(content.find('\0')!=std::string::npos)
+    throw std::invalid_argument("AGENTS.md content contains NUL byte");
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  agents_md_contents_=content;
+}
 std::string Agent::instructions() const {
   std::string result = config_.instructions;
+  if(!agents_md_contents_.empty())
+    result += "\n\n# AGENTS.md project instructions\n" + agents_md_contents_;
   for (const auto& [name, content] : manual_skill_contents_)
     result += "\n\n# Explicit Skill: " + name + "\n" + content;
   if (!config_.strict_process_isolation &&

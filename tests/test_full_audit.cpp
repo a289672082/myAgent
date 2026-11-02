@@ -384,6 +384,41 @@ static void test_mcp_catalog_and_result_limits() {
   assert(agent.ask("Call the large tool")=="bounded result");
   assert(large->calls==2);
 }
+static void test_explicit_agents_md(const fs::path& root) {
+  auto model=std::make_shared<Mock>();
+  std::string observed;
+  model->reply=[&](const Json& request) {
+    observed=j::serialize(request);
+    return answer("ok");
+  };
+  Agent agent(settings(),model);
+  const auto file=root/"AGENTS.md";
+  {
+    std::ofstream out(file);
+    out<<"RULE_FROM_DISK";
+  }
+  agent.LoadAgentsMdFile(file);
+  assert(agent.ask("test")=="ok");
+  assert(observed.find("RULE_FROM_DISK")!=std::string::npos);
+  agent.LoadAgentsMdFileFormString("RULE_FROM_TEXT");
+  assert(agent.ask("test2")=="ok");
+  assert(observed.find("RULE_FROM_TEXT")!=std::string::npos);
+  assert(observed.find("RULE_FROM_DISK")==std::string::npos);
+  agent.LoadAgentsMdFileFormString("");
+  assert(agent.ask("test3")=="ok");
+  assert(observed.find("RULE_FROM_TEXT")==std::string::npos);
+  try {
+    agent.LoadAgentsMdFileFormString(std::string(128*1024+1,'x'));
+    assert(false);
+  } catch(const std::invalid_argument&) {}
+  try {
+    agent.LoadAgentsMdFile(root/"missing.md");
+    assert(false);
+  } catch(const std::exception&) {}
+  agent.LoadAgentsMdFileFormString("VALID_RULE");
+  assert(agent.ask("test4")=="ok");
+  assert(observed.find("VALID_RULE")!=std::string::npos);
+}
 int main() {
   const auto root=fs::temp_directory_path()/
       ("myagent-full-audit-"+std::to_string(std::chrono::steady_clock::now()
@@ -401,6 +436,7 @@ int main() {
     test_memory_save_and_metadata(root);
     test_mcp_catalog_and_result_limits();
     test_handoff_budget(root);
+    test_explicit_agents_md(root);
   }catch(...){fs::remove_all(root);throw;}
   fs::remove_all(root);
   std::cout<<"Full audit regression tests OK\n";
