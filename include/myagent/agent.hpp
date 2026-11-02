@@ -231,6 +231,8 @@ public:
   // 运行中可为特定阶段注入自定义 Provider（方便离线测试和厂商路由）。
   void set_phase_model(std::string phase,std::shared_ptr<Model> model,std::string model_name);
   void invalidate_mcp_catalog(const std::string& prefix = {});
+  // 从 SDK/宿主拿到新的远端目录版本时设置；版本变化触发对应缓存失效。
+  void set_mcp_catalog_version(const std::string& prefix,std::string version);
   // Load project-level instructions from a regular Markdown file (max 128 KiB).
   // Replaces the previously loaded AGENTS.md section; leaves Config::instructions intact.
   void LoadAgentsMdFile(const std::filesystem::path& path);
@@ -304,10 +306,12 @@ private:
     std::string prefix;
     std::shared_ptr<Client> client;
     std::shared_ptr<std::atomic_bool> catalog_invalidated;
+    std::string catalog_version;
   };
   struct CachedCatalog {
     Json schemas=json::array{};
     std::chrono::steady_clock::time_point expiry;
+    std::string version;
   };
   struct Route {
     std::shared_ptr<Client> client;
