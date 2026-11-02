@@ -39,6 +39,7 @@ int run_agent_trace_demo() {
   ensure(raw.find(result.trace_id)!=std::string::npos,"Trace 文件缺少关联 ID");
   ensure(raw.find("sensitive example prompt")==std::string::npos,
          "Trace 泄露了用户提示词");
+  in.close(); // Windows 必须先释放读文件句柄，才能删除临时 JSONL。
   fs::remove(file);
   std::cout<<"run_agent_trace_demo: Trace/span/JSONL 和敏感内容保护通过\n";
   return 0;
