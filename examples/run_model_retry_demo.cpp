@@ -20,7 +20,8 @@ int run_model_retry_demo() {
   Agent agent(cfg,model);
   auto result=agent.react("test retry");
   ensure(result.status==LoopStatus::Completed,"重试后任务未完成："+result.error);
-  ensure(model->calls==3,"重试次数错误");
+  ensure(model->calls==3 && result.model_calls==3,
+         "实际模型尝试次数没有纳入 Loop 总预算");
   // 单次请求只允许重试一次，不能突破总预算或重放已执行的工具。
   auto fail_model=std::make_shared<Mock>();
   fail_model->handler=[](const Json&)->Json{throw std::runtime_error("Model HTTP 503");};
