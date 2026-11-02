@@ -1227,8 +1227,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         if (model_calls >= max_model_calls)
           throw detail::LoopAbort(LoopStatus::LimitReached, "Context compression budget exhausted");
         const auto request_timeout=model_timeout();
-        summary_request["model"] = config_.context.summary_model.empty()
-            ? config_.model : config_.context.summary_model;
+        const auto routed_summary=phase_model_names_.find("context_compression");
+        summary_request["model"]=routed_summary==phase_model_names_.end()
+            ?(config_.context.summary_model.empty()?config_.model:config_.context.summary_model)
+            :routed_summary->second;
         ++model_calls;
         if (phase == "ask") ++last_model_attempts_;
         Json summary_response;
