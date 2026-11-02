@@ -1042,15 +1042,31 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
       Json params=json::object{};
       std::set<std::string> cursors;
       bool exhausted=false;
+      // 每页接收后立即检查数量和编码大小，禁止先把不受信任的
+      // Schema 跨多页累加到缓存，最后才验证总体限额。
+      std::size_t staged_bytes=0;
       for(std::size_t page=0;page<MaxMcpPages;++page) {
-        // 增量请求和校验，禁止先让 SDK 无上限收集成千上万条工具。
+        // SDK 接收层仍独立执行网络报文上限；这里是解码后的 Schema 限额。
         const Json result=endpoint.client->request("tools/list",params,request_options);
         const Json* entries=json::if_contains(result,"tools");
         if(!entries || !entries->is_array())
           throw std::runtime_error("Invalid MCP tools/list page");
-        if(entries->size()>max_tools-schemas.size())
+        if(seen_tools>max_tools || schemas.size()>max_tools-seen_tools ||
+           entries->size()>max_tools-seen_tools-schemas.size())
           throw std::runtime_error("MCP catalog tool count exceeds limit");
-        for(const auto& item:entries->array_range())schemas.push_back(item);
+        for(const auto& item:entries->array_range()) {
+          if(!item.is_object())
+            throw std::runtime_error("Malformed MCP tool description");
+          std::size_t remaining=max_tool_bytes;
+          if(!fits_json_budget(item,remaining))
+            throw std::runtime_error("MCP tool schema exceeds configured size");
+          const auto bytes=json::serialize(item).size();
+          if(bytes>max_tool_bytes || staged_bytes>catalog_left ||
+             bytes>catalog_left-staged_bytes)
+            throw std::runtime_error("MCP catalog budget exceeded");
+          staged_bytes+=bytes;
+          schemas.push_back(item);
+        }
         const Json* next=json::if_contains(result,"nextCursor");
         if(!next || next->is_null()) {exhausted=true;break;}
         if(!next->is_string() || next->as_string_view().empty() ||
