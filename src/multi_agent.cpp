@@ -367,13 +367,15 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         throw std::invalid_argument("Task dependencies must refer to earlier tasks");
   }
   TeamResult out;
+  out.trace_id=team_trace;
   const auto started_at=std::chrono::steady_clock::now();
   const auto emit=[&](const std::string& action,const std::string& task,
                       const std::string& worker) {
     const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now()-started_at).count();
     const Json event=json::object{
-      {"event",action},{"task",task},{"agent",worker},{"elapsed_ms",ms}};
+      {"event",action},{"task",task},{"agent",worker},
+      {"traceId",team_trace},{"elapsed_ms",ms}};
     out.events.push_back(event);
     if(options.on_event) options.on_event(event);
     if(!options.event_log_path.empty()) {
