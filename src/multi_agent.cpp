@@ -126,6 +126,7 @@ struct NestedBudget {
   TokenUsage child_usage;
   unsigned child_model_calls=0,child_tool_calls=0;
   double child_cost=0;
+  double estimated_cost=0, cost_limit=0;
 };
 bool acquire(std::atomic<unsigned>& count,unsigned limit) {
   auto current=count.load(std::memory_order_relaxed);
@@ -150,10 +151,22 @@ struct NestedGuard {
 };
 void install_tree_budget(LoopOptions& options,const std::shared_ptr<NestedBudget>& budget) {
   const auto original_model=options.allow_model_request;
+  const auto original_usage=options.on_model_usage;
   const auto original_tool=options.allow_tool_execution;
   options.allow_model_request=[budget,original_model] {
     if(original_model && !original_model())return false;
+    {
+      std::lock_guard<std::mutex> guard(budget->results_mutex);
+      if(budget->cost_limit>0 && budget->estimated_cost>=budget->cost_limit)
+        return false;
+    }
     return acquire(budget->model_calls,budget->models_limit);
+  };
+  options.on_model_usage=[budget,original_usage](
+      const std::string& model,const TokenUsage& usage,double cost) {
+    if(original_usage)original_usage(model,usage,cost);
+    std::lock_guard<std::mutex> guard(budget->results_mutex);
+    budget->estimated_cost+=cost;
   };
   options.allow_tool_execution=[budget,original_tool] {
     if(original_tool && !original_tool())return false;
@@ -247,6 +260,7 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
           next.budget->child_usage.add(outcome.usage);
           next.budget->child_model_calls+=outcome.model_calls;
           next.budget->child_tool_calls+=outcome.tool_calls;
+          next.budget->child_cost+=outcome.estimated_cost_usd;
         }
         if(outcome.status!=LoopStatus::Completed)
           throw std::runtime_error("Delegated child failed: "+outcome.error);
@@ -283,6 +297,7 @@ DelegationResult AgentTeam::delegate(const std::string& name, const LoopInput& i
   DelegationResult delegated{"manual",name,result.status,result.answer,result.error,
                            result.usage,result.model_calls,result.tool_calls};
   delegated.details = json::object{{"plan",result.plan},{"evaluations",result.evaluations}};
+  delegated.estimated_cost_usd=result.estimated_cost_usd;
   return delegated;
 }
 DelegationResult AgentTeam::delegate(const std::string& name, const std::string& task,
@@ -311,6 +326,7 @@ DelegationResult AgentTeam::delegate_tree(const std::string& root,const std::str
     result.usage.add(budget->child_usage);
     result.model_calls+=budget->child_model_calls;
     result.tool_calls+=budget->child_tool_calls;
+    result.estimated_cost_usd+=budget->child_cost;
   }
   return result;
 }
@@ -325,6 +341,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
   tree->depth_limit=options.max_depth;
   tree->models_limit=options.max_model_calls;
   tree->tools_limit=options.max_tool_calls;
+  tree->cost_limit=options.max_estimated_cost_usd;
   if (tasks.empty() || tasks.size() > options.max_delegations)
     throw std::invalid_argument("Delegation count outside TeamOptions");
   std::set<std::string> seen;
@@ -536,7 +553,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       emit("task_started",t.id,fallback_index[t.id]==0?t.agent:
            t.fallback_agents[fallback_index[t.id]-1]);
       futures.push_back(scheduler.submit(
-        [this,name=(fallback_index[t.id]==0?t.agent:
+        [this,tree,name=(fallback_index[t.id]==0?t.agent:
                        t.fallback_agents[fallback_index[t.id]-1]),
          id=t.id,description=std::move(context),
          mode=t.mode,worker_options,max_task_retries=options.max_task_retries]() mutable {
@@ -575,6 +592,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         out.model_calls+=result.model_calls;
         out.tool_calls+=result.tool_calls;
         add_usage(out,result.agent,result.usage);
+        out.estimated_cost_usd+=result.estimated_cost_usd;
         if(result.status==LoopStatus::Completed && options.validate_task) {
           try {
             const TaskValidation validation=options.validate_task(t,result);
@@ -631,6 +649,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     out.model_calls+=tree->child_model_calls;
     out.tool_calls+=tree->child_tool_calls;
     add_usage(out,"nested_children",tree->child_usage);
+    out.estimated_cost_usd+=tree->child_cost;
   }
   for(const auto& t:tasks) {
     const auto it=finished.find(t.id);
@@ -770,6 +789,7 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
     result.tasks=std::move(delegated.tasks);
     result.events=std::move(delegated.events);
     result.tool_calls+=delegated.tool_calls;
+    result.estimated_cost_usd+=delegated.estimated_cost_usd;
     result.model_calls+=delegated.model_calls;
     result.usage.add(delegated.usage);
     for(const auto& [name,u]:delegated.usage_by_agent) result.usage_by_agent[name].add(u);
