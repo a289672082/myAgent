@@ -14,6 +14,9 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <random>
+#include <thread>
+#include <cmath>
 #include <sstream>
 #include <set>
 #include <stdexcept>
@@ -667,6 +670,17 @@ Agent::Agent(Config config, std::shared_ptr<Model> model)
   auto loopback = std::make_shared<Client>(
     [this](const Json& request) { return local_.handle(request); }, "agent-local-client");
   add_mcp("local", std::move(loopback));
+  for(const auto& [phase,route]:config_.phase_routes) {
+    if(phase.empty() || route.model.empty() || route.base_url.empty() || route.api_key.empty())
+      throw std::invalid_argument("Phase model route requires phase/model/base_url/api_key");
+    Config c=config_;
+    c.model=route.model;c.base_url=route.base_url;c.api_key=route.api_key;
+    c.model_protocol=route.protocol;c.append_responses_path=route.append_path;
+    phase_models_[phase]=route.protocol==ModelProtocol::Responses
+        ?std::shared_ptr<Model>(std::make_shared<OpenAIResponses>(c))
+        :std::shared_ptr<Model>(std::make_shared<ChatCompletionsModel>(c));
+    phase_model_names_[phase]=route.model;
+  }
   if (config_.auto_discover_skills) skills_.discover();
 }
 void Agent::validate_mcp_prefix(const std::string& prefix) const {
@@ -684,7 +698,8 @@ void Agent::add_mcp(std::string prefix, std::shared_ptr<Client> client) {
      !client->has_bounded_transport())
     throw std::invalid_argument("Strict isolation requires bounded MCP transport (stdio/HTTP)");
   validate_mcp_prefix(prefix);
-  endpoints_.push_back({std::move(prefix), std::move(client)});
+  endpoints_.push_back({std::move(prefix), std::move(client),
+                        std::make_shared<std::atomic_bool>(false)});
 }
 void Agent::add_mcp_http(std::string prefix, std::string url,
                          std::string bearer_token,
@@ -692,8 +707,15 @@ void Agent::add_mcp_http(std::string prefix, std::string url,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
   if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http(url, std::move(bearer_token), std::move(on_notification))));
+    Client::http(url, std::move(bearer_token), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::add_mcp_stdio(std::string prefix, std::string executable,
                           std::vector<std::string> args,
@@ -701,8 +723,15 @@ void Agent::add_mcp_stdio(std::string prefix, std::string executable,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Reject collisions before starting a process.
   if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::process(executable, std::move(args), std::move(on_notification))));
+    Client::process(executable, std::move(args), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::add_mcp_oauth(std::string prefix, std::string url,
                           std::shared_ptr<mymcp::oauth::Session> session,
@@ -711,8 +740,15 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
   validate_mcp_prefix(prefix);
   if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
   if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
+  const auto invalidated=std::make_shared<std::atomic_bool>(false);
+  auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
+    if(as_string(item,"method")=="notifications/tools/list_changed")
+      invalidated->store(true,std::memory_order_release);
+    if(callback)callback(item);
+  };
   add_mcp(std::move(prefix), std::make_shared<Client>(
-    Client::http_oauth(url, std::move(session), std::move(on_notification))));
+    Client::http_oauth(url, std::move(session), std::move(notify))));
+  endpoints_.back().catalog_invalidated=invalidated;
 }
 void Agent::tool(std::string name, std::string description,
                  Json schema, Server::ToolHandler handler) {
@@ -725,6 +761,32 @@ void Agent::tool(std::string name, std::string description,
 void Agent::load_skills(const std::filesystem::path& directory) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   skills_.load(directory);
+}
+void Agent::set_phase_model(std::string phase,std::shared_ptr<Model> model,
+                            std::string model_name) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(phase.empty() || !model || model_name.empty())
+    throw std::invalid_argument("set_phase_model requires phase/provider/model name");
+  if(config_.strict_process_isolation && !model->supports_request_deadline())
+    throw std::invalid_argument("Strict isolation requires bounded phase Model");
+  phase_model_names_[phase]=std::move(model_name);
+  phase_models_[std::move(phase)]=std::move(model);
+}
+void Agent::invalidate_mcp_catalog(const std::string& prefix) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  if(prefix.empty()) {
+    catalog_cache_.clear();
+    for(const auto& endpoint:endpoints_)
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+  } else {
+    catalog_cache_.erase(prefix);
+    bool found=false;
+    for(const auto& endpoint:endpoints_)if(endpoint.prefix==prefix) {
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+      found=true;
+    }
+    if(!found)throw std::out_of_range("Unknown MCP cache prefix");
+  }
 }
 void Agent::use_skill(const std::string& name) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
