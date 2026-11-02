@@ -708,6 +708,13 @@ void Agent::add_mcp_http(std::string prefix, std::string url,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Check first; do not construct needless clients.
   if (url.empty()) throw std::invalid_argument("MCP HTTP URL cannot be empty");
+  // 严格进程隔离要求 SDK 自己控制所有回调截止时间。不能为缓存
+  // 安装不受 SDK 约束的用户态通知回调；严格模式改用 TTL/显式刷新。
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(Client::http(url,std::move(bearer_token))));
+    return;
+  }
   const auto invalidated=std::make_shared<std::atomic_bool>(false);
   auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
     if(as_string(item,"method")=="notifications/tools/list_changed")
@@ -724,6 +731,12 @@ void Agent::add_mcp_stdio(std::string prefix, std::string executable,
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   validate_mcp_prefix(prefix); // Reject collisions before starting a process.
   if (executable.empty()) throw std::invalid_argument("MCP executable cannot be empty");
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(
+       Client::process(executable,std::move(args))));
+    return;
+  }
   const auto invalidated=std::make_shared<std::atomic_bool>(false);
   auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
     if(as_string(item,"method")=="notifications/tools/list_changed")
@@ -741,6 +754,12 @@ void Agent::add_mcp_oauth(std::string prefix, std::string url,
   validate_mcp_prefix(prefix);
   if (url.empty()) throw std::invalid_argument("MCP OAuth URL cannot be empty");
   if (!session) throw std::invalid_argument("MCP OAuth session cannot be null");
+  if(config_.strict_process_isolation) {
+    if(on_notification)throw std::invalid_argument("Strict isolation forbids unbounded notification callback");
+    add_mcp(std::move(prefix),std::make_shared<Client>(
+       Client::http_oauth(url,std::move(session))));
+    return;
+  }
   const auto invalidated=std::make_shared<std::atomic_bool>(false);
   auto notify=[invalidated,callback=std::move(on_notification)](const Json& item) {
     if(as_string(item,"method")=="notifications/tools/list_changed")
