@@ -34,7 +34,35 @@ int run_mcp_catalog_cache_demo() {
   agent.set_mcp_catalog_version("cached","2.0");
   ensure(agent.ask("same version")=="catalog checked","同版本缓存调用失败");
   ensure(catalog_calls==3,"同版本不应重复刷新");
-  std::cout<<"run_mcp_catalog_cache_demo: TTL 命中与手动失效通过\n";
+
+  // 恶意或损坏的 MCP 目录可能跨多页返回超大 Schema。
+  // 必须在第一页校验失败，不能继续拉取余下页面后再做总体检查。
+  mymcp::Server oversized_server("oversized-catalog","1.0");
+  oversized_server.page_size(1);
+  oversized_server.tool("a_large",std::string(4096,'x'),
+                        [](){return 1;});
+  oversized_server.tool("z_small","Normal tool",
+                        [](){return 2;});
+  unsigned oversized_pages=0;
+  auto oversized_client=std::make_shared<mymcp::Client>(
+      [&oversized_server,&oversized_pages](const Json& request) {
+        const auto* method=j::if_contains(request,"method");
+        if(method&&method->is_string()&&method->as_string()=="tools/list")
+          ++oversized_pages;
+        return oversized_server.handle(request);
+      },"oversized-client");
+  auto bounded_cfg=config();
+  bounded_cfg.max_mcp_tool_bytes=512;
+  bounded_cfg.max_mcp_catalog_bytes=8192;
+  bounded_cfg.mcp_catalog_ttl_seconds=3600;
+  Agent bounded(bounded_cfg,mock);
+  bounded.add_mcp("oversized",oversized_client);
+  bool rejected=false;
+  try { (void)bounded.ask("reject oversized schema"); }
+  catch(const std::exception&) { rejected=true; }
+  ensure(rejected && oversized_pages==1,
+         "MCP Schema 必须在第一页越界时立即拒绝，不能继续请求后续分页");
+  std::cout<<"run_mcp_catalog_cache_demo: TTL、失效与分页前置预算校验通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
 }
