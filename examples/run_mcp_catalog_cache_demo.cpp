@@ -28,6 +28,12 @@ int run_mcp_catalog_cache_demo() {
   agent.invalidate_mcp_catalog("cached");
   ensure(agent.ask("third")=="catalog checked","工具目录刷新失败");
   ensure(catalog_calls==2,"明确刷新未重新请求 tools/list");
+  agent.set_mcp_catalog_version("cached","2.0");
+  ensure(agent.ask("version changed")=="catalog checked","版本刷新失败");
+  ensure(catalog_calls==3,"变更服务端版本未触发失效");
+  agent.set_mcp_catalog_version("cached","2.0");
+  ensure(agent.ask("same version")=="catalog checked","同版本缓存调用失败");
+  ensure(catalog_calls==3,"同版本不应重复刷新");
   std::cout<<"run_mcp_catalog_cache_demo: TTL 命中与手动失效通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
