@@ -863,6 +863,12 @@ Json Agent::call_model(const std::string& phase,const Json& request,
     std::chrono::milliseconds timeout,
     const std::function<void(const std::string&)>& on_delta,
     unsigned* model_call_count,unsigned max_model_calls) {
+  // 上层执行器在准备发送前预占一次调用，若本地策略拒绝，
+  // 必须撤销该占位；只有已真正发起的尝试才计入模型调用预算。
+  const auto refund_preflight=[&]() {
+    if(model_call_count && *model_call_count>0)--*model_call_count;
+    if(phase=="ask" && last_model_attempts_>0)--last_model_attempts_;
+  };
   const auto route=phase_models_.find(phase);
   const auto selected=route==phase_models_.end()?model_:route->second;
   const auto policy=config_.retry;
@@ -870,8 +876,10 @@ Json Agent::call_model(const std::string& phase,const Json& request,
      policy.base_delay_ms>60000 || policy.max_delay_ms>60000 ||
      (policy.max_delay_ms && policy.base_delay_ms>policy.max_delay_ms))
     throw std::invalid_argument("Invalid model retry policy");
-  if(config_.max_estimated_cost_usd>0 && last_cost_usd_>=config_.max_estimated_cost_usd)
+  if(config_.max_estimated_cost_usd>0 && last_cost_usd_>=config_.max_estimated_cost_usd) {
+    refund_preflight();
     throw detail::LoopAbort(LoopStatus::LimitReached,"Estimated model cost budget reached");
+  }
   const auto deadline=timeout.count()>0
       ?std::chrono::steady_clock::now()+timeout
       :std::chrono::steady_clock::time_point::max();
@@ -898,8 +906,10 @@ Json Agent::call_model(const std::string& phase,const Json& request,
         const auto wait=std::chrono::duration_cast<std::chrono::milliseconds>(
             recent_model_requests_.front()+std::chrono::minutes(1)-now);
         if(deadline!=std::chrono::steady_clock::time_point::max() &&
-           wait>=remaining())
+           wait>=remaining()) {
+          if(attempt==0)refund_preflight();
           throw std::runtime_error("Model rate limit exceeds deadline");
+        }
         std::this_thread::sleep_for(wait);
         // 等待 RPM 空档不算一次尝试/重试。
         continue;
@@ -916,8 +926,10 @@ Json Agent::call_model(const std::string& phase,const Json& request,
         if(phase=="ask")++last_model_attempts_;
       }
       if(active_loop_options_ && active_loop_options_->allow_model_request &&
-         !active_loop_options_->allow_model_request())
+         !active_loop_options_->allow_model_request()) {
+        refund_preflight();
         throw detail::LoopAbort(LoopStatus::LimitReached,"Global model-call budget reached");
+      }
       Json reply;
       if(on_delta)reply=selected->create_stream(request,left,[&](const std::string& delta){
         if(!delta.empty())emitted=true;
