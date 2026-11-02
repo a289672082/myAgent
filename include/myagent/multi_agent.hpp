@@ -31,6 +31,8 @@ struct AgentSpec {
   std::vector<std::filesystem::path> skill_directories; // 构造后自动加载的专用目录
   std::vector<std::string> explicit_skills;             // 加载后直接 use_skill
   std::vector<McpEndpointSpec> mcp;                     // 子 Agent 独立 MCP 注册
+  // 子 Agent 仅能向白名单中的已注册 Agent 再次委派；空集合禁用嵌套委派。
+  std::vector<std::string> allowed_children;
 };
 // 交给子 Agent 的是任务相关的摘要和文件引用，而非主 Agent 的完整对话历史。
 struct TaskContext {
@@ -59,7 +61,7 @@ struct TeamOptions {
   unsigned max_task_retries = 0; // 默认不重复调用；仅无工具副作用的失败可安全重试。
   unsigned max_delegations = 8;       // 主协调器最多可产生多少个子任务
   unsigned max_parallel_agents = 2;   // 同时运行的不同 Agent 数量，至少 1
-  unsigned max_depth = 1;             // 当前架构只有 coordinator -> worker 这一层
+  unsigned max_depth = 1;             // 1=coordinator->worker，2..8 允许白名单子委派。
   unsigned max_model_calls = 64;      // 全团队模型调用预算
   unsigned max_tool_calls = 64;       // 全团队工具调用预算，0=禁用工具但允许纯模型任务
   std::uint64_t max_reported_tokens = 0; // 0 = 不限制；计费按请求后报告，软阈值
@@ -98,6 +100,7 @@ struct TeamResult {
   std::vector<DelegationResult> tasks;
   TokenUsage usage;
   std::map<std::string, TokenUsage> usage_by_agent;
+  double estimated_cost_usd=0;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
   Json events = mymcp::json::array{}; // 团队调度事件，便于排查任务耗时和并行顺序。
@@ -130,6 +133,11 @@ public:
   // 自动协作：协调器只生成结构化分工和最后总结，没有工具权限；
   // 不向协调器公开子 Agent 的 API Key、baseUrl 或内部完整历史。
   TeamResult run(const std::string& goal, const TeamOptions& options = {});
+  // 无 Coordinator 的树形委派入口；共享严格的模型调用/工具调用数量预算。
+  // 工具 local__agent_delegate 只能调用 allowed_children 中的 Agent。
+  DelegationResult delegate_tree(const std::string& root,const std::string& task,
+          unsigned max_depth,unsigned max_model_calls,unsigned max_tool_calls,
+          const LoopOptions& options={});
 private:
   struct Worker {
     AgentSpec spec;
