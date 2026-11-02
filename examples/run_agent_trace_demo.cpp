@@ -13,8 +13,12 @@ int run_agent_trace_demo() {
     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".jsonl");
  try {
   auto mock=std::make_shared<Mock>();
-  mock->handler=[](const Json&){return answer("trace works");};
+  mock->handler=[](const Json& request) {
+    if(has_tool_result(request))return answer("trace works");
+    return tool_call("local__trace_tool","trace-call");
+  };
   Agent agent(config(),mock);
+  agent.tool("trace_tool","local trace demonstration",[](){return true;});
   LoopOptions options;
   options.otel_jsonl_path=file;
   unsigned spans=0;
@@ -27,7 +31,7 @@ int run_agent_trace_demo() {
   const auto result=agent.react("sensitive example prompt",options);
   ensure(result.status==LoopStatus::Completed,"Trace Loop 未完成");
   ensure(result.trace_id.size()==32,"LoopResult 无 Trace ID");
-  ensure(spans>=1,"没有输出模型 Span");
+  ensure(spans>=3,"没有输出两次模型 Span 与一次工具 Span");
   std::ifstream in(file,std::ios::binary);
   ensure(static_cast<bool>(in),"没有创建 OTEL JSONL");
   const std::string raw((std::istreambuf_iterator<char>(in)),
