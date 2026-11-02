@@ -3,6 +3,7 @@
 #include "mymcp/mcp.hpp"
 #include "myagent/token_usage.hpp"
 #include <map>
+#include <optional>
 #include <set>
 #include <chrono>
 #include <filesystem>
@@ -14,7 +15,7 @@ namespace myagent {
 using mymcp::Json;
 
 enum class LoopMode { ReAct, PlanAndExecute, Reflection, EvaluatorOptimizer };
-enum class LoopStatus { Completed, LimitReached, Cancelled, Failed };
+enum class LoopStatus { Completed, LimitReached, Cancelled, Failed, Paused };
 
 // 宿主可用真实工具证据验收一步，例如验证编译 exit_code == 0。
 // passed 由应用代码产生；不能把模型自述的“成功”当成客观验证。
@@ -30,6 +31,14 @@ struct LoopInput {
   std::string text;
   std::vector<std::filesystem::path> images;
   std::filesystem::path audio;
+};
+
+// 工具审批可返回 Pause：立即保存执行现场并把控制权交回 UI，而不是阻塞线程。
+enum class ToolDecision { Approve, Deny, Pause };
+struct ToolApprovalRequest {
+  std::string name;
+  std::string call_id;
+  Json arguments = mymcp::json::object{};
 };
 
 struct LoopOptions {
@@ -58,6 +67,15 @@ struct LoopOptions {
   std::function<StepValidation(const Json& step, const Json& execution,
                                const Json& tool_results)> validate_step;
   bool commit_to_history = true;
+  // 设定后每次模型响应/工具意图/工具结果都会原子写入文件；仅支持文本任务。
+  std::filesystem::path checkpoint_path;
+  bool resume_checkpoint = false;
+  // 对每个尚未执行的工具决定批准、拒绝或暂停。未设置时沿用 ToolPolicy。
+  std::function<ToolDecision(const ToolApprovalRequest&)> on_tool_approval;
+  // 崩溃后若工具已经开始而未确认结果，只允许宿主核实并提供结果，绝不重放。
+  std::function<std::optional<std::string>(const ToolApprovalRequest&)> reconcile_tool;
+  // 面向 UI 的公开文本增量。内置 HTTP 模型使用真实 SSE；不输出隐藏推理。
+  std::function<void(const std::string& phase,const std::string& delta)> on_text_delta;
   // Optional. Requires an OpenAIResponses backend and a speech-capable gateway.
   std::filesystem::path speech_output;
   std::string speech_voice = "alloy";

@@ -6,6 +6,7 @@
 #include "myagent/tool_policy.hpp"
 #include "myagent/memory.hpp"
 #include <chrono>
+#include <atomic>
 #include <mutex>
 #include <filesystem>
 #include <functional>
@@ -17,6 +18,7 @@
 #include <vector>
 
 namespace myagent {
+namespace detail { class ExecutionJournal; }
 using mymcp::Json;
 using mymcp::Client;
 using mymcp::Server;
@@ -101,6 +103,12 @@ public:
   virtual bool supports_request_deadline() const noexcept { return false; }
   // The default keeps injected providers source-compatible. Built-in HTTP
   // backends override this to enforce a per-request transport deadline.
+  // 默认适配已有自定义 Model；非流式实现不会伪造 token delta。
+  virtual Json create_stream(const Json& request,std::chrono::milliseconds timeout,
+                             const std::function<void(const std::string&)>& on_delta) {
+    (void)on_delta;
+    return create_with_timeout(request,timeout);
+  }
   virtual Json create_with_timeout(const Json& request,
                                   std::chrono::milliseconds timeout) {
     (void)timeout;
@@ -115,6 +123,8 @@ public:
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
   bool supports_request_deadline() const noexcept override { return true; }
+  Json create_stream(const Json& request,std::chrono::milliseconds timeout,
+                     const std::function<void(const std::string&)>& on_delta) override;
   // Audio uses the dedicated OpenAI audio endpoints, not an unsupported
   // Responses input_audio content-part shape.
   std::string transcribe(const std::filesystem::path& file,
@@ -136,6 +146,8 @@ public:
   Json create_with_timeout(const Json& request,
                            std::chrono::milliseconds timeout) override;
   bool supports_request_deadline() const noexcept override { return true; }
+  Json create_stream(const Json& request,std::chrono::milliseconds timeout,
+                     const std::function<void(const std::string&)>& on_delta) override;
 private:
   Config config_;
 };
@@ -202,6 +214,10 @@ public:
                       const LoopOptions& options = {});
   LoopResult run_loop(const std::string& task, LoopMode mode,
                       const LoopOptions& options = {});
+  // 请求在下一安全边界暂停；正在执行的非合作回调不会被强制终止。
+  void pause() noexcept { pause_requested_.store(true,std::memory_order_release); }
+  // 从 Checkpoint 继续原始文本任务，沿用原始 LoopMode；需重新配置 Model/MCP。
+  LoopResult resume(const std::filesystem::path& checkpoint,LoopOptions options = {});
   LoopResult react(const LoopInput& input, const LoopOptions& options = {});
   LoopResult react(const std::string& task, const LoopOptions& options = {});
   LoopResult plan_and_execute(const LoopInput& input, const LoopOptions& options = {});
@@ -292,6 +308,9 @@ private:
       const std::function<std::chrono::milliseconds()>& remaining_time = {});
 
   Config config_;
+  std::atomic_bool pause_requested_{false};
+  detail::ExecutionJournal* active_journal_=nullptr; // 仅在 run_loop 持锁期间有效。
+  const LoopOptions* active_loop_options_=nullptr;
   ContextManager context_;
   MemoryStore memory_;
   std::shared_ptr<Model> model_;

@@ -116,6 +116,11 @@ if(MYAGENT_BUILD_TESTS)
   target_compile_definitions(myagent_tests PRIVATE
     MYAGENT_TEST_STDIO_SERVER="$<TARGET_FILE:myagent_test_stdio_server>")
   # 子 Agent MCP 硬截止时间/限额的真实子进程回归，不依赖外网。
+  # 两种内置模型的真实本机 HTTP SSE 测试；验证逐段回调与最终响应。
+  add_executable(myagent_streaming_tests tests/test_streaming.cpp)
+  target_link_libraries(myagent_streaming_tests PRIVATE myagent)
+  add_test(NAME myagent_streaming COMMAND myagent_streaming_tests)
+  set_tests_properties(myagent_streaming PROPERTIES TIMEOUT 30)
   add_executable(myagent_mcp_transport_tests tests/test_mcp_transport.cpp)
   target_link_libraries(myagent_mcp_transport_tests PRIVATE myagent)
   add_test(NAME myagent_mcp_transport COMMAND myagent_mcp_transport_tests)
