@@ -6,9 +6,14 @@ using namespace advanced_demo;
 int run_model_retry_demo() {
  try {
   auto model=std::make_shared<Mock>();
-  model->handler=[model](const Json& request)->Json {
+  // 避免 Mock::handler 通过 shared_ptr 再次拥有自身，形成循环引用；
+  // Sanitizers 会检测到这种测试代码中的资源泄漏。
+  std::weak_ptr<Mock> weak_model=model;
+  model->handler=[weak_model](const Json& request)->Json {
     (void)request;
-    if(model->calls<=2)throw std::runtime_error("Chat HTTP 429");
+    const auto locked=weak_model.lock();
+    if(!locked)throw std::runtime_error("Mock model unexpectedly expired");
+    if(locked->calls<=2)throw std::runtime_error("Chat HTTP 429");
     return answer("retry succeeded");
   };
   auto cfg=config();
