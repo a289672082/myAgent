@@ -219,6 +219,7 @@ public:
       throw std::invalid_argument("Strict isolation forbids in-process C++ tools; use stdio MCP");
     local_.tool(std::move(name), std::move(description),
                 std::move(fn), std::move(args)...);
+    catalog_cache_.erase("local"); // 本地动态注册后，不能继续使用旧 Schema。
   }
   Server& local_mcp_server() {
     if(config_.strict_process_isolation)
