@@ -72,6 +72,7 @@ struct TeamOptions {
   // 团队运行事件（started/completed/failed/reassigned）；仅携带 ID/耗时，不记录密钥或工具正文。
   std::function<void(const Json&)> on_event;
   std::filesystem::path event_log_path; // 可选 JSONL 审计日志
+  std::string trace_id; // 为空时自动生成，传递给全部 Worker 和子 Agent。
   std::chrono::milliseconds timeout{0}; // 任务队列取消及轮次间截止时间
   std::filesystem::path checkpoint_path; // 任务图持久化：仅同一任务图可恢复
   bool resume_checkpoint = false;
@@ -92,6 +93,7 @@ struct DelegationResult {
   unsigned attempts = 1;
   Json details = mymcp::json::object{}; // Worker Loop 的 plan/evaluations，包含实际工具证据。
   double estimated_cost_usd=0;
+  std::string trace_id;
   std::string verification = "unverified";
   Json verification_evidence = mymcp::json::object{};
 };
@@ -103,6 +105,7 @@ struct TeamResult {
   TokenUsage usage;
   std::map<std::string, TokenUsage> usage_by_agent;
   double estimated_cost_usd=0;
+  std::string trace_id;
   unsigned model_calls = 0;
   unsigned tool_calls = 0;
   Json events = mymcp::json::array{}; // 团队调度事件，便于排查任务耗时和并行顺序。
