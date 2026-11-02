@@ -325,7 +325,9 @@ private:
   std::string instructions() const;
   Json call_model(const std::string& phase,const Json& request,
                   std::chrono::milliseconds timeout,
-                  const std::function<void(const std::string&)>& on_delta={});
+                  const std::function<void(const std::string&)>& on_delta={},
+                  unsigned* model_call_count=nullptr,
+                  unsigned max_model_calls=std::numeric_limits<unsigned>::max());
   double usage_cost(const std::string& model,const TokenUsage& usage) const;
   std::string run(Json user_content, bool allow_tools = true,
                   unsigned max_model_calls = std::numeric_limits<unsigned>::max(),
