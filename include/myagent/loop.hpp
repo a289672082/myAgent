@@ -83,6 +83,9 @@ struct LoopOptions {
   std::function<bool()> cancelled;
   std::chrono::milliseconds timeout{0}; // 0=无限；调用间检查；HTTP 在 Config 内设置传输超时。
   std::function<void(const Json&)> on_event;
+  // 安全追踪仅包含模型/工具名、耗时、错误类别，不复制提示词及响应正文。
+  std::function<void(const Json&)> on_span;
+  std::filesystem::path otel_jsonl_path; // 可选 OTEL 兼容 span JSONL，调用方负责保护文件。
 };
 
 struct LoopResult {
@@ -102,5 +105,8 @@ struct LoopResult {
   TokenUsage usage;
   std::map<std::string, TokenUsage> usage_by_phase; // plan/execute/reflect/evaluate...
   std::map<std::string, TokenUsage> usage_by_model; // 按实际请求的模型名汇总
+  double estimated_cost_usd=0;
+  std::map<std::string,double> estimated_cost_by_model;
+  std::string trace_id;
 };
 } // namespace myagent
