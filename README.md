@@ -849,3 +849,5 @@ ctest --test-dir build -R "myagent_(model_routing|model_retry|mcp_catalog_cache|
 
 每个示例都有独立 `run_xxx_demo()` 入口及详细中文注释。运行时不会使用真实
 API Key、外部 MCP 服务或联网模型；所有示例都被注册为 CTest。
+
+严格隔离模式不安装额外的 MCP 通知回调（SDK 认为任意进程内回调不能保证硬截止时间）；此模式下请采用 TTL 或 `invalidate_mcp_catalog()` / `set_mcp_catalog_version(prefix,version)` 显式刷新。
