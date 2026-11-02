@@ -84,6 +84,12 @@ if(MYAGENT_BUILD_EXAMPLES)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
     target_link_libraries(run_${feature}_demo PRIVATE myagent)
   endforeach()
+  # AGENTS.md 专项 Demo：离线 Mock 模型验证文件加载、字符串替换与规则清空。
+  add_executable(run_agents_md_demo examples/run_agents_md_demo.cpp)
+  target_link_libraries(run_agents_md_demo PRIVATE myagent)
+  target_compile_definitions(run_agents_md_demo PRIVATE
+    MYAGENT_AGENTS_MD_DEMO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/agents_md_demo")
+
   # 单独的 P0 Skill YAML Demo；运行无需 API Key、环境变量和网络请求。
   add_executable(run_skill_yaml_demo examples/run_skill_yaml_demo.cpp)
   target_link_libraries(run_skill_yaml_demo PRIVATE myagent)
@@ -128,6 +134,8 @@ if(MYAGENT_BUILD_TESTS)
   set_tests_properties(myagent_skills_yaml PROPERTIES TIMEOUT 30)
   if(MYAGENT_BUILD_EXAMPLES)
     # 用真实样例文件执行独立 Demo，验证成功退出及完整的离线流程。
+    add_test(NAME myagent_agents_md_demo COMMAND run_agents_md_demo)
+    set_tests_properties(myagent_agents_md_demo PROPERTIES TIMEOUT 30)
     add_test(NAME myagent_skill_yaml_demo COMMAND run_skill_yaml_demo)
     set_tests_properties(myagent_skill_yaml_demo PROPERTIES TIMEOUT 30)
   endif()
