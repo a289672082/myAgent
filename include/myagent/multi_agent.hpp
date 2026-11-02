@@ -65,6 +65,7 @@ struct TeamOptions {
   unsigned max_model_calls = 64;      // 全团队模型调用预算
   unsigned max_tool_calls = 64;       // 全团队工具调用预算，0=禁用工具但允许纯模型任务
   std::uint64_t max_reported_tokens = 0; // 0 = 不限制；计费按请求后报告，软阈值
+  double max_estimated_cost_usd=0; // 0=无限，已报告 usage 的估算软预算。
   unsigned max_handoff_chars = 6000;  // 向子 Agent 仅传相关上游摘要
   LoopOptions worker_loop;
   std::function<bool()> cancelled;
@@ -90,6 +91,7 @@ struct DelegationResult {
   unsigned tool_calls = 0;
   unsigned attempts = 1;
   Json details = mymcp::json::object{}; // Worker Loop 的 plan/evaluations，包含实际工具证据。
+  double estimated_cost_usd=0;
   std::string verification = "unverified";
   Json verification_evidence = mymcp::json::object{};
 };
