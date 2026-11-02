@@ -72,16 +72,25 @@ int run_model_retry_demo() {
                       return 1;
                     });
   LoopOptions cancel_options;
-  cancel_options.timeout=std::chrono::seconds(2);
+  // RPM=1 的下一次可用窗口约在 60 秒后。若 Loop 截止时间只有 2 秒，
+  // 限流器会提前返回 deadline 错误，根本不会进入可取消的等待分支。
+  // 因此设置超过 60 秒的上限，并通过回调在 80ms 后取消；
+  // 正常实现应迅速退出，测试本身绝不会等待完整一分钟。
+  cancel_options.timeout=std::chrono::seconds(65);
   cancel_options.cancelled=[&] {
     return effect_at!=std::chrono::steady_clock::time_point{} &&
            std::chrono::steady_clock::now()-effect_at>
                std::chrono::milliseconds(80);
   };
+  const auto cancel_started=std::chrono::steady_clock::now();
   const auto cancelled=cancel_agent.react("cancel rpm wait",cancel_options);
+  const auto cancel_elapsed=std::chrono::steady_clock::now()-cancel_started;
   ensure(cancelled.status==LoopStatus::Cancelled &&
          cancel_model->calls==1 && cancel_effects==1,
-         "RPM 等待未及时响应取消，或重复调用已执行的工具");
+         "RPM 等待应响应取消，且不能重复执行工具："+
+         cancelled.error);
+  ensure(cancel_elapsed<std::chrono::seconds(2),
+         "RPM 等待取消耗时过长（应在毫秒级响应）");
   std::cout<<"run_model_retry_demo: 429、总重试预算和限流取消通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
