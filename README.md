@@ -640,3 +640,22 @@ strict_process_isolation=true 会拒绝同步 Agent::tool() C++ 回调、没有 
 兼容模式（strict_process_isolation=false）仍允许旧的进程内回调，但无法保证恶意或死循环 C++ 代码按时间终止。严格模式解决的是拒绝不安全路径，而非自动把任意 lambda 变为可跨进程序列化的对象。
 
 严格模式不是系统沙箱。仍需要针对外部 MCP 子进程执行最小权限、文件系统隔离、进程树限制与资源配额。
+
+## AGENTS.md 显式加载 Demo（离线）
+
+示例源文件为 `examples/run_agents_md_demo.cpp`，样例规则位于 `examples/agents_md_demo/AGENTS.md`。
+独立入口 `run_agents_md_demo()` 使用 Mock Model 验证以下行为，无需 API Key、命令行参数或网络：
+- `agent.LoadAgentsMdFile("AGENTS.md")`：从真实文件加载规则。
+- `agent.LoadAgentsMdFileFormString(markdown)`：用字符串规则替换之前加载的规则。
+- `agent.LoadAgentsMdFileFormString("")`：清空 AGENTS.md 规则，但保留 `Config::instructions`。
+
+构建和运行：
+
+```bash
+cmake --build build --target run_agents_md_demo --config Debug
+./build/run_agents_md_demo
+# Windows: .\\build\\Debug\\run_agents_md_demo.exe
+ctest --test-dir build -R myagent_agents_md_demo --output-on-failure
+```
+
+CMake 自动指定样例资源目录，因此 Demo 不依赖当前工作目录。该示例只展示**手动指定规则文件**，不会自动搜索多级 AGENTS.md。
