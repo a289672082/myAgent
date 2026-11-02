@@ -1,6 +1,7 @@
 // P1-9：HTTP 429 和暂时性服务端错误指数退避 + 总重试预算（离线）。
 #include "advanced_demo_support.hpp"
 #include <iostream>
+#include <chrono>
 using namespace myagent;
 using namespace advanced_demo;
 int run_model_retry_demo() {
@@ -55,7 +56,30 @@ int run_model_retry_demo() {
   ensure(limited.status!=LoopStatus::Completed &&
          rate_model->calls==1 && side_effects==1,
          "RPM 限流未阻止第二次请求，或重复执行工具");
-  std::cout<<"run_model_retry_demo: 429 退避与总重试预算通过\n";
+  // 第二次模型请求被 RPM 限流时应可中断，而不是无响应地休眠 60 秒。
+  auto cancel_model=std::make_shared<Mock>();
+  auto first_request_at=std::chrono::steady_clock::time_point{};
+  cancel_model->handler=[&](const Json& request) {
+    if(has_tool_result(request))return answer("unexpected second request");
+    first_request_at=std::chrono::steady_clock::now();
+    return tool_call("local__single_effect","cancel-tool");
+  };
+  Agent cancel_agent(cfg,cancel_model);
+  unsigned cancel_effects=0;
+  cancel_agent.tool("single_effect","one side effect",
+                    [&](){++cancel_effects;return 1;});
+  LoopOptions cancel_options;
+  cancel_options.timeout=std::chrono::seconds(2);
+  cancel_options.cancelled=[&] {
+    return first_request_at!=std::chrono::steady_clock::time_point{} &&
+           std::chrono::steady_clock::now()-first_request_at>
+               std::chrono::milliseconds(80);
+  };
+  const auto cancelled=cancel_agent.react("cancel rpm wait",cancel_options);
+  ensure(cancelled.status==LoopStatus::Cancelled &&
+         cancel_model->calls==1 && cancel_effects==1,
+         "RPM 等待未及时响应取消，或重复调用已执行的工具");
+  std::cout<<"run_model_retry_demo: 429、总重试预算和限流取消通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}
 }
