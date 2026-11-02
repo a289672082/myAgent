@@ -789,6 +789,18 @@ void Agent::invalidate_mcp_catalog(const std::string& prefix) {
     if(!found)throw std::out_of_range("Unknown MCP cache prefix");
   }
 }
+void Agent::set_mcp_catalog_version(const std::string& prefix,std::string version) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  for(auto& endpoint:endpoints_)if(endpoint.prefix==prefix) {
+    if(endpoint.catalog_version!=version) {
+      endpoint.catalog_version=std::move(version);
+      catalog_cache_.erase(prefix);
+      endpoint.catalog_invalidated->store(true,std::memory_order_release);
+    }
+    return;
+  }
+  throw std::out_of_range("Unknown MCP version prefix");
+}
 void Agent::use_skill(const std::string& name) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   // Explicit activation stays pinned until the caller changes the Agent.
@@ -983,7 +995,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
     const bool invalidated=endpoint.catalog_invalidated->exchange(
         false,std::memory_order_acq_rel);
     const bool hit=config_.mcp_catalog_ttl_seconds>0 && !invalidated &&
-        old!=catalog_cache_.end() && now<old->second.expiry;
+        old!=catalog_cache_.end() && now<old->second.expiry &&
+        old->second.version==endpoint.catalog_version;
     if(hit) schemas=old->second.schemas;
     else {
       endpoint.client->discover(request_options);
@@ -1036,7 +1049,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
     }
     if(!hit && config_.mcp_catalog_ttl_seconds>0)
       catalog_cache_[endpoint.prefix]={std::move(schemas),
-          now+std::chrono::seconds(config_.mcp_catalog_ttl_seconds)};
+          now+std::chrono::seconds(config_.mcp_catalog_ttl_seconds),
+          endpoint.catalog_version};
   }
   if (!config_.strict_process_isolation &&
       config_.auto_skill_selection && !skills_.all().empty()) {
@@ -1384,6 +1398,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       if (id.empty()) throw std::runtime_error("Missing tool call ID");
       ++tool_calls;
       std::string tool_output;
+      const auto tool_started=std::chrono::steady_clock::now();
+      const auto tool_started_ns=detail::unix_nanos();
       const Json tool_request=json::object{{"name",name},{"call_id",id},
                                            {"arguments",as_string(item,"arguments","{}")}};
       const ToolApprovalRequest approval_request{name,id,
@@ -1492,6 +1508,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       }
       if(active_journal_ && !replayed_tool)
         active_journal_->complete_tool(tool_output);
+      if(!replayed_tool) {
+        const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-tool_started).count();
+        const bool error=tool_output.find("\\"isError\\":true")!=std::string::npos;
+        emit_span("tool."+name,error?"error":"ok",tool_started_ns,
+                  static_cast<std::uint64_t>(elapsed));
+      }
       proposed.push_back(json::object{
         {"type", "function_call_output"}, {"call_id", id},
         {"output", tool_output}
