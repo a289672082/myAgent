@@ -505,7 +505,10 @@ static void test_checkpoint_conflict_fail_closed(const fs::path& root) {
   };
   const auto result=agent.react("do not overwrite concurrent revision",opts);
   assert(result.status==LoopStatus::Failed);
-  assert(result.error.find("Save conflict")!=std::string::npos);
+  // 外部快照可能比旧版本更大：读取上限会先触发安全拒绝，
+  // 与字节内容不匹配的版本冲突都必须 fail closed。
+  assert(result.error.find("Save conflict")!=std::string::npos ||
+         result.error.find("size limit")!=std::string::npos);
   assert(effects==0);
   std::ifstream in(file,std::ios::binary);
   const auto snapshot=j::parse(std::string(std::istreambuf_iterator<char>(in),{}));
