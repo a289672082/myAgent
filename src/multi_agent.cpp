@@ -113,7 +113,8 @@ LoopMode parse_mode(const Json& v) {
 }
 void validate_options(const TeamOptions& o) {
   if (!o.max_delegations || !o.max_parallel_agents || !o.max_model_calls ||
-      o.max_depth==0 || o.max_depth>8 || !o.max_handoff_chars)
+      o.max_depth==0 || o.max_depth>8 || !o.max_handoff_chars ||
+      !std::isfinite(o.max_estimated_cost_usd) || o.max_estimated_cost_usd<0)
     throw std::invalid_argument("TeamOptions requires positive budgets and max_depth in 1..8");
 }
 } // namespace
@@ -399,7 +400,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
   std::map<std::string,std::vector<DelegationResult>> prior_attempts;
   std::map<std::string,std::size_t> fallback_index;
   if (options.resume_checkpoint) {
-    auto restored=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
+    auto restored=detail::load_team_checkpoint(options.checkpoint_path,tasks,
+        options.validate_task,options.max_estimated_cost_usd>0);
     finished=std::move(restored.finished);
     prior_attempts=std::move(restored.prior_attempts);
     for (const auto& [id,history]:prior_attempts) {
@@ -412,12 +414,14 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         out.model_calls+=attempt.model_calls;
         out.tool_calls+=attempt.tool_calls;
         add_usage(out,attempt.agent,attempt.usage);
+        out.estimated_cost_usd+=attempt.estimated_cost_usd;
       }
     }
     for (const auto& [id,r]:finished) {
       out.model_calls+=r.model_calls;
       out.tool_calls+=r.tool_calls;
       add_usage(out,r.agent,r.usage);
+      out.estimated_cost_usd+=r.estimated_cost_usd;
     }
   }
   std::set<std::string> pending;
@@ -586,6 +590,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
             result.model_calls+=subsequent.model_calls;
             result.tool_calls+=subsequent.tool_calls;
             result.usage.add(subsequent.usage);
+            result.estimated_cost_usd+=subsequent.estimated_cost_usd;
             result.answer=std::move(subsequent.answer);
             result.error=std::move(subsequent.error);
             result.status=subsequent.status;
