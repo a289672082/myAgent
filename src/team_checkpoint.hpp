@@ -18,5 +18,6 @@ struct RestoredTeamCheckpoint {
 };
 RestoredTeamCheckpoint load_team_checkpoint(
     const std::filesystem::path& path, const std::vector<TeamTask>& tasks,
-    const std::function<TaskValidation(const TeamTask&,const DelegationResult&)>& validator);
+    const std::function<TaskValidation(const TeamTask&,const DelegationResult&)>& validator,
+    bool require_cost_accounting = false);
 } // namespace myagent::detail
