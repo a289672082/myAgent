@@ -942,9 +942,13 @@ Json Agent::call_model(const std::string& phase,const Json& request,
         const auto wait=std::chrono::duration_cast<std::chrono::milliseconds>(
             recent_model_requests_.front()+std::chrono::minutes(1)-now);
         if(deadline!=std::chrono::steady_clock::time_point::max() &&
-           wait>=remaining()) {
+           wait>=std::chrono::duration_cast<std::chrono::milliseconds>(
+               deadline-std::chrono::steady_clock::now())) {
+          // 本地限流预检没有真正发出模型请求，不应计入请求预算。
+          // 这属于 Loop 截止时间取消，而不是模型/网络故障。
           if(attempt==0)refund_preflight();
-          throw std::runtime_error("Model rate limit exceeds deadline");
+          throw detail::LoopAbort(LoopStatus::Cancelled,
+                                  "Model rate limit exceeds loop deadline");
         }
         try {interruptible_sleep(wait);}
         catch(...) {if(attempt==0)refund_preflight();throw;}
