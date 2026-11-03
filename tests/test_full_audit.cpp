@@ -452,6 +452,14 @@ static void test_loop_checkpoint_approval(const fs::path& root) {
   assert(tool_calls==0);
   assert(fs::exists(file));
   const auto first_model_calls=model->calls.load();
+  // Checkpoint 已有待批准的工具：新任务即使使用同一路径也不得覆盖
+  // 旧日志，否则旧任务的审批/副作用记录将永久丢失。
+  const auto old_checkpoint=[&]{std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}();
+  const auto duplicate=agent.react("different task must not overwrite",opts);
+  assert(duplicate.status==LoopStatus::Failed);
+  assert(duplicate.error.find("Checkpoint already exists")!=std::string::npos);
+  assert(model->calls.load()==first_model_calls);
+  assert([&]{std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}()==old_checkpoint);
 
   LoopOptions resumed=opts;
   resumed.on_tool_approval=[](const ToolApprovalRequest&) {
