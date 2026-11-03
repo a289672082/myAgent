@@ -37,7 +37,11 @@ static Config config() {
   return c;
 }
 static void test_checkpoint_failover_ledger(const fs::path& root) {
-  AgentTeam team(config(),std::make_shared<Mock>());
+  // 使用极简定价：每百万 Token 为 1,000,000 美元，
+  // 可直接将每次调用的总 Token 视作美元，验证恢复是否漏账。
+  auto priced=config();
+  priced.model_prices[priced.model]=ModelPrice{1000000,1000000,1000000};
+  AgentTeam team(priced,std::make_shared<Mock>());
   auto first=std::make_shared<Mock>();
   first->handler=[](const Json&) {
     auto response=answer("failed",20,10);
@@ -46,7 +50,7 @@ static void test_checkpoint_failover_ledger(const fs::path& root) {
   };
   auto backup=std::make_shared<Mock>();
   backup->handler=[](const Json&){return answer("success",40,10);};
-  AgentSpec a;a.name="primary";a.description="original";a.config=config();
+  AgentSpec a;a.name="primary";a.description="original";a.config=priced;
   team.add_agent(a,first);
   a.name="backup";a.description="fallback";team.add_agent(a,backup);
   TeamTask task{"task1","primary","do one thing"};
@@ -59,6 +63,7 @@ static void test_checkpoint_failover_ledger(const fs::path& root) {
   const auto initial=team.collaborate({task},opt);
   assert(initial.status==TeamStatus::Completed);
   assert(initial.model_calls==2 && initial.usage.total_tokens==80);
+  assert(initial.estimated_cost_usd==80.0);
   assert(initial.usage_by_agent.at("primary").total_tokens==30);
   assert(initial.usage_by_agent.at("backup").total_tokens==50);
   const auto data=j::parse([&]{
@@ -72,6 +77,10 @@ static void test_checkpoint_failover_ledger(const fs::path& root) {
   const auto resumed=team.collaborate({task},opt);
   assert(resumed.status==TeamStatus::Completed);
   assert(resumed.model_calls==2 && resumed.usage.total_tokens==80);
+  assert(resumed.estimated_cost_usd==80.0);
+  // 已完成任务的费用与备用 Agent 的失败请求都写在 Checkpoint。
+  assert(data.at("completed_records")[0].contains("estimated_cost_usd"));
+  assert(data.at("prior_attempts")[0].contains("estimated_cost_usd"));
   assert(resumed.usage_by_agent.at("primary").total_tokens==30);
   assert(resumed.usage_by_agent.at("backup").total_tokens==50);
   assert(first->calls==1 && backup->calls==1);
