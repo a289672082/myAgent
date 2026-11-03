@@ -88,12 +88,13 @@ DelegationResult read_delegation(const Json& item,bool require_cost_accounting) 
   return r;
 }
 } // namespace
-void save_team_checkpoint(const std::filesystem::path& path,
+std::string save_team_checkpoint(const std::filesystem::path& path,
                           const std::vector<TeamTask>& tasks,
                           const std::map<std::string, DelegationResult>& finished,
                           const std::set<std::string>& inflight,
-                          const std::map<std::string, std::vector<DelegationResult>>& prior_attempts) {
-  if(path.empty())return;
+                          const std::map<std::string, std::vector<DelegationResult>>& prior_attempts,
+                          const std::string* expected_previous,bool require_missing) {
+  if(path.empty())return {};
   Json records=json::array{};
   for(const auto& [id,r]:finished)
     records.push_back(delegation_json(id,r));
@@ -109,7 +110,8 @@ void save_team_checkpoint(const std::filesystem::path& path,
   if(serialized.size()>8*1024*1024)throw std::runtime_error("Checkpoint > 8 MiB");
   // A cross-process lock refuses overlapping checkpoint writers. If the
   // process dies, the stale *.lock directory must be cleared by the host.
-  detail::atomic_replace(path,serialized,true);
+  detail::atomic_replace(path,serialized,true,expected_previous,require_missing);
+  return serialized;
 }
 RestoredTeamCheckpoint load_team_checkpoint(
     const std::filesystem::path& path,const std::vector<TeamTask>& tasks,
@@ -125,6 +127,7 @@ RestoredTeamCheckpoint load_team_checkpoint(
   if(!data.at("inflight").empty())
     throw std::runtime_error("Checkpoint contains in-flight side effects; manual reconciliation required");
   RestoredTeamCheckpoint restored;
+  restored.persisted_bytes=text;
   const auto find_task=[&](const DelegationResult& r) {
     return std::find_if(tasks.begin(),tasks.end(),[&](const TeamTask& x) {
       return x.id==r.id && (x.agent==r.agent ||
