@@ -1072,6 +1072,22 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
     throw std::invalid_argument("Invalid MCP catalog limits");
   std::size_t catalog_left=max_catalog_bytes;
   std::size_t seen_tools=0;
+  // 整次 MCP 目录读取（服务初始化、多个端点和全部分页）共享同一截止时间。
+  // 避免每页重复给予完整 timeout，使恶意分页拖慢整个 Agent Loop。
+  if(request_options.timeout.count()<=0)
+    throw std::invalid_argument("MCP catalog discovery requires a positive timeout");
+  const auto catalog_deadline=std::chrono::steady_clock::now()+request_options.timeout;
+  const auto bounded_catalog_options=[&]() {
+    if(request_options.cancelled && request_options.cancelled())
+      throw detail::LoopAbort(LoopStatus::Cancelled,"MCP catalog discovery cancelled");
+    const auto left=std::chrono::duration_cast<std::chrono::milliseconds>(
+        catalog_deadline-std::chrono::steady_clock::now());
+    if(left.count()<=0)
+      throw std::runtime_error("MCP catalog discovery deadline exceeded");
+    auto opts=request_options;
+    opts.timeout=std::min(opts.timeout,left);
+    return opts;
+  };
   for (const auto& endpoint : endpoints_) {
     if(config_.strict_process_isolation && endpoint.prefix=="local")continue;
     Json schemas=json::array{};
@@ -1084,7 +1100,7 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
         old->second.version==endpoint.catalog_version;
     if(hit) schemas=old->second.schemas;
     else {
-      endpoint.client->discover(request_options);
+      endpoint.client->discover(bounded_catalog_options());
       Json params=json::object{};
       std::set<std::string> cursors;
       bool exhausted=false;
@@ -1093,7 +1109,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
       std::size_t staged_bytes=0;
       for(std::size_t page=0;page<MaxMcpPages;++page) {
         // SDK 接收层仍独立执行网络报文上限；这里是解码后的 Schema 限额。
-        const Json result=endpoint.client->request("tools/list",params,request_options);
+        const Json result=endpoint.client->request("tools/list",params,
+                                                    bounded_catalog_options());
         const Json* entries=json::if_contains(result,"tools");
         if(!entries || !entries->is_array())
           throw std::runtime_error("Invalid MCP tools/list page");
@@ -1150,7 +1167,8 @@ Json Agent::tool_definitions(std::map<std::string, Route>& routes,
     }
     if(!hit && config_.mcp_catalog_ttl_seconds>0)
       catalog_cache_[endpoint.prefix]={std::move(schemas),
-          now+std::chrono::seconds(config_.mcp_catalog_ttl_seconds),
+          std::chrono::steady_clock::now()+
+              std::chrono::seconds(config_.mcp_catalog_ttl_seconds),
           endpoint.catalog_version};
   }
   if (!config_.strict_process_isolation &&
