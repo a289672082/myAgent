@@ -53,9 +53,9 @@ int run_model_retry_demo() {
   LoopOptions timeout;
   timeout.timeout=std::chrono::milliseconds(50);
   const auto limited=rate_agent.react("rate limit test",timeout);
-  ensure(limited.status!=LoopStatus::Completed &&
+  ensure(limited.status==LoopStatus::Cancelled &&
          rate_model->calls==1 && side_effects==1,
-         "RPM 限流未阻止第二次请求，或重复执行工具");
+         "RPM 截止时间必须报告 Cancelled，且不得重放工具："+limited.error);
   // 第二次模型请求被 RPM 限流时应可中断，而不是无响应地休眠 60 秒。
   auto cancel_model=std::make_shared<Mock>();
   cancel_model->handler=[&](const Json& request) {
