@@ -89,11 +89,23 @@ std::string read_regular_file(const fs::path& path,std::size_t limit) {
 #endif
 }
 void atomic_replace(const fs::path& path,const std::string& data,bool single_writer,
-                    const std::string* expected_previous) {
+                    const std::string* expected_previous,bool require_missing) {
   if(path.empty())throw std::invalid_argument("Empty output path");
-  if(expected_previous && !single_writer)
+  if((expected_previous || require_missing) && !single_writer)
     throw std::invalid_argument("Revision checking requires exclusive writer lock");
+  if(expected_previous && require_missing)
+    throw std::invalid_argument("Cannot require missing file and an existing revision");
   SingleWriter lock(path,single_writer);
+  // 一个新任务不得覆盖此前处于 pending/approval 的持久化工具意图。
+  // 必须在跨进程锁内检测存在性；包含指向不存在目标的符号链接。
+  if(require_missing) {
+    std::error_code ec;
+    const auto info=fs::symlink_status(path,ec);
+    if(ec && ec!=std::errc::no_such_file_or_directory)
+      throw std::filesystem::filesystem_error("Checkpoint destination inspection failed",path,ec);
+    if(info.type()!=fs::file_type::not_found)
+      throw std::runtime_error("Checkpoint already exists; resume or choose a new path");
+  }
   // Compare contents UNDER the interprocess lock: separate processes that
   // loaded the same old revision cannot silently overwrite each other's edits.
   if(expected_previous) {
