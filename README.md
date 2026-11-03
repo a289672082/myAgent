@@ -851,3 +851,39 @@ ctest --test-dir build -R "myagent_(model_routing|model_retry|mcp_catalog_cache|
 API Key、外部 MCP 服务或联网模型；所有示例都被注册为 CTest。
 
 严格隔离模式不安装额外的 MCP 通知回调（SDK 认为任意进程内回调不能保证硬截止时间）；此模式下请采用 TTL 或 `invalidate_mcp_catalog()` / `set_mcp_catalog_version(prefix,version)` 显式刷新。
+
+## PR #25：稳定性优化的三个完整离线 Demo
+
+这三个新增的独立可执行程序配合原有 `run_model_retry_demo`、
+`run_mcp_catalog_cache_demo` 和 `run_team_checkpoint_demo`，
+覆盖新增的重要 API，并在 CTest 中自动运行。所有示例都有
+`int run_xxx_demo()` 入口、中文注释、无需命令行参数、真实 API Key 或联网。
+
+| Demo 源码 | 演示场景 |
+| --- | --- |
+| `examples/run_agent_pinned_context_demo.cpp` | `Config::context.pinned_notes` 将宿主指定的重要事实独立于摘要注入；多轮对话压缩后仍保留；区分估算 Token 和 Responses 的 reported usage |
+| `examples/run_agent_skills_refresh_demo.cpp` | 显式加载目录、按需调用 `agent_skill_load`、修改/新增/删除 SKILL.md、调用 `refresh_skills()`、无效 YAML 原子回滚 |
+| `examples/run_team_budget_recovery_demo.cpp` | 首选 Agent 输出不完整后交由备用 Agent；失败请求费用不丢；团队软预算中止后从 Checkpoint 续跑；提高预算后只运行尚未完成的验证任务 |
+
+### 构建与运行
+
+```bash
+git submodule update --init --recursive
+cmake -S . -B build
+cmake --build build --config Debug --target run_agent_pinned_context_demo run_agent_skills_refresh_demo run_team_budget_recovery_demo
+
+# Linux / 单配置生成器
+./build/run_agent_pinned_context_demo
+./build/run_agent_skills_refresh_demo
+./build/run_team_budget_recovery_demo
+
+# Windows 多配置生成器：build/Debug/run_agent_pinned_context_demo.exe 等
+ctest --test-dir build -C Debug --output-on-failure -R "myagent_(agent_pinned_context|agent_skills_refresh|team_budget_recovery)_demo"
+```
+
+**注意：** `pinned_notes` 不是向量记忆，不会自动从历史抽取事实；需要可信宿主显式填写。
+`refresh_skills()` 重新加载目录元数据，不会执行 Skill 下的脚本。
+团队费用采用模拟的整数价格便于核算，实际费用仍取决于模型返回的 usage
+与宿主配置的价格；成本上限是软预算，并不保证本次请求恰好不超额。
+Checkpoint 是为崩溃恢复提供的审计日志；对已启动但结果未知的外部副作用，
+仍需宿主核实，不能盲目重放。
