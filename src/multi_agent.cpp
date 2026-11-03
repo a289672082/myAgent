@@ -425,6 +425,14 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       out.estimated_cost_usd+=r.estimated_cost_usd;
     }
   }
+  if(options.max_depth>1) {
+    // 恢复时把历史真实调用数和成本写回跨线程原子预算，
+    // 否则嵌套子 Agent 会从零重新领取配额，绕过团队上限。
+    tree->model_calls.store(out.model_calls,std::memory_order_relaxed);
+    tree->tool_calls.store(out.tool_calls,std::memory_order_relaxed);
+    std::lock_guard<std::mutex> guard(tree->results_mutex);
+    tree->estimated_cost=out.estimated_cost_usd;
+  }
   std::set<std::string> pending;
   for(const auto& t:tasks) if(!finished.count(t.id))pending.insert(t.id);
   auto stop_reason = [&]() -> std::string {
