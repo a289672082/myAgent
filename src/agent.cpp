@@ -440,7 +440,9 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
                  std::make_move_iterator(added.end()));
 }
 void SkillLibrary::load(const std::filesystem::path& directory) {
-  load_directory(directory, false);
+  const auto absolute=std::filesystem::absolute(directory).lexically_normal();
+  load_directory(absolute, false);
+  manual_roots_.push_back(absolute);
 }
 void SkillLibrary::discover() {
   namespace fs = std::filesystem;
@@ -470,6 +472,15 @@ void SkillLibrary::discover() {
       if (fs::is_directory(root)) load_directory(root, true);
     }
   }
+  defaults_discovered_=true;
+}
+void SkillLibrary::refresh() {
+  // 在临时对象中完整验证 YAML 和文件层级；任意 Skill 解析失败时，
+  // 原目录不变，避免半更新导致后续 Agent 请求看见不一致的工具声明。
+  SkillLibrary rebuilt;
+  if(defaults_discovered_)rebuilt.discover();
+  for(const auto& root:manual_roots_)rebuilt.load(root);
+  *this=std::move(rebuilt);
 }
 const Skill& SkillLibrary::get(const std::string& name) const {
   for (const auto& skill : skills_) if (skill.name == name) return skill;
@@ -782,6 +793,10 @@ void Agent::tool(std::string name, std::string description,
 void Agent::load_skills(const std::filesystem::path& directory) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
   skills_.load(directory);
+}
+void Agent::refresh_skills() {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  skills_.refresh();
 }
 void Agent::set_phase_model(std::string phase,std::shared_ptr<Model> model,
                             std::string model_name) {
