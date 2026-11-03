@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 namespace myagent {
 using mymcp::Json;
 
@@ -17,6 +18,9 @@ struct ContextOptions {
   std::size_t keep_recent_turns = 2;
   std::size_t max_summary_chars = 8192;
   std::string summary_model;           // 空则使用 Agent 默认模型及相同 endpoint/key。
+  // 宿主声明的关键任务事实，独立于历史摘要，每次请求都原文保留。
+  // 作为引用 DATA 注入，不能由工具输出或模型自行修改。
+  std::vector<std::string> pinned_notes;
 };
 struct ContextStats {
   std::size_t estimated_tokens = 0; // 非精确计数，不用于计费。
