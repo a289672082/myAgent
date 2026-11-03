@@ -38,6 +38,15 @@ ContextManager::ContextManager(ContextOptions options): options_(std::move(optio
   if (options_.auto_compress && (!options_.max_context_tokens ||
       options_.reserve_output_tokens >= options_.max_context_tokens))
     throw std::invalid_argument("Auto compression requires valid context and reserve budgets");
+  if(options_.pinned_notes.size()>16)
+    throw std::invalid_argument("Too many pinned context notes (limit 16)");
+  std::size_t total_notes=0;
+  for(const auto& note:options_.pinned_notes) {
+    if(note.empty() || note.size()>1024 || note.find('\0')!=std::string::npos ||
+       total_notes>8192-note.size())
+      throw std::invalid_argument("Invalid or oversized pinned context note");
+    total_notes+=note.size();
+  }
 }
 ContextStats ContextManager::stats(const Json& history) const {
   auto result = stats_;
@@ -47,7 +56,8 @@ ContextStats ContextManager::stats(const Json& history) const {
 bool ContextManager::needs_compression(const Json& history, std::size_t extra_tokens) const {
   if (!options_.auto_compress || !options_.max_context_tokens) return false;
   const auto available = options_.max_context_tokens - options_.reserve_output_tokens;
-  return static_cast<double>(estimate(history) + extra_tokens) >=
+  // 先转浮点再相加，避免攻击者配置极大 extra_tokens 时 size_t 溢出。
+  return static_cast<double>(estimate(history)) + static_cast<double>(extra_tokens) >=
          static_cast<double>(available) * options_.compress_threshold;
 }
 CompressionResult ContextManager::compress(Json& history,

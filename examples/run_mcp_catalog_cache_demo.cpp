@@ -1,6 +1,8 @@
 // P1-10：MCP tools/list 的 TTL 缓存和显式失效（离线 SDK Loopback）。
 #include "advanced_demo_support.hpp"
 #include <iostream>
+#include <chrono>
+#include <thread>
 using namespace myagent;
 using namespace advanced_demo;
 int run_mcp_catalog_cache_demo() {
@@ -62,6 +64,35 @@ int run_mcp_catalog_cache_demo() {
   catch(const std::exception&) { rejected=true; }
   ensure(rejected && oversized_pages==1,
          "MCP Schema 必须在第一页越界时立即拒绝，不能继续请求后续分页");
+
+  // MCP 服务可能把一个目录拆成多页。每页分别给予 1 秒会使总耗时
+  // 随分页数量线性增长；全目录应共享一次 1 秒预算，避免无限拖延。
+  mymcp::Server slow_server("slow-catalog","1.0");
+  slow_server.page_size(1);
+  slow_server.tool("a","one",[](){return 1;});
+  slow_server.tool("b","two",[](){return 2;});
+  slow_server.tool("c","three",[](){return 3;});
+  slow_server.tool("d","four",[](){return 4;});
+  unsigned slow_pages=0;
+  auto slow_client=std::make_shared<mymcp::Client>(
+      [&slow_server,&slow_pages](const Json& req) {
+        const auto* method=j::if_contains(req,"method");
+        if(method && method->is_string() && method->as_string()=="tools/list") {
+          ++slow_pages;
+          std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        }
+        return slow_server.handle(req);
+      },"slow-catalog-client");
+  auto slow_cfg=config();
+  slow_cfg.mcp_timeout_seconds=1;
+  Agent slow_agent(slow_cfg,mock);
+  slow_agent.add_mcp("slow",slow_client);
+  bool slow_rejected=false;
+  try { (void)slow_agent.ask("bounded paginated discovery"); }
+  catch(const std::exception&){slow_rejected=true;}
+  ensure(slow_rejected && slow_pages>=1 && slow_pages<=2,
+         "多页 MCP 工具目录不得为每页重新分配完整超时");
+
   std::cout<<"run_mcp_catalog_cache_demo: TTL、失效与分页前置预算校验通过\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}

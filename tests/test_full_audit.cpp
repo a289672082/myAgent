@@ -452,6 +452,14 @@ static void test_loop_checkpoint_approval(const fs::path& root) {
   assert(tool_calls==0);
   assert(fs::exists(file));
   const auto first_model_calls=model->calls.load();
+  // Checkpoint 已有待批准的工具：新任务即使使用同一路径也不得覆盖
+  // 旧日志，否则旧任务的审批/副作用记录将永久丢失。
+  const auto old_checkpoint=[&]{std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}();
+  const auto duplicate=agent.react("different task must not overwrite",opts);
+  assert(duplicate.status==LoopStatus::Failed);
+  assert(duplicate.error.find("Checkpoint already exists")!=std::string::npos);
+  assert(model->calls.load()==first_model_calls);
+  assert([&]{std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}()==old_checkpoint);
 
   LoopOptions resumed=opts;
   resumed.on_tool_approval=[](const ToolApprovalRequest&) {
@@ -467,6 +475,44 @@ static void test_loop_checkpoint_approval(const fs::path& root) {
   const auto third=agent.resume(file,resumed);
   assert(third.status==LoopStatus::Failed);
   assert(tool_calls==1);
+}
+
+// 两个进程同时处理同一份 Checkpoint：外部写入后的旧 Revision
+// 不能覆盖新版本，也不能继续执行未经确认的副作用。
+static void test_checkpoint_conflict_fail_closed(const fs::path& root) {
+  const auto file=root/"agent-checkpoint-conflict.json";
+  auto model=std::make_shared<Mock>();
+  model->reply=[](const Json&)->Json {
+    return j::object{{"status","completed"},{"output",j::array{
+      j::object{{"type","function_call"},{"call_id","collision"},
+        {"name","local__write_demo"},{"arguments","{}"}}}}};
+  };
+  Agent agent(settings(),model);
+  unsigned effects=0;
+  agent.tool("write_demo","side effect",[&](){++effects;return "done";});
+  LoopOptions opts;
+  opts.checkpoint_path=file;
+  opts.on_tool_approval=[&](const ToolApprovalRequest&) {
+    // 模拟另一个宿主在模型响应已写盘、当前宿主尚未写入审批时更新了状态。
+    std::ifstream in(file,std::ios::binary);
+    Json snapshot=j::parse(std::string(std::istreambuf_iterator<char>(in),{}));
+    in.close();
+    snapshot["external_revision"]=true;
+    std::ofstream out(file,std::ios::binary|std::ios::trunc);
+    out<<j::serialize(snapshot);out.close();
+    assert(out.good());
+    return ToolDecision::Pause;
+  };
+  const auto result=agent.react("do not overwrite concurrent revision",opts);
+  assert(result.status==LoopStatus::Failed);
+  // 外部快照可能比旧版本更大：读取上限会先触发安全拒绝，
+  // 与字节内容不匹配的版本冲突都必须 fail closed。
+  assert(result.error.find("Save conflict")!=std::string::npos ||
+         result.error.find("size limit")!=std::string::npos);
+  assert(effects==0);
+  std::ifstream in(file,std::ios::binary);
+  const auto snapshot=j::parse(std::string(std::istreambuf_iterator<char>(in),{}));
+  assert(snapshot.at("external_revision").as<bool>());
 }
 
 // 模拟工具已经开始执行但进程崩溃：恢复必须先由宿主核实副作用状态。
@@ -536,6 +582,7 @@ int main() {
     test_mcp_catalog_and_result_limits();
     test_handoff_budget(root);
     test_loop_checkpoint_approval(root);
+    test_checkpoint_conflict_fail_closed(root);
     test_uncertain_tool_recovery(root);
     test_explicit_agents_md(root);
   }catch(...){fs::remove_all(root);throw;}

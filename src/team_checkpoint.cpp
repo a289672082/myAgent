@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <iterator>
 #include <fstream>
 #include <stdexcept>
@@ -58,9 +59,10 @@ Json delegation_json(const std::string& id,const DelegationResult& r) {
     {"status",static_cast<int>(r.status)},{"answer",r.answer},{"error",r.error},
     {"verification",r.verification},{"verification_evidence",r.verification_evidence},
     {"usage",usage_json(r.usage)},{"model_calls",r.model_calls},
-    {"tool_calls",r.tool_calls},{"attempts",r.attempts},{"details",r.details}};
+    {"tool_calls",r.tool_calls},{"attempts",r.attempts},{"details",r.details},
+    {"estimated_cost_usd",r.estimated_cost_usd}};
 }
-DelegationResult read_delegation(const Json& item) {
+DelegationResult read_delegation(const Json& item,bool require_cost_accounting) {
   DelegationResult r;
   r.id=std::string(item.at("id").as_string());
   r.agent=std::string(item.at("agent").as_string());
@@ -74,15 +76,25 @@ DelegationResult read_delegation(const Json& item) {
   r.attempts=item.at("attempts").as<unsigned>();
   r.usage=read_usage(item.at("usage"));
   r.details=item.at("details");
+  // 兼容旧 v2 文件：未配置预算时仍可加载无费用字段的历史结果；
+  // 一旦启用成本预算，必须拒绝未知费用，不能把它们视为零成本。
+  if(item.contains("estimated_cost_usd")) {
+    r.estimated_cost_usd=item.at("estimated_cost_usd").as<double>();
+    if(!std::isfinite(r.estimated_cost_usd) || r.estimated_cost_usd<0)
+      throw std::runtime_error("Invalid checkpoint estimated cost");
+  } else if(require_cost_accounting) {
+    throw std::runtime_error("Legacy checkpoint lacks cost ledger; manual migration required");
+  }
   return r;
 }
 } // namespace
-void save_team_checkpoint(const std::filesystem::path& path,
+std::string save_team_checkpoint(const std::filesystem::path& path,
                           const std::vector<TeamTask>& tasks,
                           const std::map<std::string, DelegationResult>& finished,
                           const std::set<std::string>& inflight,
-                          const std::map<std::string, std::vector<DelegationResult>>& prior_attempts) {
-  if(path.empty())return;
+                          const std::map<std::string, std::vector<DelegationResult>>& prior_attempts,
+                          const std::string* expected_previous,bool require_missing) {
+  if(path.empty())return {};
   Json records=json::array{};
   for(const auto& [id,r]:finished)
     records.push_back(delegation_json(id,r));
@@ -98,11 +110,13 @@ void save_team_checkpoint(const std::filesystem::path& path,
   if(serialized.size()>8*1024*1024)throw std::runtime_error("Checkpoint > 8 MiB");
   // A cross-process lock refuses overlapping checkpoint writers. If the
   // process dies, the stale *.lock directory must be cleared by the host.
-  detail::atomic_replace(path,serialized,true);
+  detail::atomic_replace(path,serialized,true,expected_previous,require_missing);
+  return serialized;
 }
 RestoredTeamCheckpoint load_team_checkpoint(
     const std::filesystem::path& path,const std::vector<TeamTask>& tasks,
-    const std::function<TaskValidation(const TeamTask&,const DelegationResult&)>& validator) {
+    const std::function<TaskValidation(const TeamTask&,const DelegationResult&)>& validator,
+    bool require_cost_accounting) {
   if(!validator)throw std::runtime_error(
     "Checkpoint resume requires a host validator for external side effects");
   const auto text=detail::read_regular_file(path,8*1024*1024);
@@ -113,6 +127,7 @@ RestoredTeamCheckpoint load_team_checkpoint(
   if(!data.at("inflight").empty())
     throw std::runtime_error("Checkpoint contains in-flight side effects; manual reconciliation required");
   RestoredTeamCheckpoint restored;
+  restored.persisted_bytes=text;
   const auto find_task=[&](const DelegationResult& r) {
     return std::find_if(tasks.begin(),tasks.end(),[&](const TeamTask& x) {
       return x.id==r.id && (x.agent==r.agent ||
@@ -120,13 +135,13 @@ RestoredTeamCheckpoint load_team_checkpoint(
     });
   };
   for(const auto& item:data.at("prior_attempts").array_range()) {
-    auto r=read_delegation(item);
+    auto r=read_delegation(item,require_cost_accounting);
     if(find_task(r)==tasks.end() || r.status==LoopStatus::Completed || r.tool_calls!=0)
       throw std::runtime_error("Invalid prior attempt in checkpoint");
     restored.prior_attempts[r.id].push_back(std::move(r));
   }
   for(const auto& item:data.at("completed_records").array_range()) {
-    auto r=read_delegation(item);
+    auto r=read_delegation(item,require_cost_accounting);
     auto t=find_task(r);
     if(t==tasks.end()||!restored.finished.emplace(r.id,r).second)
       throw std::runtime_error("Checkpoint task invalid or duplicate");

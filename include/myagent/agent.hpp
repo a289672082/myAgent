@@ -112,6 +112,8 @@ public:
   // Project: .agents/skills, .claude/skills, skills/ (CWD); user: ~/.agents/skills, ~/.claude/skills.
   // Existing directory entries win when names collide; no automatic script execution.
   void discover();
+  // 重新扫描已发现的默认目录和已加载的显式目录；失败时保持旧目录原样。
+  void refresh();
   const std::vector<Skill>& all() const { return skills_; }
   const Skill& get(const std::string& name) const;
   std::string read(const std::string& name) const;
@@ -120,6 +122,8 @@ public:
 private:
   void load_directory(const std::filesystem::path& directory, bool ignore_duplicates);
   std::vector<Skill> skills_;
+  std::vector<std::filesystem::path> manual_roots_;
+  bool defaults_discovered_=false;
 };
 
 // Injectable boundary: unit tests can exercise the complete tool loop offline.
@@ -228,6 +232,7 @@ public:
   }
 
   void load_skills(const std::filesystem::path& directory);
+  void refresh_skills(); // 原子重新发现；显式 use_skill 内容仍保持固定版本。
   void use_skill(const std::string& name);
   // 运行中可为特定阶段注入自定义 Provider（方便离线测试和厂商路由）。
   void set_phase_model(std::string phase,std::shared_ptr<Model> model,std::string model_name);

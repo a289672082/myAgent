@@ -166,6 +166,21 @@ int main() {
   };
   assert(manual.ask("Review") == "Manual only");
 
+  // 动态发现：运行期间添加、删除 Skill 后主动刷新；无需重建 Agent。
+  const auto dynamic=project / ".agents" / "skills" / "new-skill";
+  write(dynamic / "SKILL.md",
+    "---\nname: new-skill\ndescription: Dynamically discovered\n---\nNew rules.\n");
+  agent.refresh_skills();
+  assert(agent.skills().get("new-skill").description=="Dynamically discovered");
+  fs::remove_all(dynamic);
+  agent.refresh_skills();
+  try {agent.skills().get("new-skill");assert(false);}catch(const std::out_of_range&){}
+  // 校验失败必须回滚整个刷新，不可丢失已正常加载的 Skill。
+  write(dynamic / "SKILL.md","---\nname: new-skill\n---\nINVALID\n");
+  try {agent.refresh_skills();assert(false);}catch(const std::runtime_error&){}
+  assert(agent.skills().get("code-review").description=="Review C++ code for correctness");
+  fs::remove_all(dynamic);
+
   fs::current_path(old);
   fs::remove_all(temp);
   std::cout << "Skill auto-discovery tests OK\n";

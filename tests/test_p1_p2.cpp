@@ -215,11 +215,16 @@ static void test_failover_retry_and_priority() {
     if(++attempts==1){auto r=response("temporary");r["status"]="incomplete";return r;}
     return response("recovered without tools");
   };
-  spec.name="retry";spec.description="retry";team.add_agent(spec,retry_model);
+  spec.name="retry";spec.description="retry";
+  spec.config.model_prices[spec.config.model]=ModelPrice{1000000,1000000,1000000};
+  team.add_agent(spec,retry_model);
   TeamOptions retries;retries.max_task_retries=1;
   const auto retried=team.collaborate({TeamTask{"r","retry","try twice"}},retries);
   assert(retried.status==TeamStatus::Completed);
   assert(retried.tasks[0].attempts==2 && retried.tasks[0].model_calls==2);
+  // 首次失败的请求依然消耗费用；团队与单任务必须累计两次。
+  assert(retried.tasks[0].estimated_cost_usd==40.0);
+  assert(retried.estimated_cost_usd==40.0);
 
   std::vector<std::string> order;
   auto low=std::make_shared<Mock>();

@@ -28,9 +28,10 @@ public:
   ExecutionJournal(const std::filesystem::path& path,bool resume,
                    const std::string& task,LoopMode mode,
                    const Json& initial_history,const std::string& model)
-      :path_(path) {
+      :path_(path),require_new_(!resume) {
     if(resume) {
-      doc_=json::parse(read_regular_file(path_,16*1024*1024));
+      persisted_bytes_=read_regular_file(path_,16*1024*1024);
+      doc_=json::parse(persisted_bytes_);
       if(!doc_.is_object() || !doc_.contains("version") ||
          doc_.at("version").as<int>()!=1 ||
          !doc_.contains("task") || !doc_.at("task").is_string() ||
@@ -122,10 +123,17 @@ private:
     const std::string serialized=json::serialize(doc_);
     if(serialized.size()>16*1024*1024)
       throw std::runtime_error("Agent checkpoint size limit exceeded");
-    atomic_replace(path_,serialized,true);
+    // 首次创建必须拒绝覆盖任何已有日志；恢复后则检查文件版本，
+    // 阻止另一个进程在本 Agent 运行期间修改状态造成双重工具执行。
+    atomic_replace(path_,serialized,true,
+                   require_new_?nullptr:&persisted_bytes_,require_new_);
+    persisted_bytes_=serialized;
+    require_new_=false;
   }
   std::filesystem::path path_;
   Json doc_;
+  std::string persisted_bytes_;
+  bool require_new_=false;
   std::size_t cursor_=0;
 };
 } // namespace myagent::detail

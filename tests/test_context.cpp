@@ -212,7 +212,34 @@ static void test_summary_retry_attempt_accounting() {
   assert(retry->summary_attempts==2);
   assert(agent.last_model_attempts()==retry->attempts);
 }
+// 重要约束由可信宿主单独固定，不参与有损摘要；反复压缩后仍注入请求。
+static void test_pinned_context_survives_compression() {
+  struct WatchingModel final:Model {
+    unsigned pinned_requests=0;
+    Json create(const Json& req) override {
+      const auto* instructions=j::if_contains(req,"instructions");
+      if(instructions && instructions->is_string() &&
+         std::string(instructions->as_string()).find("必须保留 C++20 编译要求")!=std::string::npos)
+        ++pinned_requests;
+      return response("简短答复",10);
+    }
+  };
+  auto model=std::make_shared<WatchingModel>();
+  Config cfg=settings();
+  cfg.context.pinned_notes={"必须保留 C++20 编译要求"};
+  Agent agent(cfg,model);
+  for(int i=0;i<4;++i)agent.ask("用户任务第 "+std::to_string(i)+" 轮，要求检测边界条件。");
+  assert(agent.compress_context().compressed);
+  const auto before=model->pinned_requests;
+  agent.ask("压缩后继续");
+  assert(model->pinned_requests==before+1);
+
+  // 超大固定事实不可绕过上下文预算，配置阶段必须直接拒绝。
+  cfg.context.pinned_notes={std::string(1025,'X')};
+  try {Agent rejected(cfg,model);assert(false);}catch(const std::invalid_argument&){}
+}
 int main() {
+  test_pinned_context_survives_compression();
   test_summary_retry_attempt_accounting();
   test_manual_and_stats();
   test_auto_and_working_history();

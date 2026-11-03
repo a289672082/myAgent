@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <future>
 #include <limits>
@@ -113,7 +114,8 @@ LoopMode parse_mode(const Json& v) {
 }
 void validate_options(const TeamOptions& o) {
   if (!o.max_delegations || !o.max_parallel_agents || !o.max_model_calls ||
-      o.max_depth==0 || o.max_depth>8 || !o.max_handoff_chars)
+      o.max_depth==0 || o.max_depth>8 || !o.max_handoff_chars ||
+      !std::isfinite(o.max_estimated_cost_usd) || o.max_estimated_cost_usd<0)
     throw std::invalid_argument("TeamOptions requires positive budgets and max_depth in 1..8");
 }
 } // namespace
@@ -398,10 +400,13 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
   std::map<std::string,DelegationResult> finished;
   std::map<std::string,std::vector<DelegationResult>> prior_attempts;
   std::map<std::string,std::size_t> fallback_index;
+  std::string checkpoint_version;
   if (options.resume_checkpoint) {
-    auto restored=detail::load_team_checkpoint(options.checkpoint_path,tasks,options.validate_task);
+    auto restored=detail::load_team_checkpoint(options.checkpoint_path,tasks,
+        options.validate_task,options.max_estimated_cost_usd>0);
     finished=std::move(restored.finished);
     prior_attempts=std::move(restored.prior_attempts);
+    checkpoint_version=std::move(restored.persisted_bytes);
     for (const auto& [id,history]:prior_attempts) {
       const auto task=std::find_if(tasks.begin(),tasks.end(),
         [&](const TeamTask& t){return t.id==id;});
@@ -412,13 +417,27 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
         out.model_calls+=attempt.model_calls;
         out.tool_calls+=attempt.tool_calls;
         add_usage(out,attempt.agent,attempt.usage);
+        out.estimated_cost_usd+=attempt.estimated_cost_usd;
       }
     }
     for (const auto& [id,r]:finished) {
       out.model_calls+=r.model_calls;
       out.tool_calls+=r.tool_calls;
       add_usage(out,r.agent,r.usage);
+      out.estimated_cost_usd+=r.estimated_cost_usd;
     }
+  } else if(!options.checkpoint_path.empty()) {
+    // 新任务必须以全新路径开始，不能覆盖其他任务的等待审批/执行状态。
+    checkpoint_version=detail::save_team_checkpoint(
+        options.checkpoint_path,tasks,finished,{},prior_attempts,nullptr,true);
+  }
+  if(options.max_depth>1) {
+    // 恢复时把历史真实调用数和成本写回跨线程原子预算，
+    // 否则嵌套子 Agent 会从零重新领取配额，绕过团队上限。
+    tree->model_calls.store(out.model_calls,std::memory_order_relaxed);
+    tree->tool_calls.store(out.tool_calls,std::memory_order_relaxed);
+    std::lock_guard<std::mutex> guard(tree->results_mutex);
+    tree->estimated_cost=out.estimated_cost_usd;
   }
   std::set<std::string> pending;
   for(const auto& t:tasks) if(!finished.count(t.id))pending.insert(t.id);
@@ -494,7 +513,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
     if(!options.checkpoint_path.empty()) {
       std::set<std::string> in_flight;
       for(const auto i:ready)in_flight.insert(tasks[i].id);
-      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,in_flight,prior_attempts);
+      checkpoint_version=detail::save_team_checkpoint(options.checkpoint_path,
+          tasks,finished,in_flight,prior_attempts,&checkpoint_version);
     }
     std::vector<std::future<DelegationResult>> futures;
     futures.reserve(ready.size());
@@ -586,6 +606,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
             result.model_calls+=subsequent.model_calls;
             result.tool_calls+=subsequent.tool_calls;
             result.usage.add(subsequent.usage);
+            result.estimated_cost_usd+=subsequent.estimated_cost_usd;
             result.answer=std::move(subsequent.answer);
             result.error=std::move(subsequent.error);
             result.status=subsequent.status;
@@ -630,8 +651,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
           emit("task_reassigned",t.id,t.fallback_agents[fallback_index[t.id]-1]);
           in_flight.erase(t.id);
           if(!options.checkpoint_path.empty())
-            detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,
-                                         in_flight,prior_attempts);
+            checkpoint_version=detail::save_team_checkpoint(options.checkpoint_path,
+                tasks,finished,in_flight,prior_attempts,&checkpoint_version);
           advanced=true;
           continue;
         }
@@ -649,7 +670,8 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
       in_flight.erase(t.id);
     }
     if(!options.checkpoint_path.empty())
-      detail::save_team_checkpoint(options.checkpoint_path,tasks,finished,{},prior_attempts);
+      checkpoint_version=detail::save_team_checkpoint(options.checkpoint_path,
+          tasks,finished,{},prior_attempts,&checkpoint_version);
   }
   } catch(const std::exception& e) {
     out.status=cancelled()?TeamStatus::Cancelled:TeamStatus::Failed;

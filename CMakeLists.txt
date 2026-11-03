@@ -98,6 +98,12 @@ if(MYAGENT_BUILD_EXAMPLES)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
     target_link_libraries(run_${feature}_demo PRIVATE myagent)
   endforeach()
+  # PR #25：关键上下文固定保留、Skills 热更新、多 Agent 预算恢复。
+  # 三个独立 Demo 均在本机 Mock 运行，不需要网络或真实 API Key。
+  foreach(feature IN ITEMS agent_pinned_context agent_skills_refresh team_budget_recovery)
+    add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
+    target_link_libraries(run_${feature}_demo PRIVATE myagent)
+  endforeach()
   # AGENTS.md 专项 Demo：离线 Mock 模型验证文件加载、字符串替换与规则清空。
   add_executable(run_agents_md_demo examples/run_agents_md_demo.cpp)
   target_link_libraries(run_agents_md_demo PRIVATE myagent)
@@ -160,6 +166,11 @@ if(MYAGENT_BUILD_TESTS)
     endforeach()
     # 保证演示不只能够编译，还会在各平台运行并验证断点恢复/流式结果。
     foreach(feature IN ITEMS agent_checkpoint agent_streaming)
+      add_test(NAME myagent_${feature}_demo COMMAND run_${feature}_demo)
+      set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
+    endforeach()
+    # 新增示例还需要在所有平台真正运行，而不仅仅是参与编译。
+    foreach(feature IN ITEMS agent_pinned_context agent_skills_refresh team_budget_recovery)
       add_test(NAME myagent_${feature}_demo COMMAND run_${feature}_demo)
       set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
     endforeach()

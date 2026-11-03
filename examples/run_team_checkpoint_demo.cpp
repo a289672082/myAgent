@@ -34,6 +34,11 @@ int run_team_checkpoint_demo() {
     const auto first=team.collaborate(tasks,options);
     loop_demo::check(first.status==myagent::TeamStatus::Completed,"first run");
     const auto calls=mock->round;
+    // 再次以“新任务”写同一个路径必须失败，绝不能悄悄覆盖已有工作结果。
+    const auto blocked=team.collaborate(tasks,options);
+    loop_demo::check(blocked.status==myagent::TeamStatus::Failed,
+                     "fresh task must not overwrite existing team checkpoint");
+    loop_demo::check(mock->round==calls,"checkpoint 冲突之前不应发起额外模型请求");
     options.resume_checkpoint=true;
     const auto restored=team.collaborate(tasks,options);
     loop_demo::check(restored.status==myagent::TeamStatus::Completed,"restored");
