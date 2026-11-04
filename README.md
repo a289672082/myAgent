@@ -1,3 +1,12 @@
+# 本地 MCP SDK（不依赖 myMcpTools 子模块）
+
+Agent SDK: sdk/；Agent demo: examples/。
+MCP SDK: mcp/sdk/；MCP demo: mcp/examples/；MCP tests: mcp/tests/。
+MCP 的 jsoncons、cpp-httplib 及许可证位于 mcp/third_party/。
+根项目构建两套 SDK；可用 cmake -S sdk 或 cmake -S mcp 分别构建。
+根项目使用 MYAGENT_BUILD_MCP_EXAMPLES、MYAGENT_BUILD_MCP_TESTS 可开启额外的示例和测试。
+yaml-cpp 和 FTXUI 仍保留自己的子模块，与 myMcpTools 无关。
+
 # myAgent — 控制台入口 + 通用 C++20 SDK
 
 仓库根目录默认构建 **myagent_console**（Codex 风格 FTXUI 终端交互应用），
