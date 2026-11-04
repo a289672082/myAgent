@@ -102,6 +102,10 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
     if(pause_requested_.load(std::memory_order_acquire))
       throw detail::LoopAbort(LoopStatus::Paused,"Agent paused before task preparation");
     original_input = prepare_loop_input(input, result.audio_transcript,remaining_time);
+    // 仅公开宿主原始文本与媒体文件数量，不泄露二进制 data URL。
+    emit_conversation(json::object{{"event","user_message"},{"agent_id",config_.agent_id},
+      {"phase","loop"},{"content",input.text},{"image_count",input.images.size()},
+      {"has_audio",!input.audio.empty()},{"trace_id",result.trace_id}});
     if(cancelled())
       throw detail::LoopAbort(LoopStatus::Cancelled,"Agent deadline exceeded during input preparation");
     const std::string task = input.text.empty()
@@ -415,6 +419,11 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       result.estimated_cost_usd+=cost;
     }
     if(journal)journal->mark("completed");
+    emit_conversation(json::object{{"event","assistant_message"},{"agent_id",config_.agent_id},
+      {"phase","loop"},{"content",result.answer},{"trace_id",result.trace_id}});
+    emit_conversation(json::object{{"event","turn_completed"},{"agent_id",config_.agent_id},
+      {"phase","loop"},{"answer",result.answer},{"trace_id",result.trace_id},
+      {"model_calls",result.model_calls},{"tool_calls",result.tool_calls}});
     return result;
   } catch (const detail::LoopAbort& e) {
     result.status = e.status;
@@ -438,6 +447,10 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       result.estimated_cost_usd+=cost;
     }catch(...) { /* 主要错误原因优先保留。 */ }
   }
+  // 暂停与失败都报告终止状态；不把已执行工具结果当作可重放。
+  emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
+    {"phase","loop"},{"trace_id",result.trace_id},{"error",result.error},
+    {"status",static_cast<int>(result.status)}});
   // No commit on error: partial tool side effects cannot be automatically reverted.
   return result;
 }
