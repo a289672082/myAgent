@@ -196,6 +196,14 @@ void AgentTeam::set_conversation_callback(Agent::ConversationCallback callback,
     worker->instance->set_conversation_callback(conversation_callback_,include_tool_payloads);
 }
 
+void AgentTeam::set_conversation_callbacks(ConversationCallbacks callbacks) {
+  conversation_callbacks_=std::move(callbacks);
+  has_named_conversation_callbacks_=true;
+  coordinator_->set_conversation_callbacks(conversation_callbacks_);
+  for(auto& [_,worker]:workers_)
+    worker->instance->set_conversation_callbacks(conversation_callbacks_);
+}
+
 void AgentTeam::register_workspace_tools(Worker& worker) {
   const auto root = std::filesystem::canonical(worker.spec.workspace);
   worker.instance->tool("workspace_read", "只读取子 Agent 工作区内的文本文件",
@@ -253,6 +261,8 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
   if(conversation_callback_)
     worker->instance->set_conversation_callback(
         conversation_callback_,conversation_include_tool_payloads_);
+  if(has_named_conversation_callbacks_)
+    worker->instance->set_conversation_callbacks(conversation_callbacks_);
   if (!worker->spec.workspace.empty()) register_workspace_tools(*worker);
   if(!worker->spec.allowed_children.empty()) {
     if(worker->spec.config.strict_process_isolation)
