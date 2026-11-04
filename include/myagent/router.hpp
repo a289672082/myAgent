@@ -38,6 +38,12 @@ public:
   // 禁止重复注册和空指针；Router 不会修改 Agent 的模型配置。
   void add_agent(std::string name, std::string description,
                  std::shared_ptr<Agent> agent);
+  // 兼容简单调用 router.add_agent("coder", coderAgent)；
+  // 路由时仅知道 name，建议生产使用含明确 description 的重载。
+  void add_agent(std::string name, std::shared_ptr<Agent> agent) {
+    const std::string description=name;
+    add_agent(std::move(name),description,std::move(agent));
+  }
 
   // 路由事件 route_selected / route_failed 只通知通用回调；
   // 现有七种 ConversationCallbacks 转发给所有已注册及未来注册的 Agent。
