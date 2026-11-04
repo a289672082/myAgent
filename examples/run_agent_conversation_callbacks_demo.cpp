@@ -147,6 +147,25 @@ int run_agent_conversation_callbacks_demo() {
     loop_demo::check(delta_count==2 && completed_count==1,
                      "ask 未正确转发真实文本增量");
 
+    // 强类型回调：无需自行按 event 字符串过滤，同样支持完整输入、增量和返回。
+    stream_agent.set_conversation_callback({});
+    myagent::ConversationCallbacks named;
+    int named_input=0,named_delta=0,named_message=0,named_done=0;
+    named.on_user_message=[&](const myagent::Json& e) {
+      if(std::string(e.at("content").as_string())=="类型化回调")++named_input;
+    };
+    named.on_assistant_delta=[&](const myagent::Json&) {++named_delta;};
+    named.on_assistant_message=[&](const myagent::Json& e) {
+      if(std::string(e.at("content").as_string())=="Hello callbacks")++named_message;
+    };
+    named.on_turn_completed=[&](const myagent::Json&) {++named_done;};
+    stream_agent.set_conversation_callbacks(std::move(named));
+    loop_demo::check(stream_agent.ask("类型化回调")=="Hello callbacks",
+                     "具名回调模式执行失败");
+    loop_demo::check(named_input==1 && named_delta==2 &&
+                     named_message==1 && named_done==1,
+                     "七种强类型监听器注册或分发异常");
+
     // 子 Agent 同样使用 set_conversation_callback；Team 的每个 worker
     // 可通过 team.agent("worker").set_conversation_callback(...) 单独订阅。
     std::cout<<"run_agent_conversation_callbacks_demo: ask / ReAct / failure OK\n";
