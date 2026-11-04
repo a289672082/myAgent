@@ -14,7 +14,7 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}/sdk
 # 默认使用已安装的 FTXUI，保持离线构建。若用户明确授权，
 # 可使用 -DMYAGENT_CONSOLE_FETCH_FTXUI=ON 下载固定版本（仅 console 工程）。
 option(MYAGENT_CONSOLE_FETCH_FTXUI "Download pinned FTXUI for this console build only" OFF)
-find_package(ftxui CONFIG QUIET)
+find_package(ftxui 7 CONFIG QUIET)
 if(NOT TARGET ftxui::ftxui)
   if(NOT MYAGENT_CONSOLE_FETCH_FTXUI)
     message(FATAL_ERROR
