@@ -111,7 +111,7 @@ myagent::Agent agent(config);
 
 ## MCP 设计
 
-myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。
+myMcpTools SDK、测试和 Demo 已内置在 mcp/ 目录，不依赖外部 myMcpTools 子模块。
 项目直接编译 SDK 的现有 mcp.cpp、schema.cpp、oauth.cpp 和 oauth_client.cpp，复用 jsoncons、cpp-httplib；不复制或维护第二套 MCP 协议实现。
 普通调用方使用 Agent 快捷接口，Client 生命周期由 Agent 管理：
 

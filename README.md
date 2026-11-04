@@ -8,22 +8,61 @@ SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
 SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
 
+## 内置 MCP SDK 与文档索引
+
+**myMcpTools 的客户端、服务端、示例、测试及所需第三方源码已经整合到本仓库的 `mcp/` 目录**，不再通过 `third_party/myMcpTools` Git 子模块获取。Agent SDK 在 `sdk/`，MCP SDK 在 `mcp/sdk/`，两套 SDK、Demo 和测试分别维护；`yaml-cpp` 与 `FTXUI` 仍是独立子模块。
+
+需要了解 MCP 的具体用法、协议兼容性或安全限制时，请优先查看**仓库内置文档**：
+
+| MCP 文档 | 内容 |
+| --- | --- |
+| [MCP SDK 总览](mcp/README.md) | 客户端与服务端 API、传输方式、OAuth、协议能力和独立构建说明 |
+| [MCP Demo 使用指南](mcp/examples/README.md) | 独立 run_xxx_demo、stdio / HTTP / OAuth 和 23 个工具综合示例 |
+| [协议兼容性矩阵](mcp/COMPATIBILITY.md) | 已实现的 MCP 版本与特性、未覆盖项和测试范围 |
+| [Codex / Claude 接入指南](mcp/INTEROPERABILITY.md) | stdio、Streamable HTTP、外部客户端连接与互操作注意事项 |
+| [安全与生产使用限制](mcp/SECURITY.md) | 认证、授权、OAuth、远程暴露、任务与进程隔离风险 |
+| [第三方依赖与许可证](mcp/third_party/README.md) | jsoncons / cpp-httplib 的来源、固定版本、离线编译与许可证 |
+| [上游版本说明](mcp/UPSTREAM.md) | 本仓库内置的 myMcpTools 来源与固定提交 |
+
+仅构建 MCP SDK（不编译 MCP Demo / 测试）：
+
+```sh
+cmake -S mcp/sdk -B build-mcp-sdk
+cmake --build build-mcp-sdk --config Debug
+```
+
+编译 MCP SDK、独立 Demo，并运行 MCP 测试：
+
+```sh
+cmake -S mcp -B build-mcp
+cmake --build build-mcp --config Debug
+ctest --test-dir build-mcp -C Debug --output-on-failure
+```
+
+若使用根项目，可传入 `-DMYAGENT_BUILD_MCP_EXAMPLES=ON -DMYAGENT_BUILD_MCP_TESTS=ON` 开启 MCP Demo 与测试；默认根项目仍以 Agent 控制台为入口。构建需要 C++20、CMake、OpenSSL 和 Threads；`mcp/third_party/` 的 jsoncons、cpp-httplib 源码与许可证已随仓库提供。
+
 ## 目录结构与快速启动
 
 ```text
 myAgent/
-├── CMakeLists.txt           # 默认控制台入口
-├── console/                 # Codex 风格 TUI：/mcp /baseurl /apikey
-├── sdk/
-│   ├── CMakeLists.txt       # 可独立 CMake 构建 SDK
-│   ├── include/myagent/     # SDK 公共接口（不变）
-│   └── src/                 # SDK 核心源码
-├── examples/                # 独立示例及 CMakeLists.txt
-├── tests/                   # SDK 回归测试及 CMakeLists.txt
+├── CMakeLists.txt           # 根项目：默认构建控制台及 Agent / MCP SDK
+├── console/                 # Codex 风格 FTXUI 终端
+├── sdk/                     # Agent SDK：独立 CMake、include、src
+├── examples/                # Agent Demo
+├── tests/                   # Agent 回归测试
+├── mcp/
+│   ├── README.md            # MCP SDK 使用说明
+│   ├── COMPATIBILITY.md     # MCP 协议兼容性
+│   ├── INTEROPERABILITY.md  # Codex / Claude 互操作
+│   ├── SECURITY.md          # 安全说明
+│   ├── UPSTREAM.md          # 上游固定版本
+│   ├── sdk/                 # MCP SDK：include、src 和 CMakeLists.txt
+│   ├── examples/            # MCP Demo 和使用指南
+│   ├── tests/               # MCP 测试
+│   └── third_party/         # jsoncons、cpp-httplib 与许可证（源码内置）
 └── third_party/
-    ├── FTXUI/               # v7.0.3 Git 子模块，固定源码
-    ├── myMcpTools/          # MCP 子模块
-    └── yaml-cpp/            # YAML 子模块
+    ├── FTXUI/               # FTXUI Git 子模块
+    └── yaml-cpp/            # YAML Git 子模块
 ```
 
 ```sh
@@ -54,8 +93,9 @@ ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 
 ---
 
-## 原有 SDK 使用指南
-独立 C++20 Agent 项目，复用 [myMcpTools](https://github.com/a289672082/myMcpTools) 的 MCP 客户端、服务端、JSON、HTTP、OAuth 和其第三方源码。myMcpTools 使用固定提交的 Git submodule；Agent 源码全部在本仓库。
+## Agent SDK 使用指南
+
+本项目使用**内置的 MCP SDK** 支持 MCP 客户端、服务端、JSON、HTTP 和 OAuth，MCP 源码、示例及第三方依赖都由本仓库维护。MCP 的 API 说明见 [MCP SDK README](mcp/README.md)，实际操作示例见 [MCP Demo 指南](mcp/examples/README.md)；原上游仓库仅用作版本来源，不是构建依赖。
 
 ## 功能
 
@@ -82,7 +122,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ~~~
 
-已经克隆时可以执行 git submodule update --init --recursive。CMake 默认完全离线，不会在配置过程中下载依赖。也可以用 -DMYAGENT_MCP_DIR=/path/to/myMcpTools 指向已有 SDK 源码。
+已经克隆时可以执行 git submodule update --init --recursive。CMake 默认完全离线，不会在配置过程中下载依赖。MCP SDK 和依赖源码已内置于 mcp/；无需额外下载或指定 MYAGENT_MCP_DIR。
 
 ## 快速示例
 
@@ -564,6 +604,8 @@ ctest --test-dir build -C Debug --output-on-failure
 
 ## MCP 快捷接口（推荐）
 
+以下为 Agent 对 MCP 的快捷封装；若需要直接使用 MCP SDK 的服务端、客户端、OAuth 或通知能力，请参阅 [内置 MCP SDK API](mcp/README.md)、[MCP 独立示例](mcp/examples/README.md) 和 [互操作说明](mcp/INTEROPERABILITY.md)。
+
 Agent 负责创建和保存客户端，无需显式构造 mymcp::Client、std::shared_ptr，也不必自行管理传输对象的生命周期。
 
 ~~~cpp
@@ -677,7 +719,7 @@ For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow
 
 ## P0/P1 MCP 硬截止时间与严格进程隔离（2026-11-01）
 
-Agent 通过 myMcpTools 的 RequestOptions 在 MCP JSON 解析之前执行字节限制，并把 Loop 剩余时间传入发现、分页和工具调用。默认 mcp_timeout_seconds=30，max_mcp_response_bytes=1 MiB，后者不得超过 4 MiB。
+Agent 通过内置 MCP SDK 的 `RequestOptions` 在 MCP JSON 解析之前执行字节限制，并把 Loop 剩余时间传入发现、分页和工具调用。默认 mcp_timeout_seconds=30，max_mcp_response_bytes=1 MiB，后者不得超过 4 MiB。
 
 ~~~cpp
 myagent::Config config;
