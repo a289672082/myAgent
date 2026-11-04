@@ -26,13 +26,13 @@ struct MockModel final : myagent::Model {
       check(data.find("reply-2")==std::string::npos,
             "New chat must not contain old conversation history");
     }
+    const auto part=myagent::json::object{
+      {"type","output_text"},{"text","reply-"+std::to_string(requests)}};
+    const auto message=myagent::json::object{
+      {"type","message"},{"role","assistant"},
+      {"content",myagent::json::array{part}}};
     return myagent::json::object{
-      {"status","completed"},
-      {"output",myagent::json::array{
-        myagent::json::object{{"type","message"},{"role","assistant"},
-          {"content",myagent::json::array{
-            myagent::json::object{{"type","output_text"},
-              {"text","reply-"+std::to_string(requests)}}}}}}}};
+      {"status","completed"},{"output",myagent::json::array{message}}};
   }
 };
 }
