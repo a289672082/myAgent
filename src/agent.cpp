@@ -1219,6 +1219,19 @@ std::string Agent::execute_tool(const Route& route, const Json& call,
       {"message", std::string(e.what()).substr(0,1024)}});
   }
 }
+void Agent::set_conversation_callback(ConversationCallback callback,
+                                      bool include_tool_payloads) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  conversation_callback_=std::move(callback);
+  include_tool_payloads_=include_tool_payloads;
+}
+
+void Agent::emit_conversation(const Json& event) noexcept {
+  if(!conversation_callback_)return;
+  try { conversation_callback_(event); }
+  catch(...) { /* 宿主观察者异常不能影响模型事务或工具调用。 */ }
+}
+
 std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
                        std::chrono::milliseconds max_duration) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
@@ -1226,6 +1239,8 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   retries_used_=0;last_cost_usd_=0;
   last_model_attempts_ = 0;
+  emit_conversation(json::object{{"event","user_message"},{"agent_id",config_.agent_id},
+    {"content",user_content},{"phase","ask"}});
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
   std::set<std::string> executed_effects;
@@ -1238,6 +1253,7 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         deadline-std::chrono::steady_clock::now());
   };
+  try {
   const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
       model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
@@ -1250,7 +1266,21 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
     throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after response");
   history_ = std::move(working);
   last_response_ = turn.response;
+  emit_conversation(json::object{{"event","assistant_message"},{"agent_id",config_.agent_id},
+    {"phase","ask"},{"content",turn.answer}});
+  emit_conversation(json::object{{"event","turn_completed"},{"agent_id",config_.agent_id},
+    {"phase","ask"},{"answer",turn.answer},{"model_calls",model_calls},
+    {"tool_calls",tool_calls}});
   return turn.answer;
+  } catch(const std::exception& e) {
+    emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
+      {"phase","ask"},{"error",e.what()}});
+    throw;
+  } catch(...) {
+    emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
+      {"phase","ask"},{"error","unknown exception"}});
+    throw;
+  }
 }
 
 Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
@@ -1434,10 +1464,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     Json response;
     const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
     if(!replayed) {
-      if(active_loop_options_ && active_loop_options_->on_text_delta) {
+      if(conversation_callback_ || (active_loop_options_ && active_loop_options_->on_text_delta)) {
         response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
-            active_loop_options_->on_text_delta(phase,delta);
+            emit_conversation(json::object{{"event","assistant_delta"},
+              {"agent_id",config_.agent_id},{"phase",phase},{"delta",delta}});
+            if(active_loop_options_ && active_loop_options_->on_text_delta)
+              active_loop_options_->on_text_delta(phase,delta);
           },&model_calls,max_model_calls);
       } else response=call_model(phase,request,request_timeout,
                                   {},&model_calls,max_model_calls);
@@ -1563,6 +1596,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         duplicate_effect=!executed_effects->insert(name+"\n"+canonical).second;
       }
       if(!replayed_tool) {
+        Json call_event=json::object{{"event","tool_call"},{"agent_id",config_.agent_id},
+          {"phase",phase},{"name",name},{"call_id",id}};
+        if(include_tool_payloads_)call_event["arguments"]=approval_request.arguments;
+        emit_conversation(call_event);
         // Approval can pause a Loop without blocking on a UI condition variable.
         // A resumed approval is distinguishable from a tool already in flight.
         ToolDecision decision=ToolDecision::Approve;
@@ -1631,6 +1668,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       }
       if(active_journal_ && !replayed_tool)
         active_journal_->complete_tool(tool_output);
+      if(!replayed_tool) {
+        Json tool_event=json::object{{"event","tool_result"},{"agent_id",config_.agent_id},
+          {"phase",phase},{"name",name},{"call_id",id},
+          {"result_bytes",tool_output.size()}};
+        if(include_tool_payloads_)tool_event["output"]=tool_output;
+        emit_conversation(tool_event);
+      }
       if(!replayed_tool) {
         const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now()-tool_started).count();
