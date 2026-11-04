@@ -36,6 +36,8 @@ jobs:
         run: cmake --preset vs2022-console
       - name: Build checked-in myAgent.sln (Console default project)
         run: msbuild .\myAgent.sln /t:myAgentConsole /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
+      - name: Validate MCP SDK VS2022 wrapper project
+        run: msbuild .\myAgent.sln /t:myMcpSDK /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
       - name: Compile offline console regression targets in same solution build tree
         run: cmake --build build-vs2022/console --config Debug --target myagent_console_commands_tests myagent_console_chat_tests myagent_developer_tools_mcp developer_tools_tests --parallel 2
       - name: Run console CTests

@@ -10,6 +10,12 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "myAgentExamples", "vs2022\m
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "myAgentTests", "vs2022\myAgentTests.vcxproj", "{1D46FEB4-29CF-4E58-99B5-46D43EC747A9}"
 EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "myMcpSDK", "vs2022\myMcpSDK.vcxproj", "{AA7B9285-8BF1-4E1F-B16C-052A7B9F1531}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "myMcpExamples", "vs2022\myMcpExamples.vcxproj", "{9A70EF7C-0165-4C92-BE21-F3809A0261D9}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "myMcpTests", "vs2022\myMcpTests.vcxproj", "{D39F8457-A369-47C7-9879-15C3EAB8930F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -26,6 +32,12 @@ Global
 		{B3D93B3B-9771-4A73-8BD1-E50F2948D456}.Release|x64.ActiveCfg = Release|x64
 		{1D46FEB4-29CF-4E58-99B5-46D43EC747A9}.Debug|x64.ActiveCfg = Debug|x64
 		{1D46FEB4-29CF-4E58-99B5-46D43EC747A9}.Release|x64.ActiveCfg = Release|x64
+		{AA7B9285-8BF1-4E1F-B16C-052A7B9F1531}.Debug|x64.ActiveCfg = Debug|x64
+		{AA7B9285-8BF1-4E1F-B16C-052A7B9F1531}.Release|x64.ActiveCfg = Release|x64
+		{9A70EF7C-0165-4C92-BE21-F3809A0261D9}.Debug|x64.ActiveCfg = Debug|x64
+		{9A70EF7C-0165-4C92-BE21-F3809A0261D9}.Release|x64.ActiveCfg = Release|x64
+		{D39F8457-A369-47C7-9879-15C3EAB8930F}.Debug|x64.ActiveCfg = Debug|x64
+		{D39F8457-A369-47C7-9879-15C3EAB8930F}.Release|x64.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
