@@ -320,8 +320,10 @@ struct SharedState {
   std::mutex mutex;
 };
 bool enabled(const std::string& name,const ToolOptions& o) {
-  if(name=="read_file"||name=="get_file_info"||name=="list_directory"||name=="directory_tree")return o.filesystem_read;
-  if(name=="write_file"||name=="append_file"||name=="create_directory")return o.filesystem_write;
+  if(name=="read_file"||name=="get_file_info"||name=="list_directory"||name=="directory_tree")
+    return o.filesystem && o.filesystem_read;
+  if(name=="write_file"||name=="append_file"||name=="create_directory")
+    return o.filesystem && o.filesystem_write;
   if(name=="search_files"||name=="find_by_extension"||name=="search_text"||name=="grep_regex")return o.search;
   if(name=="replace_text"||name=="apply_patch")return o.editor;
   if(name=="git_status"||name=="git_diff"||name=="git_log")return o.git;

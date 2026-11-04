@@ -12,14 +12,19 @@ struct ToolContext {
   std::filesystem::path workspace;
 };
 struct ToolOptions {
-  bool filesystem_read=true;   // 文件查询及目录树
-  bool filesystem_write=true;  // 文件创建、追加和创建目录
+  // 七大工具类别。filesystem 统一开关负责文件读取、写入和目录工具。
+  bool filesystem=true;
   bool search=true;            // 文件名和内容搜索
   bool editor=true;            // replace_text, apply_patch
   bool git=true;               // 只读 Git
   bool command=true;           // 仅版本查询和受限样例编译
   bool http=true;              // 仅 https://example.com/，禁用重定向
   bool cpp_project=true;       // 工程信息、构建系统和符号搜索
+
+  // 文件类别的细粒度限制：仅在 filesystem=true 时生效。
+  // 可用于 ReadOnly() 禁止写文件，同时保留 read_file 等只读工具。
+  bool filesystem_read=true;
+  bool filesystem_write=true;
   static ToolOptions ReadOnly() {
     ToolOptions o;
     o.filesystem_write=false;o.editor=false;o.command=false;o.http=false;

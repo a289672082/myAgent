@@ -50,9 +50,30 @@ Console 默认通过 `RegisterToAgent()` 注册原生工具，默认工具审批
 
 ## ToolOptions
 
-`ToolOptions::All()` 暴露全部 23 个（显式调用才开启所有类别），
-`ToolOptions::ReadOnly()` 只暴露 14 个只读工具；
-其他类别可以逐项使用 ToolOptions 成员启用/禁用。
+你可以按类别选择要注册哪些工具，**同一个 options 对象可以传给 Agent 或 MCP**：
+
+~~~cpp
+developer_tools::ToolOptions options;
+options.filesystem = true;   // 文件读取、写入和目录（7 个）
+options.search = true;       // 文件与文本搜索（4 个）
+options.editor = true;       // 精确替换、补丁（2 个）
+options.git = true;          // 只读 Git（3 个）
+options.command = true;      // 白名单命令、固定 CMake 样例（2 个）
+options.http = true;         // 受限 HTTP 获取（2 个）
+options.cpp_project = true;  // 工程分析（3 个）
+
+developer_tools::RegisterToAgent(agent, context, options);
+// 或者：
+developer_tools::RegisterToMcp(server, context, options);
+~~~
+
+七个类别默认均为 `true`，可以根据需要关闭；`filesystem=false`
+会一次性禁用所有 7 个文件/目录工具。为兼容更细粒度的权限，
+`filesystem_read` 和 `filesystem_write` 仍然保留，只有
+`filesystem=true` 时才生效。例如设置 `filesystem_write=false` 可以只读。
+
+`ToolOptions::All()` 暴露全部 23 个；
+`ToolOptions::ReadOnly()` 只暴露 14 个只读工具（禁用写文件、编辑、命令和 HTTP）。
 
 ## 安全限制
 

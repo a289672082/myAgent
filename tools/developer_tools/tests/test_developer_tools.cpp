@@ -2,6 +2,8 @@
 // 不请求网络、不运行构建或任意命令，不写工作区外内容。
 #include "developer_tools/developer_tools.hpp"
 #include "myagent/agent.hpp"
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <chrono>
 #include <fstream>
@@ -54,7 +56,18 @@ int main() {
   try {
     TemporaryWorkspace w;
     const developer_tools::ToolContext ctx{w.root};
-    const auto tools=developer_tools::CreateToolDefinitions(ctx);
+
+    // 外部调用者期望的七个类别开关都能够单独指定。
+    developer_tools::ToolOptions options;
+    options.filesystem=true;
+    options.search=true;
+    options.editor=true;
+    options.git=true;
+    options.command=true;
+    options.http=true;
+    options.cpp_project=true;
+
+    const auto tools=developer_tools::CreateToolDefinitions(ctx,options);
     expect(tools.size()==23,"Expected exactly 23 shared tools");
     std::set<std::string> names;
     for(const auto& t:tools) {
@@ -63,12 +76,38 @@ int main() {
     }
     expect(names.size()==23&&names.count("find_symbol")==1,
            "Tool names must be unique and include singular find_symbol");
+    // 类别级开关：filesystem=false 必须关闭全部 7 个文件/目录工具，
+    // 而不能让细粒度 filesystem_read/write 的默认 true 意外启用它们。
+    struct CategoryCase {
+      bool developer_tools::ToolOptions::*flag;
+      std::size_t removed;
+      const char* example_name;
+    };
+    const std::array<CategoryCase,7> categories{{
+      {&developer_tools::ToolOptions::filesystem,7,"read_file"},
+      {&developer_tools::ToolOptions::search,4,"search_files"},
+      {&developer_tools::ToolOptions::editor,2,"apply_patch"},
+      {&developer_tools::ToolOptions::git,3,"git_status"},
+      {&developer_tools::ToolOptions::command,2,"run_command"},
+      {&developer_tools::ToolOptions::http,2,"http_get"},
+      {&developer_tools::ToolOptions::cpp_project,3,"project_info"}
+    }};
+    for(const auto& category:categories) {
+      auto subset=options;
+      subset.*(category.flag)=false;
+      const auto filtered=developer_tools::CreateToolDefinitions(ctx,subset);
+      expect(filtered.size()==23-category.removed,"Category switch exposed wrong number of tools");
+      expect(std::none_of(filtered.begin(),filtered.end(),[&](const auto& item) {
+        return item.name==category.example_name;
+      }),"Disabled category still exposed its tool");
+    }
+
     const auto safe=developer_tools::CreateToolDefinitions(
       ctx,developer_tools::ToolOptions::ReadOnly());
     expect(safe.size()==14,"ReadOnly must expose exactly 14 safe tools");
 
     mymcp::Server mcp("test-developer-tools","1.0.0");
-    expect(developer_tools::RegisterToMcp(mcp,ctx)==23,
+    expect(developer_tools::RegisterToMcp(mcp,ctx,options)==23,
            "MCP must receive all 23 tools");
     const auto initialized=mcp.handle(request("initialize",
       object{{"protocolVersion","2025-11-25"}}));
@@ -99,7 +138,7 @@ int main() {
     config.agent_id="developer-tools-regression";
     config.auto_discover_skills=false;
     myagent::Agent agent(config,model);
-    expect(developer_tools::RegisterToAgent(agent,ctx)==23,
+    expect(developer_tools::RegisterToAgent(agent,ctx,options)==23,
            "Agent must receive all 23 tools");
     const auto result=agent.ask("List the available tools");
     expect(model->found&&result=="OK","Agent must discover native tool local__read_file");
