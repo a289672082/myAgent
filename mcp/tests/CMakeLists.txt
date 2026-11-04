@@ -91,16 +91,6 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(legacy_http_client PROPERTIES TIMEOUT 20)
 endif()
 
-# 综合智能体工具 Demo：一个 stdio MCP 服务端包含 10 组、23 个工具，无需命令行参数。
-add_executable(run_agent_tools_demo examples/run_agent_tools_demo.cpp)
-target_link_libraries(run_agent_tools_demo PRIVATE mymcp)
-if(Python3_Interpreter_FOUND)
-  add_test(NAME agent_tools_demo
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/agent_tools_demo_smoke.py"
-      "$<TARGET_FILE:run_agent_tools_demo>")
-  set_tests_properties(agent_tools_demo PROPERTIES TIMEOUT 90)
-endif()
-
 # 进程不合作/忽略 SIGTERM、写端阻塞、接收预算回归。
 add_executable(mymcp_transport_limits_tests test_transport_limits.cpp)
 target_link_libraries(mymcp_transport_limits_tests PRIVATE mymcp)
