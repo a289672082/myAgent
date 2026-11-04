@@ -523,6 +523,20 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
           "Never claim tests passed before the host verifier runs.",
           true,config_.max_tool_rounds,{},&tool_results);
         ++result.iterations;
+        // 即使模型返回 status=completed，也不能忽略 MCP 自己报告的失败。
+        // 工具被拒绝/执行出错时立即终止，不把错误提交给“成功”验证回调。
+        for(const auto& tool:tool_results.array_range()) {
+          const auto* raw_output=json::if_contains(tool,"output");
+          if(!raw_output || !raw_output->is_string())
+            throw std::runtime_error("ExecuteVerifyRepair malformed MCP tool result");
+          const Json parsed_tool=json::parse(std::string(raw_output->as_string()));
+          if(parsed_tool.is_object()) {
+            const auto* error=json::if_contains(parsed_tool,"isError");
+            if(error && error->is_bool() && error->as_bool())
+              throw std::runtime_error("ExecuteVerifyRepair MCP tool failed: "+
+                field_string(tool,"name"));
+          }
+        }
         const auto execution=parse_object(raw,"ExecuteVerifyRepair executor");
         const auto status=field_string(execution,"status");
         const auto summary=field_string(execution,"summary");
