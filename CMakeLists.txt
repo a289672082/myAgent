@@ -108,6 +108,10 @@ if(MYAGENT_BUILD_EXAMPLES)
   add_executable(run_agent_conversation_callbacks_demo
     examples/run_agent_conversation_callbacks_demo.cpp)
   target_link_libraries(run_agent_conversation_callbacks_demo PRIVATE myagent)
+  # 团队统一回调：协调器 + 已注册 Worker + 后注册 Worker + 自动协作。
+  add_executable(run_team_conversation_callbacks_demo
+    examples/run_team_conversation_callbacks_demo.cpp)
+  target_link_libraries(run_team_conversation_callbacks_demo PRIVATE myagent)
   # AGENTS.md 专项 Demo：离线 Mock 模型验证文件加载、字符串替换与规则清空。
   add_executable(run_agents_md_demo examples/run_agents_md_demo.cpp)
   target_link_libraries(run_agents_md_demo PRIVATE myagent)
@@ -252,6 +256,9 @@ if(MYAGENT_BUILD_TESTS)
     add_test(NAME myagent_conversation_callbacks_demo
              COMMAND run_agent_conversation_callbacks_demo)
     set_tests_properties(myagent_conversation_callbacks_demo PROPERTIES TIMEOUT 30)
+    add_test(NAME myagent_team_conversation_callbacks_demo
+             COMMAND run_team_conversation_callbacks_demo)
+    set_tests_properties(myagent_team_conversation_callbacks_demo PROPERTIES TIMEOUT 30)
   endif()
   add_test(NAME myagent COMMAND myagent_tests)
   set_tests_properties(myagent PROPERTIES TIMEOUT 30)
