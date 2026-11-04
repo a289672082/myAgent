@@ -25,7 +25,7 @@ jobs:
           -DMYAGENT_CONSOLE_FETCH_FTXUI=ON
           -DMYAGENT_CONSOLE_BUILD_TESTS=ON
       - name: Build standalone console and commands tests
-        run: cmake --build build-console --target myagent_console myagent_console_commands_tests --parallel 2
+        run: cmake --build build-console --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
       - name: Test console command parser without API Key or external MCP
         run: ctest --test-dir build-console --output-on-failure --timeout 30
 
@@ -41,6 +41,6 @@ jobs:
           -DMYAGENT_CONSOLE_FETCH_FTXUI=ON
           -DMYAGENT_CONSOLE_BUILD_TESTS=ON
       - name: Build standalone console and commands tests
-        run: cmake --build build-console --config Debug --target myagent_console myagent_console_commands_tests --parallel 2
+        run: cmake --build build-console --config Debug --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
       - name: Test offline console commands
         run: ctest --test-dir build-console -C Debug --output-on-failure --timeout 30
