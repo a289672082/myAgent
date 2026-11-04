@@ -21,7 +21,7 @@ jobs:
       - name: Dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_CONSOLE_BUILD_TESTS=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -G Ninja -DCMAKE_BUILD_TYPE=Debug
       - name: Build
         run: cmake --build build --parallel 2
       - name: Tests
@@ -33,7 +33,7 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_CONSOLE_BUILD_TESTS=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -A x64
       - name: Build
         run: cmake --build build --config Debug --parallel 2
       - name: Tests
@@ -48,7 +48,7 @@ jobs:
       - name: Dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
       - name: Configure Release
-        run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build-release -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_CONSOLE_BUILD_TESTS=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build Release
         run: cmake --build build-release --parallel 2
       - name: Test Release
@@ -64,7 +64,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
       - name: Configure ASan and UBSan
         run: >
-          cmake -S . -B build-sanitized -G Ninja
+          cmake -S . -B build-sanitized -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_CONSOLE_BUILD_TESTS=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
@@ -83,7 +83,7 @@ jobs:
         with:
           submodules: recursive
       - name: Configure Release
-        run: cmake -S . -B build-release -A x64
+        run: cmake -S . -B build-release -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_CONSOLE_BUILD_TESTS=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -A x64
       - name: Build Release
         run: cmake --build build-release --config Release --parallel 2
       - name: Test Release

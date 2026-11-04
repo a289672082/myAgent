@@ -1,5 +1,55 @@
-# myAgent — C++20 OpenAI Agent 框架
+# myAgent — 控制台入口 + 通用 C++20 SDK
 
+仓库根目录默认构建 **myagent_console**（Codex 风格 FTXUI 终端交互应用），
+SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
+
+## 目录结构与快速启动
+
+```text
+myAgent/
+├── CMakeLists.txt           # 默认控制台入口
+├── console/                 # Codex 风格 TUI：/mcp /baseurl /apikey
+├── sdk/
+│   ├── CMakeLists.txt       # 可独立 CMake 构建 SDK
+│   ├── include/myagent/     # SDK 公共接口（不变）
+│   └── src/                 # SDK 核心源码
+├── examples/                # 独立示例及 CMakeLists.txt
+├── tests/                   # SDK 回归测试及 CMakeLists.txt
+└── third_party/
+    ├── FTXUI/               # v7.0.3 Git 子模块，固定源码
+    ├── myMcpTools/          # MCP 子模块
+    └── yaml-cpp/            # YAML 子模块
+```
+
+```sh
+git clone --recurse-submodules https://github.com/a289672082/myAgent.git
+cd myAgent
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --config Debug --parallel 2
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+子模块初始化后，FTXUI 固定源代码位于 `third_party/FTXUI`，CMake 全程离线，
+**不会在配置时下载 FTXUI**。更多命令见 [控制台说明](console/README.md)。
+
+只构建通用 SDK（完全不引入 FTXUI）：
+
+```sh
+cmake -S sdk -B build-sdk -DCMAKE_BUILD_TYPE=Release
+cmake --build build-sdk --config Release
+```
+
+仅构建/测试 SDK 示例和回归测试：
+
+```sh
+cmake -S . -B build-sdk-tests -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
+cmake --build build-sdk-tests --config Debug
+ctest --test-dir build-sdk-tests -C Debug --output-on-failure
+```
+
+---
+
+## 原有 SDK 使用指南
 独立 C++20 Agent 项目，复用 [myMcpTools](https://github.com/a289672082/myMcpTools) 的 MCP 客户端、服务端、JSON、HTTP、OAuth 和其第三方源码。myMcpTools 使用固定提交的 Git submodule；Agent 源码全部在本仓库。
 
 ## 功能
@@ -22,7 +72,7 @@
 ~~~sh
 git clone --recurse-submodules https://github.com/a289672082/myAgent.git
 cd myAgent
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ~~~
@@ -414,7 +464,7 @@ agent.reset_usage();   // 显式清空最近一次与累计统计（不会影响
 独立的离线示例 `examples/run_token_usage_demo.cpp` 提供 `run_token_usage_demo()`；测试 `tests/test_token_usage.cpp` 模拟真实 usage、工具轮次、模型缺失统计以及失败任务的账本保留。
 ## 统一 Agent 循环（六种策略 + 图片和音频）
 
-新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供六种策略（下面先介绍原有四种，新增两种见文末 P1 章节）：
+新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（sdk/include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供六种策略（下面先介绍原有四种，新增两种见文末 P1 章节）：
 - ReAct：决策 → 工具调用 → 观察 → 最终回答。
 - Plan-and-Execute：严格 JSON 规划 → 单步执行 → 阻塞时受限重规划 → 汇总。
 - Reflection：草稿 → JSON 自评 → 修订 → 检查完成。
@@ -502,7 +552,7 @@ auto result = agent.plan_and_execute("编译项目并运行测试", options);
 - examples/run_evaluator_optimizer_demo.cpp：run_evaluator_optimizer_demo()（评分 + 优化）
 
 ~~~sh
-cmake -S . -B build
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
 cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ~~~
@@ -556,7 +606,7 @@ examples/
 运行示例：
 
 ```sh
-cmake -S . -B build
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
 cmake --build build --target run_skill_yaml_demo --config Debug
 # Linux / macOS:
 ./build/run_skill_yaml_demo
@@ -578,8 +628,8 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 
 从仓库根目录运行 `build/run_agent_demo`（Windows：`build/Debug/run_agent_demo.exe`），即可加载示例 Skill。
 
-核心头文件：include/myagent/agent.hpp。
-核心实现：src/agent.cpp。
+核心头文件：sdk/include/myagent/agent.hpp。
+核心实现：sdk/src/agent.cpp。
 测试：tests/test_agent.cpp。
 示例：examples/run_agent_demo.cpp、examples/run_skill_yaml_demo.cpp、examples/run_react_demo.cpp、examples/run_plan_execute_demo.cpp、examples/run_reflection_demo.cpp、examples/run_evaluator_optimizer_demo.cpp。
 
@@ -751,7 +801,7 @@ Chat `choices[].delta.content`，由服务端真正逐段推送。
 ### 构建与运行
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
 cmake --build build --target run_agent_checkpoint_demo run_agent_streaming_demo --config Debug
 
 # Linux
@@ -832,7 +882,7 @@ cached_input_per_million}`，价格由宿主自行维护（单位 USD/百万 Tok
 ### 构建与运行六个独立 Demo
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
 cmake --build build --config Debug --target run_model_routing_demo run_model_retry_demo run_mcp_catalog_cache_demo run_nested_agents_demo run_agent_trace_demo run_agent_cost_demo
 
 # Linux:
@@ -869,7 +919,7 @@ API Key、外部 MCP 服务或联网模型；所有示例都被注册为 CTest�
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build
+cmake -S . -B build -DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=ON
 cmake --build build --config Debug --target run_agent_pinned_context_demo run_agent_skills_refresh_demo run_team_budget_recovery_demo
 
 # Linux / 单配置生成器
