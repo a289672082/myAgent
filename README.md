@@ -909,7 +909,7 @@ auto answer = agent.ask("你好");
 工具参数和工具结果默认不放入回调；显式传入 `true` 才会包含
 `arguments` / `output`。多 Agent 可以通过
 `team.agent("worker").set_conversation_callback(...)` 为各 worker 订阅，
-也可通过 `team.coordinator()` 获取协调器（该访问器是 const，不支持修改）。
+协调器则通过 `team.set_coordinator_conversation_callback(...)` 注册。
 回调同步执行且不允许在回调里重入同一 Agent；宿主回调抛出的异常会被捕获，
 避免影响执行。GUI 应将事件转发至 UI 线程。断点回放的已完成工具不会重复发
 工具事件；审批暂停前的工具意图事件可能在恢复时再次出现，应以 `call_id`
