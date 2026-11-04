@@ -35,7 +35,7 @@ jobs:
       - name: Setup VS2022 MSBuild
         uses: microsoft/setup-msbuild@v2
       - name: Compile checked-in myMcpSDK.vcxproj
-        run: msbuild .\myAgent.sln /t:myMcpSDK /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
+        run: msbuild .\vs2022\myMcpSDK.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
       - name: Configure standalone MCP (offline)
         run: cmake -S mcp -B build-mcp -A x64 -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build complete MCP SDK, demos and tests
