@@ -104,6 +104,10 @@ if(MYAGENT_BUILD_EXAMPLES)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
     target_link_libraries(run_${feature}_demo PRIVATE myagent)
   endforeach()
+  # 统一对话生命周期回调：离线 Mock 覆盖 ask、ReAct 和失败事件。
+  add_executable(run_agent_conversation_callbacks_demo
+    examples/run_agent_conversation_callbacks_demo.cpp)
+  target_link_libraries(run_agent_conversation_callbacks_demo PRIVATE myagent)
   # AGENTS.md 专项 Demo：离线 Mock 模型验证文件加载、字符串替换与规则清空。
   add_executable(run_agents_md_demo examples/run_agents_md_demo.cpp)
   target_link_libraries(run_agents_md_demo PRIVATE myagent)
