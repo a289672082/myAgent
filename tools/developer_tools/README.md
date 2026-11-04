@@ -1,6 +1,6 @@
 # DeveloperTools — 一份实现，Agent 与 MCP 双注册
 
-来自 `myMcpTools/examples/run_agent_tools_demo.cpp` 的 10 组、23 个工具，
+来自仓库内置的 `mcp/examples/run_agent_tools_demo.cpp` 的 10 组、23 个工具，
 已提取至 `tools/developer_tools/src/developer_tools.cpp`，仅此一处维护 Handler 和 Schema。
 最后一个工具的标准名称改为 `find_symbol`（原教学 Demo 使用 `find_symbols`）。
 
