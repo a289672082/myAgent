@@ -505,15 +505,18 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         const bool repairing=attempt>1;
         // 工具阶段必须返回结构化 JSON；工具返回失败不允许被模型编造为
         // “已经通过编译”。但真正是否验收通过只看宿主 verifier。
+        Json execution_input=original_input;
+        if(repairing) {
+          execution_input=
+            "Original goal: "+task+
+            "\nPrevious objective verification failed: "+feedback+
+            "\nRepair ONLY the verified failures. Do not repeat completed "
+            "side effects or claim that tests have passed without evidence. "
+            "Return ONLY JSON: {\"status\":\"completed|failed|blocked\","
+            "\"summary\":\"what changed\"}.";
+        }
         const auto raw=invoke(repairing?"verify_repair":"verify_execute",
-          repairing
-            ?"Original goal: "+task+
-             "\nPrevious objective verification failed: "+feedback+
-             "\nRepair ONLY the verified failures. Do not repeat completed "
-             "side effects or claim that tests have passed without evidence. "
-             "Return ONLY JSON: {\"status\":\"completed|failed|blocked\","
-             "\"summary\":\"what changed\"}."
-            :original_input,
+          std::move(execution_input),
           "Execute the requested task with authorized tools when needed. "
           "Observe tool results. Return ONLY JSON: "
           "{\"status\":\"completed|failed|blocked\",\"summary\":\"what changed\"}. "
@@ -774,5 +777,21 @@ LoopResult Agent::evaluate_and_optimize(const LoopInput& input,
 LoopResult Agent::evaluate_and_optimize(const std::string& task,
                                         const LoopOptions& options) {
   return run_loop(task, LoopMode::EvaluatorOptimizer, options);
+}
+// ReWOO 公开入口：同一核心引擎负责预算、工具安全、历史事务和对话事件。
+LoopResult Agent::rewoo(const LoopInput& input,const LoopOptions& options) {
+  return run_loop(input,LoopMode::ReWOO,options);
+}
+LoopResult Agent::rewoo(const std::string& task,const LoopOptions& options) {
+  return run_loop(task,LoopMode::ReWOO,options);
+}
+// Execute-Verify-Repair 公开入口：使用宿主校验器作为唯一成功判据。
+LoopResult Agent::execute_verify_repair(const LoopInput& input,
+                                        const LoopOptions& options) {
+  return run_loop(input,LoopMode::ExecuteVerifyRepair,options);
+}
+LoopResult Agent::execute_verify_repair(const std::string& task,
+                                        const LoopOptions& options) {
+  return run_loop(task,LoopMode::ExecuteVerifyRepair,options);
 }
 } // namespace myagent
