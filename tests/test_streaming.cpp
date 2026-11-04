@@ -66,6 +66,39 @@ int main() {
       assert(streamed==(mode==ModelProtocol::Responses?"Hello":"Chat SSE"));
       assert(result.answer==streamed);
       if(mode==ModelProtocol::ChatCompletions)assert(result.usage.total_tokens==14);
+
+      // 新 API 不能仅适用于 ReAct：验证普通 ask() 真实走 SSE 并接收到回调。
+      std::string ask_deltas;
+      std::string ask_reply;
+      std::string turn_id;
+      unsigned inputs=0,delta_events=0,final_messages=0,completed=0;
+      ConversationCallbacks callbacks;
+      callbacks.on_user_message=[&](const Json& e) {
+        ++inputs;
+        assert(std::string(e.at("content").as_string())=="SSE ask test");
+        turn_id=std::string(e.at("turn_id").as_string());
+        assert(!turn_id.empty());
+      };
+      callbacks.on_assistant_delta=[&](const Json& e) {
+        assert(turn_id==std::string(e.at("turn_id").as_string()));
+        ask_deltas+=std::string(e.at("delta").as_string());
+        ++delta_events;
+      };
+      callbacks.on_assistant_message=[&](const Json& e) {
+        assert(turn_id==std::string(e.at("turn_id").as_string()));
+        ask_reply=std::string(e.at("content").as_string());
+        ++final_messages;
+      };
+      callbacks.on_turn_completed=[&](const Json& e) {
+        assert(turn_id==std::string(e.at("turn_id").as_string()));
+        assert(e.contains("total_tokens"));
+        ++completed;
+      };
+      agent.set_conversation_callbacks(std::move(callbacks));
+      const auto ask_result=agent.ask("SSE ask test");
+      assert(inputs==1 && delta_events==2 && final_messages==1 && completed==1);
+      assert(ask_deltas==ask_result && ask_reply==ask_result);
+      assert(ask_result==(mode==ModelProtocol::Responses?"Hello":"Chat SSE"));
     }
   }catch(...){server.stop();listener.join();throw;}
   server.stop();listener.join();

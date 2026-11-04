@@ -1219,6 +1219,45 @@ std::string Agent::execute_tool(const Route& route, const Json& call,
       {"message", std::string(e.what()).substr(0,1024)}});
   }
 }
+void Agent::set_conversation_callback(ConversationCallback callback,
+                                      bool include_tool_payloads) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  conversation_callback_=std::move(callback);
+  include_tool_payloads_=include_tool_payloads;
+}
+
+void Agent::set_conversation_callbacks(ConversationCallbacks callbacks) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  conversation_callbacks_=std::move(callbacks);
+}
+
+void Agent::emit_conversation(const Json& event) noexcept {
+  try {
+    Json message=event;
+    // 同一个 ask/Loop 内的 delta、工具与最终答复共享 turn_id。
+    message["turn_id"]=active_turn_id_;
+    if(!active_task_id_.empty())message["task_id"]=active_task_id_;
+    // 两种订阅方式彼此独立：某个宿主回调失败，不影响另一个监听器。
+    if(conversation_callback_) {
+      try {conversation_callback_(message);}catch(...) {}
+    }
+    const auto kind=as_string(message,"event");
+    const ConversationCallbacks::Handler* handler=nullptr;
+    if(kind=="user_message")handler=&conversation_callbacks_.on_user_message;
+    else if(kind=="assistant_delta")handler=&conversation_callbacks_.on_assistant_delta;
+    else if(kind=="assistant_message")handler=&conversation_callbacks_.on_assistant_message;
+    else if(kind=="tool_call")handler=&conversation_callbacks_.on_tool_call;
+    else if(kind=="tool_result")handler=&conversation_callbacks_.on_tool_result;
+    else if(kind=="turn_completed")handler=&conversation_callbacks_.on_turn_completed;
+    else if(kind=="turn_failed")handler=&conversation_callbacks_.on_turn_failed;
+    if(handler && *handler) {
+      try {(*handler)(message);}catch(...) {}
+    }
+  } catch(...) {
+    // 监听回调只做旁路观察：UI 代码异常不得破坏工具状态或提交事务。
+  }
+}
+
 std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
                        std::chrono::milliseconds max_duration) {
   const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
@@ -1226,6 +1265,34 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   retries_used_=0;last_cost_usd_=0;
   last_model_attempts_ = 0;
+  active_turn_id_=detail::trace_hex(16);
+  active_task_id_.clear();
+  struct ResetConversation {
+    std::function<void()> reset;
+    ~ResetConversation(){reset();}
+  } reset_conversation{[this](){active_turn_id_.clear();active_task_id_.clear();}};
+  // 对于 ask_parts / ask_image，原始内容可能包含完整 base64 图片。
+  // 输入回调只提供文本和媒体类型，不复制 data URL 或其他二进制内容。
+  Json visible_content=user_content;
+  if(user_content.is_array()) {
+    visible_content=json::array{};
+    for(const auto& part:user_content.array_range()) {
+      if(!part.is_object()) {
+        visible_content.push_back(json::object{{"type","unknown"}});
+        continue;
+      }
+      const std::string type=as_string(part,"type","unknown");
+      Json metadata=json::object{{"type",type}};
+      if(type=="input_text") {
+        if(const auto* text=json::if_contains(part,"text");text && text->is_string())
+          metadata["text"]=*text;
+      }
+      visible_content.push_back(std::move(metadata));
+    }
+  }
+  emit_conversation(json::object{{"event","user_message"},{"agent_id",config_.agent_id},
+    {"content",visible_content},{"phase","ask"}});
+  const auto turn_started=std::chrono::steady_clock::now();
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
   std::set<std::string> executed_effects;
@@ -1238,6 +1305,7 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         deadline-std::chrono::steady_clock::now());
   };
+  try {
   const auto turn = run_stage(std::move(user_content), working, {}, {}, allow_tools,
       model_calls, tool_calls, max_model_calls,
       std::numeric_limits<unsigned>::max(), config_.max_tool_rounds,
@@ -1250,7 +1318,25 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
     throw detail::LoopAbort(LoopStatus::Cancelled, "Agent deadline exceeded after response");
   history_ = std::move(working);
   last_response_ = turn.response;
+  emit_conversation(json::object{{"event","assistant_message"},{"agent_id",config_.agent_id},
+    {"phase","ask"},{"content",turn.answer}});
+  emit_conversation(json::object{{"event","turn_completed"},{"agent_id",config_.agent_id},
+    {"phase","ask"},{"answer",turn.answer},{"model_calls",model_calls},
+    {"tool_calls",tool_calls},{"total_tokens",last_usage_.total_tokens},
+    {"unreported_calls",last_usage_.unreported_calls},
+    {"estimated_cost_usd",last_cost_usd_},
+    {"duration_ms",std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now()-turn_started).count()}});
   return turn.answer;
+  } catch(const std::exception& e) {
+    emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
+      {"phase","ask"},{"error",e.what()}});
+    throw;
+  } catch(...) {
+    emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
+      {"phase","ask"},{"error","unknown exception"}});
+    throw;
+  }
 }
 
 Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
@@ -1434,10 +1520,14 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     Json response;
     const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
     if(!replayed) {
-      if(active_loop_options_ && active_loop_options_->on_text_delta) {
+      if(conversation_callback_ || conversation_callbacks_.on_assistant_delta ||
+         (active_loop_options_ && active_loop_options_->on_text_delta)) {
         response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
-            active_loop_options_->on_text_delta(phase,delta);
+            emit_conversation(json::object{{"event","assistant_delta"},
+              {"agent_id",config_.agent_id},{"phase",phase},{"delta",delta}});
+            if(active_loop_options_ && active_loop_options_->on_text_delta)
+              active_loop_options_->on_text_delta(phase,delta);
           },&model_calls,max_model_calls);
       } else response=call_model(phase,request,request_timeout,
                                   {},&model_calls,max_model_calls);
@@ -1563,6 +1653,10 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         duplicate_effect=!executed_effects->insert(name+"\n"+canonical).second;
       }
       if(!replayed_tool) {
+        Json call_event=json::object{{"event","tool_call"},{"agent_id",config_.agent_id},
+          {"phase",phase},{"name",name},{"call_id",id}};
+        if(include_tool_payloads_ || conversation_callbacks_.include_tool_payloads)call_event["arguments"]=approval_request.arguments;
+        emit_conversation(call_event);
         // Approval can pause a Loop without blocking on a UI condition variable.
         // A resumed approval is distinguishable from a tool already in flight.
         ToolDecision decision=ToolDecision::Approve;
@@ -1631,6 +1725,13 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       }
       if(active_journal_ && !replayed_tool)
         active_journal_->complete_tool(tool_output);
+      if(!replayed_tool) {
+        Json tool_event=json::object{{"event","tool_result"},{"agent_id",config_.agent_id},
+          {"phase",phase},{"name",name},{"call_id",id},
+          {"result_bytes",tool_output.size()}};
+        if(include_tool_payloads_ || conversation_callbacks_.include_tool_payloads)tool_event["output"]=tool_output;
+        emit_conversation(tool_event);
+      }
       if(!replayed_tool) {
         const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now()-tool_started).count();

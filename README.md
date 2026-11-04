@@ -887,3 +887,90 @@ ctest --test-dir build -C Debug --output-on-failure -R "myagent_(agent_pinned_co
 与宿主配置的价格；成本上限是软预算，并不保证本次请求恰好不超额。
 Checkpoint 是为崩溃恢复提供的审计日志；对已启动但结果未知的外部副作用，
 仍需宿主核实，不能盲目重放。
+
+
+## 统一对话回调（C++）
+
+`Agent::set_conversation_callback(callback, include_tool_payloads=false)` 可监听普通
+`ask()`、`ask_parts()`、`react()`、其他 Loop，以及各个独立的子 Agent。
+事件是 JSON，`event` 字段包括 `user_message`、`assistant_delta`、
+`assistant_message`、`tool_call`、`tool_result`、`turn_completed`
+和 `turn_failed`。事件包含 `agent_id`、`turn_id` 和 `phase`；
+Loop 的开始/结束事件还包含 `trace_id`，团队 Worker 额外包含
+`task_id`（对应 `TeamTask::id`）。`turn_id` 在同一调用内保持一致；
+每次 ask/Loop 都生成新 ID，不写入会话历史。完整回复由
+`assistant_message.content` 或 `turn_completed.answer` 获取，
+`turn_completed` 还带有请求数、已报告 Token、估算费用和耗时。
+当后端支持 SSE 或自定义 Model 实际产生文本片段时，才会收到
+`assistant_delta`；普通非流式 Mock 不会伪造增量。
+
+```cpp
+agent.set_conversation_callback([](const myagent::Json& event) {
+  std::cout << myagent::json::serialize(event) << '\\n';
+});
+auto answer = agent.ask("你好");
+```
+
+若只关心部分事件，可以使用具名的 `ConversationCallbacks` 回调组；
+它与上述统一 JSON 事件回调可以同时使用，互不影响：
+
+```cpp
+myagent::ConversationCallbacks hooks;
+hooks.on_user_message = [](const myagent::Json& e) {
+  std::cout << "提交内容: " << myagent::json::serialize(e.at("content")) << '\\n';
+};
+hooks.on_assistant_delta = [](const myagent::Json& e) {
+  std::cout << e.at("delta").as_string() << std::flush;
+};
+hooks.on_assistant_message = [](const myagent::Json& e) {
+  std::cout << "最终回复: " << e.at("content").as_string() << '\\n';
+};
+hooks.on_tool_call = [](const myagent::Json& e) {
+  std::cout << "工具: " << e.at("name").as_string() << '\\n';
+};
+hooks.on_tool_result = [](const myagent::Json& e) {
+  std::cout << "工具完成: " << e.at("call_id").as_string() << '\\n';
+};
+hooks.on_turn_completed = [](const myagent::Json& e) {
+  std::cout << "Token: " << e.at("total_tokens").as_uint64() << '\\n';
+};
+hooks.on_turn_failed = [](const myagent::Json& e) {
+  std::cerr << "执行未成功: " << e.at("error").as_string() << '\\n';
+};
+// 若要在工具回调中读取完整 arguments/output，显式设置：
+// hooks.include_tool_payloads = true;
+agent.set_conversation_callbacks(std::move(hooks));
+```
+
+工具参数和工具结果默认不放入回调；显式传入 `true` 才会包含
+`arguments` / `output`。对于 `ask_image()` 和 `ask_parts()`，
+`user_message` 只携带原始文字与媒体类型，不复制图片 Data URL/base64；
+原始多媒体内容仍按正常流程发给模型。
+
+多 Agent 推荐先调用
+`team.set_conversation_callback(callback)` 或
+`team.set_conversation_callbacks(hooks)`，它们会自动给协调器、已经
+注册以及之后通过 `add_agent` 注册的 Worker 设置相同监听器。
+也可以通过 `team.agent("worker").set_conversation_callback(...)`
+或 `team.set_coordinator_conversation_callback(...)` 分别覆盖。
+`TeamOptions::worker_loop` 之外，显式委派可使用
+`LoopOptions::task_id` 自定义关联 ID。
+
+回调同步执行且不允许在回调里重入同一 Agent；宿主回调抛出的异常会被捕获，
+避免影响执行。多 Agent 并行时，同一观察者可能被不同 Worker 线程并发调用，
+共享数据要加锁；GUI 应将事件转发至 UI 线程。不要在 callback 中记录
+API Key 或未经处理的完整工具输出。断点回放的已完成工具不会重复发工具事件；
+审批暂停前的工具意图事件可能在恢复时再次出现，应该使用
+`turn_id` / `call_id` 做关联并根据任务恢复策略去重。
+
+离线 Demo 与测试：
+
+```sh
+cmake --build build --target run_agent_conversation_callbacks_demo run_team_conversation_callbacks_demo
+ctest --test-dir build --output-on-failure -R "myagent_(conversation_callbacks|team_conversation_callbacks)_demo"
+```
+
+分别查看 `examples/run_agent_conversation_callbacks_demo.cpp`（输入、
+回复、流式、工具、失败、多模态脱敏），以及
+`examples/run_team_conversation_callbacks_demo.cpp`（团队广播、任务 ID、
+后注册 Worker、协调器自动协作）。

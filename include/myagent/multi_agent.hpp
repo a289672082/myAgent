@@ -121,6 +121,16 @@ public:
   void add_agent(AgentSpec spec, std::shared_ptr<Model> model = {});
   Agent& agent(const std::string& name);
   const Agent& coordinator() const { return *coordinator_; }
+  // 协调器与子 Agent 使用相同的对话回调协议；各 Agent 独立配置。
+  void set_coordinator_conversation_callback(Agent::ConversationCallback callback,
+                                              bool include_tool_payloads=false) {
+    coordinator_->set_conversation_callback(std::move(callback),include_tool_payloads);
+  }
+  // 给协调器、所有现有 Worker 以及后续 add_agent 的 Worker 统一订阅。
+  // 并发任务会从不同工作线程触发同一回调，宿主须同步共享状态。
+  void set_conversation_callback(Agent::ConversationCallback callback,
+                                 bool include_tool_payloads=false);
+  void set_conversation_callbacks(ConversationCallbacks callbacks);
   // 从 YAML/JSON 加载声明式 Agent 配置，key_ref 由宿主解析，不在文件中储存明文。
   void add_agents_from_file(const std::filesystem::path& file,
       const std::function<std::string(const std::string& key_ref)>& credential_resolver);
@@ -155,5 +165,9 @@ private:
                         const TokenUsage& usage);
   std::unique_ptr<Agent> coordinator_;
   std::map<std::string, std::unique_ptr<Worker>> workers_;
+  Agent::ConversationCallback conversation_callback_;
+  bool conversation_include_tool_payloads_ = false;
+  ConversationCallbacks conversation_callbacks_;
+  bool has_named_conversation_callbacks_ = false;
 };
 } // namespace myagent

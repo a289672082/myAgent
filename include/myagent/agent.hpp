@@ -184,6 +184,21 @@ private:
   Config config_;
 };
 
+// 统一对话观察者。每个事件都是同一套 JSON 格式，含 event/agent_id/turn_id。
+// 监听函数仅做观察，不参与工具审批；任何异常都会被 Agent 吸收。
+// 默认只公开工具元数据，若需获取完整参数/结果须显式开启并妥善保护。
+struct ConversationCallbacks {
+  using Handler=std::function<void(const Json&)>;
+  Handler on_user_message;       // 每次提交给 Agent 的输入（包括团队内部提示词）
+  Handler on_assistant_delta;    // 真实流式文本增量，不包含隐藏推理
+  Handler on_assistant_message;  // 成功提交的完整最终回复
+  Handler on_tool_call;          // 工具调用意图，含 name/call_id
+  Handler on_tool_result;        // 工具执行结果，默认只返回结果字节数
+  Handler on_turn_completed;     // 一轮成功完成，含费用/Token/耗时
+  Handler on_turn_failed;        // 失败/暂停/取消等非成功终止
+  bool include_tool_payloads=false;
+};
+
 // Single-user, synchronous agent session. Not thread safe.
 // Externally supplied MCP clients must outlive the registration, via shared_ptr.
 class Agent {
@@ -266,6 +281,15 @@ public:
   LoopResult evaluate_and_optimize(const LoopInput& input, const LoopOptions& options = {});
   LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
 
+  // 统一对话事件：user_message、assistant_delta、assistant_message、
+  // tool_call、tool_result、turn_completed、turn_failed。
+  // 回调同步执行；内部捕获宿主异常，避免破坏事务和工具执行。
+  // 工具参数/结果默认隐藏；显式开启后由宿主负责敏感信息保护。
+  using ConversationCallback = std::function<void(const Json&)>;
+  void set_conversation_callback(ConversationCallback callback,
+                                 bool include_tool_payloads = false);
+  // 可选强类型回调组；与单个 on_event 风格的 set_conversation_callback 并存。
+  void set_conversation_callbacks(ConversationCallbacks callbacks);
   std::string ask(const std::string& text);
   // 仅供协调器规划/汇总：不发现、不展示、不调用 MCP 或 Skill 工具。
   std::string ask_without_tools(const std::string& text);
@@ -360,6 +384,10 @@ private:
   Json prepare_loop_input(const LoopInput& input, std::string& transcript,
       const std::function<std::chrono::milliseconds()>& remaining_time = {});
 
+  void emit_conversation(const Json& event) noexcept;
+  ConversationCallback conversation_callback_;
+  ConversationCallbacks conversation_callbacks_;
+  bool include_tool_payloads_ = false;
   Config config_;
   std::atomic_bool pause_requested_{false};
   detail::ExecutionJournal* active_journal_=nullptr; // 仅在 run_loop 持锁期间有效。
@@ -376,6 +404,8 @@ private:
   std::deque<std::chrono::steady_clock::time_point> recent_model_requests_;
   double last_cost_usd_=0;
   std::string active_trace_id_;
+  std::string active_turn_id_; // 单次 ask/Loop 生命周期关联 ID，不写入历史。
+  std::string active_task_id_; // 团队任务 ID，不参与模型请求。
   void emit_span(const std::string& name,const std::string& status,
                  std::uint64_t start_unix_ns,
                  std::uint64_t duration_ns,
