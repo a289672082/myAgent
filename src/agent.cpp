@@ -1226,14 +1226,33 @@ void Agent::set_conversation_callback(ConversationCallback callback,
   include_tool_payloads_=include_tool_payloads;
 }
 
+void Agent::set_conversation_callbacks(ConversationCallbacks callbacks) {
+  const std::lock_guard<std::recursive_mutex> guard(session_mutex_);
+  conversation_callbacks_=std::move(callbacks);
+}
+
 void Agent::emit_conversation(const Json& event) noexcept {
-  if(!conversation_callback_)return;
   try {
     Json message=event;
     // 同一个 ask/Loop 内的 delta、工具与最终答复共享 turn_id。
     message["turn_id"]=active_turn_id_;
     if(!active_task_id_.empty())message["task_id"]=active_task_id_;
-    conversation_callback_(message);
+    // 两种订阅方式彼此独立：某个宿主回调失败，不影响另一个监听器。
+    if(conversation_callback_) {
+      try {conversation_callback_(message);}catch(...) {}
+    }
+    const auto kind=as_string(message,"event");
+    const ConversationCallbacks::Handler* handler=nullptr;
+    if(kind=="user_message")handler=&conversation_callbacks_.on_user_message;
+    else if(kind=="assistant_delta")handler=&conversation_callbacks_.on_assistant_delta;
+    else if(kind=="assistant_message")handler=&conversation_callbacks_.on_assistant_message;
+    else if(kind=="tool_call")handler=&conversation_callbacks_.on_tool_call;
+    else if(kind=="tool_result")handler=&conversation_callbacks_.on_tool_result;
+    else if(kind=="turn_completed")handler=&conversation_callbacks_.on_turn_completed;
+    else if(kind=="turn_failed")handler=&conversation_callbacks_.on_turn_failed;
+    if(handler && *handler) {
+      try {(*handler)(message);}catch(...) {}
+    }
   } catch(...) {
     // 监听回调只做旁路观察：UI 代码异常不得破坏工具状态或提交事务。
   }
@@ -1501,7 +1520,8 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
     Json response;
     const bool replayed=active_journal_ && active_journal_->replay_model(request,response);
     if(!replayed) {
-      if(conversation_callback_ || (active_loop_options_ && active_loop_options_->on_text_delta)) {
+      if(conversation_callback_ || conversation_callbacks_.on_assistant_delta ||
+         (active_loop_options_ && active_loop_options_->on_text_delta)) {
         response=call_model(phase,request,request_timeout,
           [&](const std::string& delta) {
             emit_conversation(json::object{{"event","assistant_delta"},
@@ -1635,7 +1655,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
       if(!replayed_tool) {
         Json call_event=json::object{{"event","tool_call"},{"agent_id",config_.agent_id},
           {"phase",phase},{"name",name},{"call_id",id}};
-        if(include_tool_payloads_)call_event["arguments"]=approval_request.arguments;
+        if(include_tool_payloads_ || conversation_callbacks_.include_tool_payloads)call_event["arguments"]=approval_request.arguments;
         emit_conversation(call_event);
         // Approval can pause a Loop without blocking on a UI condition variable.
         // A resumed approval is distinguishable from a tool already in flight.
@@ -1709,7 +1729,7 @@ Agent::TurnResult Agent::run_stage(Json user_content, Json& working,
         Json tool_event=json::object{{"event","tool_result"},{"agent_id",config_.agent_id},
           {"phase",phase},{"name",name},{"call_id",id},
           {"result_bytes",tool_output.size()}};
-        if(include_tool_payloads_)tool_event["output"]=tool_output;
+        if(include_tool_payloads_ || conversation_callbacks_.include_tool_payloads)tool_event["output"]=tool_output;
         emit_conversation(tool_event);
       }
       if(!replayed_tool) {
