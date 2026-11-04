@@ -167,6 +167,9 @@ public:
               const std::string& model = "gpt-4o-mini-tts",
               std::chrono::milliseconds timeout = {}) const;
 private:
+  void emit_conversation(const Json& event) noexcept;
+  ConversationCallback conversation_callback_;
+  bool include_tool_payloads_ = false;
   Config config_;
 };
 
@@ -266,6 +269,13 @@ public:
   LoopResult evaluate_and_optimize(const LoopInput& input, const LoopOptions& options = {});
   LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
 
+  // 统一对话事件：user_message、assistant_delta、assistant_message、
+  // tool_call、tool_result、turn_completed、turn_failed。
+  // 回调同步执行；内部捕获宿主异常，避免破坏事务和工具执行。
+  // 工具参数/结果默认隐藏；显式开启后由宿主负责敏感信息保护。
+  using ConversationCallback = std::function<void(const Json&)>;
+  void set_conversation_callback(ConversationCallback callback,
+                                 bool include_tool_payloads = false);
   std::string ask(const std::string& text);
   // 仅供协调器规划/汇总：不发现、不展示、不调用 MCP 或 Skill 工具。
   std::string ask_without_tools(const std::string& text);
