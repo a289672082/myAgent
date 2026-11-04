@@ -1,0 +1,41 @@
+name: Embedded MCP standalone CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install prerequisites
+        run: sudo apt-get update && sudo apt-get install -y ninja-build cmake libssl-dev python3
+      - name: Configure MCP standalone
+        run: cmake -S mcp -B build-mcp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Compile
+        run: cmake --build build-mcp --parallel 2
+      - name: MCP tests
+        run: ctest --test-dir build-mcp --output-on-failure --timeout 90
+      - name: MCP SDK-only configure
+        run: cmake -S mcp/sdk -B build-mcp-sdk -G Ninja -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: MCP SDK-only build
+        run: cmake --build build-mcp-sdk --parallel 2
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Configure MCP standalone
+        run: cmake -S mcp -B build-mcp -A x64 -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Compile
+        run: cmake --build build-mcp --config Debug --parallel 2
+      - name: MCP tests
+        run: ctest --test-dir build-mcp -C Debug --output-on-failure --timeout 90
+      - name: MCP SDK-only configure
+        run: cmake -S mcp/sdk -B build-mcp-sdk -A x64 -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: MCP SDK-only build
+        run: cmake --build build-mcp-sdk --config Debug --parallel 2
