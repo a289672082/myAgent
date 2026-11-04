@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{5735E76D-4290-4E6F-861F-68B5E1616B12}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <RootNamespace>myAgentConsole</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeBuildCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)" rebuild</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)" clean</NMakeCleanCommandLine>
+    <NMakeOutput>$(SolutionDir)build-vs2022\console\console\$(Configuration)\myagent_console.exe</NMakeOutput>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
+    <LocalDebuggerCommand>$(SolutionDir)build-vs2022\console\console\$(Configuration)\myagent_console.exe</LocalDebuggerCommand>
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeBuildCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)" rebuild</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" console "$(Configuration)" clean</NMakeCleanCommandLine>
+    <NMakeOutput>$(SolutionDir)build-vs2022\console\console\$(Configuration)\myagent_console.exe</NMakeOutput>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
+    <LocalDebuggerCommand>$(SolutionDir)build-vs2022\console\console\$(Configuration)\myagent_console.exe</LocalDebuggerCommand>
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="..\console\main.cpp" />
+    <ClCompile Include="..\console\session.cpp" />
+    <ClInclude Include="..\console\session.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

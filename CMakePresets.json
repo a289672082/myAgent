@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-console",
+      "displayName": "VS2022: Console entry (x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build-vs2022/native-console",
+      "cacheVariables": {
+        "MYAGENT_BUILD_CONSOLE": "ON",
+        "MYAGENT_BUILD_EXAMPLES": "OFF",
+        "MYAGENT_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "vs2022-sdk-demos",
+      "displayName": "VS2022: SDK demos and tests (x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build-vs2022/native-sdk-demos",
+      "cacheVariables": {
+        "MYAGENT_BUILD_CONSOLE": "OFF",
+        "MYAGENT_BUILD_EXAMPLES": "ON",
+        "MYAGENT_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-console-debug",
+      "configurePreset": "vs2022-console",
+      "configuration": "Debug",
+      "targets": [
+        "myagent_console"
+      ]
+    },
+    {
+      "name": "vs2022-console-release",
+      "configurePreset": "vs2022-console",
+      "configuration": "Release",
+      "targets": [
+        "myagent_console"
+      ]
+    },
+    {
+      "name": "vs2022-sdk-debug",
+      "configurePreset": "vs2022-sdk-demos",
+      "configuration": "Debug"
+    }
+  ]
+}

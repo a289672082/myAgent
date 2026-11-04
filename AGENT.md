@@ -1,3 +1,8 @@
+# VS2022 规范：myAgent.sln 为版本化的 NMake 包装工程，vs2022/build.cmd 调用唯一 CMake；
+# CMakePresets.json 提供生成完整原生 VS2022 solution 的路径，不允许编辑 SDK 构建选项的复制配置。
+# 新目录规范：根目录是 Console CMake 入口；SDK 在 sdk/include、sdk/src。
+# SDK 不得包含 FTXUI 或 console 依赖；SDK/示例/测试各自 CMake。
+# FTXUI 固定在 third_party/FTXUI，必须允许 CMake 离线配置。
 # myAgent API / 设计文档
 
 ## API
@@ -58,7 +63,7 @@ myagent::Agent agent(config);
 - TeamTask 支持 priority、fallback_agents；TeamOptions 支持 max_task_retries、checkpoint_path、resume_checkpoint、on_event、event_log_path；备用/重试默认只允许失败轮次没有工具调用。
 - Team Checkpoint 保存任务图、已完成状态、in-flight 和使用量；必须由宿主重新 validate_task，发现 in-flight 副作用不明时拒绝回放。仅固定 collaborate 任务图支持明确的安全恢复。
 - AgentSpec 可一次性声明 skill_directories、explicit_skills 和 mcp。AgentTeam::add_agents_from_file() 从 YAML/JSON 读取 Agents，使用 api_key_ref/bearer_token_ref 的宿主密钥解析器，拒绝明文密钥。
-- ModelProtocol 提供 Responses 和 ChatCompletions 两种 OpenAI 兼容协议，后者在 src/chat_completions.cpp 映射文本/工具/图片和 usage，其他供应商仍可注入自定义 Model。
+- ModelProtocol 提供 Responses 和 ChatCompletions 两种 OpenAI 兼容协议，后者在 sdk/src/chat_completions.cpp 映射文本/工具/图片和 usage，其他供应商仍可注入自定义 Model。
 - detail::TaskScheduler 使用固定线程池、优先级就绪队列和不同 Agent 隔离；MemoryStore 支持本地关键词检索及手动持久化，通过 Config::memory_retrieval 显式开启请求内召回。
 - 可运行 Demo：run_runtime_hardening_demo、run_team_checkpoint_demo；独立 CTest：myagent_runtime_hardening、myagent_p1_p2，含本地 HTTP Provider 兼容测试。
 
@@ -78,7 +83,7 @@ myagent::Agent agent(config);
 - 四个独立中文 Demo，离线 `test_context` / `test_multi_agent` 覆盖基本模型、预算、并行、依赖与隔离；所有依赖沿用本地 third_party 构建。
 ## Token 消耗统计
 
-- `include/myagent/token_usage.hpp` / `src/token_usage.cpp`：解析 Responses API 的 input/output/total、cached input 与 reasoning output。后二者属于前两者的子集，不能重复求和。
+- `sdk/include/myagent/token_usage.hpp` / `sdk/src/token_usage.cpp`：解析 Responses API 的 input/output/total、cached input 与 reasoning output。后二者属于前两者的子集，不能重复求和。
 - `Agent::run_stage()` 每次收到模型响应后马上累计用量（先于状态检查），所以 MCP 工具轮次、四种 Loop 以及最终失败的请求只要返回 usage 都可以统计。
 - `Agent::last_usage()` 为最近一次 ask 或 Loop 的统计，`Agent::total_usage()` 为构造以来的累计用量；`reset_usage()` 明确清零，`clear_history()` 不清零。
 - `LoopResult::usage`、`usage_by_phase`、`usage_by_model` 分别记录本次循环总量、按执行阶段和模型名称的用量；`trace` 和 `on_event` 会发出不含原始请求的 `model_usage` 事件。
@@ -86,7 +91,7 @@ myagent::Agent agent(config);
 - 音频转写/合成是不同的 API，当前未纳入 Responses Token 统计；没有内置动态价格估算。独立 Demo `run_token_usage_demo()` 和 CTest `myagent_token_usage` 完全离线。
 ## 统一 Agent 循环
 
-- include/myagent/loop.hpp 定义 LoopInput(text/images/audio)、LoopOptions、LoopResult 与四种策略类型；src/loop_engine.cpp 负责跨阶段调度。
+- sdk/include/myagent/loop.hpp 定义 LoopInput(text/images/audio)、LoopOptions、LoopResult 与四种策略类型；sdk/src/loop_engine.cpp 负责跨阶段调度。
 - Agent::run_stage 是原有 ask() 与四种 Loop 共用的唯一模型/MCP/Skill 工具执行器；支持工具隔离、全局调用计数、模型名称覆盖与取消回调。
 - Plan-and-Execute 使用可验证的 JSON steps，阻塞时可以有限重新规划；Reflection 使用 needs_revision/feedback；Evaluator-Optimizer 使用 score/passed/feedback/issues 和用户定义阈值。
 - 规划、反思、评估、优化等阶段不提供工具；执行/草稿阶段可以使用已有 MCP/Skill，任何外部工具副作用无法自动回滚。
@@ -98,7 +103,7 @@ myagent::Agent agent(config);
 
 - Planner 创建可验证的顺序计划，步骤 ID 全局唯一、可以声明 depends_on（只允许指向更早的新步骤或已经完成的步骤）和 success_criteria。
 - Executor 每一步都返回 JSON：status=completed/failed/blocked、summary，以及可选 evidence。任意纯文本不再默认为成功，返回格式无效则失败。
-- src/plan_manager.hpp / src/plan_manager.cpp 负责结构校验、计划状态、依赖、尝试次数和重规划；已完成的步骤只保留历史，过时 pending/ready 改为 superseded，后续不再执行。
+- sdk/src/plan_manager.hpp / sdk/src/plan_manager.cpp 负责结构校验、计划状态、依赖、尝试次数和重规划；已完成的步骤只保留历史，过时 pending/ready 改为 superseded，后续不再执行。
 - 可使用 LoopOptions::validate_step(step,execution,tool_results) 给出 StepValidation(passed/reason/evidence)，让应用根据真实编译退出码、单测结果、文件状态等完成客观验收；不配置时 completed 只是 unverified。
 - 工具返回 isError=true 会覆盖模型自述的 completed，步骤被标记 failed。
 - 默认 max_step_retries=0 且 retry_steps_with_tools=false；即使设置重试次数，有工具操作时也不会自动执行第二遍，除非宿主明确允许。
