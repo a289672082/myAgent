@@ -24,6 +24,7 @@ def cmake_part(text, beginning, ending=None):
 if not (root / "mcp/CMakeLists.txt").exists():
     run("git", "subtree", "add", "--prefix=mcp", "--squash", upstream, sha)
 if (root / "mcp/src").exists():
+    (root / "mcp/sdk").mkdir(parents=True, exist_ok=True)
     run("git", "mv", "mcp/src", "mcp/sdk/src")
     run("git", "mv", "mcp/include", "mcp/sdk/include")
 assert (root / "mcp/sdk/src/mcp.cpp").exists()
