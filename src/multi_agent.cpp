@@ -69,6 +69,9 @@ std::string mode_name(LoopMode m) {
     case LoopMode::PlanAndExecute: return "plan";
     case LoopMode::Reflection: return "reflect";
     case LoopMode::EvaluatorOptimizer: return "evaluate";
+    // 新模式可以作为 TeamTask.mode 交给指定 Worker，保留原来的名称编码。
+    case LoopMode::ReWOO: return "rewoo";
+    case LoopMode::ExecuteVerifyRepair: return "execute_verify_repair";
     default: return "react";
   }
 }
@@ -110,6 +113,8 @@ LoopMode parse_mode(const Json& v) {
   if (name == "plan") return LoopMode::PlanAndExecute;
   if (name == "reflect") return LoopMode::Reflection;
   if (name == "evaluate") return LoopMode::EvaluatorOptimizer;
+  if (name == "rewoo") return LoopMode::ReWOO;
+  if (name == "execute_verify_repair") return LoopMode::ExecuteVerifyRepair;
   throw std::runtime_error("Unsupported worker Loop mode: " + name);
 }
 void validate_options(const TeamOptions& o) {
