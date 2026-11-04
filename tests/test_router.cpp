@@ -91,7 +91,7 @@ int main() {
       throw std::runtime_error("single-agent route called model");
     };
     AgentRouter single(cfg,never);
-    single.add_agent("writer","撰写说明",writer);
+    single.add_agent("writer",writer); // 兼容方案 A 的简单注册接口。
     auto result=single.ask("anything");
     loop_demo::check(result.selected_agent=="writer" &&
                      result.route_method=="single_agent" &&
