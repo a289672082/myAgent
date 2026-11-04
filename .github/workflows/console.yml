@@ -2,9 +2,9 @@ name: Console entry (pinned local FTXUI)
 on:
   push:
     branches: [main]
-    paths: ['CMakeLists.txt', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   pull_request:
-    paths: ['CMakeLists.txt', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   workflow_dispatch:
 concurrency:
   group: myagent-console-${{ github.event.pull_request.number || github.ref }}
@@ -30,9 +30,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Configure root console using vendored FTXUI
-        run: cmake -S . -B build-console -A x64 -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-      - name: Build console and offline tests
-        run: cmake --build build-console --config Debug --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
+      - name: Enable VS2022 MSBuild
+        uses: microsoft/setup-msbuild@v2
+      - name: Validate VS2022 CMake native solution preset
+        run: cmake --preset vs2022-console
+      - name: Build checked-in myAgent.sln (Console default project)
+        run: msbuild .\myAgent.sln /t:myAgentConsole /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
+      - name: Compile offline console regression targets in same solution build tree
+        run: cmake --build build-vs2022/console --config Debug --target myagent_console_commands_tests myagent_console_chat_tests --parallel 2
       - name: Run console CTests
-        run: ctest --test-dir build-console -C Debug --output-on-failure --timeout 30
+        run: ctest --test-dir build-vs2022/console -C Debug --output-on-failure --timeout 30

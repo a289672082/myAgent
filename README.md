@@ -3,6 +3,11 @@
 仓库根目录默认构建 **myagent_console**（Codex 风格 FTXUI 终端交互应用），
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
+**Visual Studio 2022：** 仓库根目录已包含 [myAgent.sln](myAgent.sln)。
+直接打开解决方案即可使用 Console、SDK、Examples、Tests 四个项目（x64 Debug/Release）；
+控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
+SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
+
 ## 目录结构与快速启动
 
 ```text

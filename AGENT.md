@@ -1,3 +1,5 @@
+# VS2022 规范：myAgent.sln 为版本化的 NMake 包装工程，vs2022/build.cmd 调用唯一 CMake；
+# CMakePresets.json 提供生成完整原生 VS2022 solution 的路径，不允许编辑 SDK 构建选项的复制配置。
 # 新目录规范：根目录是 Console CMake 入口；SDK 在 sdk/include、sdk/src。
 # SDK 不得包含 FTXUI 或 console 依赖；SDK/示例/测试各自 CMake。
 # FTXUI 固定在 third_party/FTXUI，必须允许 CMake 离线配置。
