@@ -5,6 +5,7 @@ on:
       - feat/vendor-mcp-sdk-20261105
     paths:
       - .github/workflows/bootstrap-vendor-mcp.yml
+      - tools/integrate_mcp.py
 permissions:
   contents: write
 jobs:
