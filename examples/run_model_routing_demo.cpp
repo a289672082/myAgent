@@ -1,4 +1,6 @@
 // P1-8：Planner / Executor / Reviewer 按阶段选择独立 Model Provider（离线）。
+// 注意：这是同一个 Agent 的阶段级模型/端点路由，不是 AgentRouter 的语义选人。
+// 语义路由请运行 run_agent_router_demo；两者用途不同，均需要保留。
 #include "advanced_demo_support.hpp"
 #include "httplib.h"
 #include <atomic>

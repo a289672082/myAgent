@@ -974,3 +974,62 @@ ctest --test-dir build --output-on-failure -R "myagent_(conversation_callbacks|t
 回复、流式、工具、失败、多模态脱敏），以及
 `examples/run_team_conversation_callbacks_demo.cpp`（团队广播、任务 ID、
 后注册 Worker、协调器自动协作）。
+
+
+## 智能 Agent 路由（独立 AgentRouter）
+
+- **AgentRouter** 负责对用户任务做一次分类，然后选择一个预先注册的 Agent 执行。它不拆解任务，也不会自动在失败后改派给另一个 Agent。
+- 原有 Agent::ask()、Agent::react()、AgentTeam::run() 和 ConversationCallbacks 接口不变，旧 Demo 不需要迁移。
+- **run_model_routing_demo 是阶段级模型路由**（Planner/Executor/Reviewer 的 Model、Base URL 和 API Key），**不是**语义 Agent 路由；两者都是有效且互补的示例。
+- **run_agent_router_demo** 专门演示语义路由、多 Agent 模型隔离、ask/react、统一回调、非法选择拒绝与单 Agent 免额外模型调用；全部使用 Mock、无需网络。
+- 默认只将任务正文、候选 Agent 的**名称与描述**发送到路由模型，不发送各执行者的 API Key、完整历史或工具 Schema；模型返回的 ID 必须与注册名精确一致，否则拒绝路由，**不自动选择替代 Agent**。路由器本身不执行工具。
+- Router 与所持有的 Agent 为同步单会话对象，不能在多个线程上共享并发调用。注册时使用 std::shared_ptr<Agent> 管理生命周期。
+
+~~~cpp
+#include "myagent/router.hpp"
+using namespace myagent;
+
+Config router_cfg; // 路由模型的独立 API Key / base_url / model
+router_cfg.api_key = "ROUTER_API_KEY";
+router_cfg.base_url = "https://your-model-gateway.example.com";
+router_cfg.model = "router-model";
+
+Config coder_cfg = router_cfg;
+coder_cfg.agent_id = "coder";
+coder_cfg.model = "coding-model";
+Config reviewer_cfg = router_cfg;
+reviewer_cfg.agent_id = "reviewer";
+reviewer_cfg.model = "review-model";
+// 生产应用可为每个子 Agent 配置完全不同的 base_url、api_key、MCP、Skills。
+
+auto coder = std::make_shared<Agent>(coder_cfg);
+auto reviewer = std::make_shared<Agent>(reviewer_cfg);
+AgentRouter router(router_cfg);
+router.add_agent("coder", "实现和修改 C++ 代码", coder);
+router.add_agent("reviewer", "检查代码质量、安全问题和测试覆盖", reviewer);
+
+// Router 发出 route_selected/route_failed 事件，并转发 Worker 对话回调。
+router.set_conversation_callback([](const Json& event) {
+    // event["event"] 可是 route_selected、user_message、assistant_delta 等。
+});
+
+auto response = router.ask("审查这段 C++ 代码");
+std::cout << response.selected_agent << ": " << response.answer << '\n';
+
+// 原生 Loop 状态仍完整返回，失败时应检查 status/error。
+auto execution = router.react("实现一个 C++ 函数");
+if (execution.loop_result && execution.loop_result->status == LoopStatus::Completed)
+    std::cout << execution.answer << '\n';
+
+// 旧代码仍然正常。
+std::cout << coder->ask("你好") << '\n';
+~~~
+
+路由器注册两个及以上候选 Agent 时，route() 会调用一次独立模型（额外消耗 Token），返回 RouteDecision{selected_agent, method, routing_usage}。只有一个候选 Agent 时直接选择它，不进行额外模型调用。ask() 返回 RouterResult，react() 返回同样结构并额外附带 loop_result。
+
+回调属于旁路观察功能：Router 的 set_conversation_callback / set_conversation_callbacks 会覆盖子 Agent 已有的同类型监听器（可使用 Router 级统一订阅），不会修改工具审批配置。并行调度依然交给 AgentTeam，而不是 AgentRouter。
+
+~~~sh
+cmake --build build --target run_agent_router_demo myagent_router_tests
+ctest --test-dir build -R 'myagent_(router|router_demo)$' --output-on-failure
+~~~
