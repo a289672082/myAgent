@@ -179,7 +179,22 @@ void install_tree_budget(LoopOptions& options,const std::shared_ptr<NestedBudget
 } // namespace
 
 AgentTeam::AgentTeam(Config coordinator, std::shared_ptr<Model> coordinator_model)
-    : coordinator_(std::make_unique<Agent>(std::move(coordinator),std::move(coordinator_model))) {}
+    : coordinator_(std::make_unique<Agent>(
+        [&coordinator]() {
+          if(coordinator.agent_id.empty()) coordinator.agent_id="coordinator";
+          return std::move(coordinator);
+        }(),std::move(coordinator_model))) {}
+
+// 统一监听：新加入的 Agent 会继承观察者；各 Agent 仍允许独立覆盖。
+// 正在并行执行任务时不得更改订阅，回调也不得重入 Agent。
+void AgentTeam::set_conversation_callback(Agent::ConversationCallback callback,
+                                          bool include_tool_payloads) {
+  conversation_callback_=std::move(callback);
+  conversation_include_tool_payloads_=include_tool_payloads;
+  coordinator_->set_conversation_callback(conversation_callback_,include_tool_payloads);
+  for(auto& [_,worker]:workers_)
+    worker->instance->set_conversation_callback(conversation_callback_,include_tool_payloads);
+}
 
 void AgentTeam::register_workspace_tools(Worker& worker) {
   const auto root = std::filesystem::canonical(worker.spec.workspace);
@@ -235,6 +250,9 @@ void AgentTeam::add_agent(AgentSpec spec, std::shared_ptr<Model> model) {
   spec.config.agent_id=spec.name; // 给宿主审批器提供可靠的子 Agent 身份。
   worker->spec = std::move(spec);
   worker->instance = std::make_unique<Agent>(worker->spec.config,std::move(model));
+  if(conversation_callback_)
+    worker->instance->set_conversation_callback(
+        conversation_callback_,conversation_include_tool_payloads_);
   if (!worker->spec.workspace.empty()) register_workspace_tools(*worker);
   if(!worker->spec.allowed_children.empty()) {
     if(worker->spec.config.strict_process_isolation)
@@ -591,6 +609,7 @@ TeamResult AgentTeam::execute_tasks(const std::vector<TeamTask>& tasks,
          mode=t.mode,worker_options,max_task_retries=options.max_task_retries]() mutable {
           NestedContext root{this,tree,1,{name},worker_options};
           NestedGuard guard(root);
+          worker_options.task_id=id; // 并行 Worker 回调关联原始 TeamTask::id。
           auto result=delegate(name,description,mode,worker_options);
           result.id=id;
           result.attempts=1;
