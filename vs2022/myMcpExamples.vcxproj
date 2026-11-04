@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{9A70EF7C-0165-4C92-BE21-F3809A0261D9}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <RootNamespace>myMcpExamples</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeBuildCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)" rebuild</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)" clean</NMakeCleanCommandLine>
+    <NMakeOutput>$(SolutionDir)build-vs2022\mcp-examples\examples\$(Configuration)\run_tools_demo.exe</NMakeOutput>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)mcp\sdk\include;$(SolutionDir)third_party\jsoncons\include;$(SolutionDir)third_party\cpp-httplib;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeBuildCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)" rebuild</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" mcp-examples "$(Configuration)" clean</NMakeCleanCommandLine>
+    <NMakeOutput>$(SolutionDir)build-vs2022\mcp-examples\examples\$(Configuration)\run_tools_demo.exe</NMakeOutput>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)mcp\sdk\include;$(SolutionDir)third_party\jsoncons\include;$(SolutionDir)third_party\cpp-httplib;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClInclude Include="..\mcp\examples\demo_common.hpp" />
+    <ClCompile Include="..\mcp\examples\run_agent_tools_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_extensions_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_http_client_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_http_progress_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_http_server_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_mrtr_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_oauth_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_oauth_login_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_oauth_resource_client_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_oauth_resource_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_progress_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_prompts_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_resources_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_stdio_client_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_stdio_server_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_subscriptions_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_tasks_demo.cpp" />
+    <ClCompile Include="..\mcp\examples\run_tools_demo.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

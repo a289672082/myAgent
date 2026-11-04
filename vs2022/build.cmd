@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 rem VS2022 工程统一桥接 CMake：项目无需手工维护 SDK/FTXUI 的编译和链接参数。
-rem 用法：build.cmd console|sdk|examples|tests Debug|Release [clean|rebuild]
+rem 用法：build.cmd console|sdk|examples|tests|mcp-sdk|mcp-examples|mcp-tests Debug|Release [clean|rebuild]
 set "MODULE=%~1"
 set "BUILD_CONFIG=%~2"
 set "ACTION=%~3"
@@ -20,6 +20,14 @@ if /I "%MODULE%"=="console" (
   set "OPTIONS=-DMYAGENT_BUILD_CONSOLE=ON -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF"
 ) else if /I "%MODULE%"=="sdk" (
   set "SOURCE=%REPO%\sdk"
+) else if /I "%MODULE%"=="mcp-sdk" (
+  set "SOURCE=%REPO%\mcp\sdk"
+) else if /I "%MODULE%"=="mcp-examples" (
+  set "SOURCE=%REPO%\mcp"
+  set "OPTIONS=-DMYAGENT_BUILD_MCP_EXAMPLES=ON -DMYAGENT_BUILD_MCP_TESTS=OFF"
+) else if /I "%MODULE%"=="mcp-tests" (
+  set "SOURCE=%REPO%\mcp"
+  set "OPTIONS=-DMYAGENT_BUILD_MCP_EXAMPLES=ON -DMYAGENT_BUILD_MCP_TESTS=ON"
 ) else if /I "%MODULE%"=="examples" (
   set "OPTIONS=-DMYAGENT_BUILD_CONSOLE=OFF -DMYAGENT_BUILD_EXAMPLES=ON -DMYAGENT_BUILD_TESTS=OFF"
 ) else if /I "%MODULE%"=="tests" (
@@ -37,6 +45,8 @@ if /I "%ACTION%"=="clean" (
 )
 if /I "%MODULE%"=="sdk" (
   cmake -S "%SOURCE%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64
+) else if /I "%MODULE%"=="mcp-sdk" (
+  cmake -S "%SOURCE%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64
 ) else (
   cmake -S "%SOURCE%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 %OPTIONS%
 )
@@ -49,11 +59,17 @@ if /I "%MODULE%"=="console" (
   cmake --build "%BUILD_DIR%" --config "%BUILD_CONFIG%" --target myagent_console --parallel 2
 ) else if /I "%MODULE%"=="sdk" (
   cmake --build "%BUILD_DIR%" --config "%BUILD_CONFIG%" --target myagent --parallel 2
+) else if /I "%MODULE%"=="mcp-sdk" (
+  cmake --build "%BUILD_DIR%" --config "%BUILD_CONFIG%" --target myagent_mcp --parallel 2
 ) else (
   cmake --build "%BUILD_DIR%" --config "%BUILD_CONFIG%" --parallel 2
 )
 if errorlevel 1 exit /b 1
 if /I "%MODULE%"=="tests" (
+  ctest --test-dir "%BUILD_DIR%" -C "%BUILD_CONFIG%" --output-on-failure
+  if errorlevel 1 exit /b 1
+)
+if /I "%MODULE%"=="mcp-tests" (
   ctest --test-dir "%BUILD_DIR%" -C "%BUILD_CONFIG%" --output-on-failure
   if errorlevel 1 exit /b 1
 )
