@@ -1,7 +1,3 @@
-[submodule "third_party/myMcpTools"]
-	path = third_party/myMcpTools
-	url = https://github.com/a289672082/myMcpTools.git
-
 [submodule "third_party/yaml-cpp"]
 	path = third_party/yaml-cpp
 	url = https://github.com/jbeder/yaml-cpp.git
@@ -9,3 +5,11 @@
 [submodule "third_party/FTXUI"]
 	path = third_party/FTXUI
 	url = https://github.com/ArthurSonzogni/FTXUI.git
+
+[submodule "third_party/jsoncons"]
+	path = third_party/jsoncons
+	url = https://github.com/danielaparker/jsoncons.git
+
+[submodule "third_party/cpp-httplib"]
+	path = third_party/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git
