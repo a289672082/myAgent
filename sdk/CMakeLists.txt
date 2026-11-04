@@ -21,45 +21,22 @@ set(YAML_CPP_INSTALL OFF CACHE BOOL "Install yaml-cpp" FORCE)
 set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "Static yaml-cpp" FORCE)
 add_subdirectory("${MYAGENT_YAML_CPP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/yaml-cpp")
 
-# Shared third-party sources come from the pinned myMcpTools Git submodule.
-# No FetchContent or network downloads during configuration/build.
-set(MYAGENT_MCP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/myMcpTools" CACHE PATH "Local myMcpTools source directory")
-foreach(required IN ITEMS
-  "include/mymcp/mcp.hpp"
-  "src/mcp.cpp"
-  "src/oauth.cpp"
-  "src/oauth_client.cpp"
-  "src/schema.cpp"
-  "third_party/jsoncons/include/jsoncons/json.hpp"
-  "third_party/jsoncons/LICENSE"
-  "third_party/cpp-httplib/httplib.h"
-  "third_party/cpp-httplib/LICENSE")
-  if(NOT EXISTS "${MYAGENT_MCP_DIR}/${required}")
-    message(FATAL_ERROR "Missing ${MYAGENT_MCP_DIR}/${required}. Use: git submodule update --init --recursive")
-  endif()
-endforeach()
 
-# Compile only the MCP runtime, not myMcpTools' demos and tests.
-add_library(myagent_mcp STATIC
-  "${MYAGENT_MCP_DIR}/src/mcp.cpp"
-  "${MYAGENT_MCP_DIR}/src/oauth.cpp"
-  "${MYAGENT_MCP_DIR}/src/oauth_client.cpp"
-  "${MYAGENT_MCP_DIR}/src/schema.cpp")
-target_compile_definitions(myagent_mcp PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
-target_include_directories(myagent_mcp PUBLIC
-  "${MYAGENT_MCP_DIR}/include"
-  "${MYAGENT_MCP_DIR}/third_party/jsoncons/include"
-  "${MYAGENT_MCP_DIR}/third_party/cpp-httplib")
-target_link_libraries(myagent_mcp PUBLIC Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
-if(WIN32)
-  target_link_libraries(myagent_mcp PUBLIC ws2_32 crypt32)
+# Build local, independent MCP SDK; no myMcpTools Git submodule.
+if(NOT TARGET mymcp)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../mcp/sdk"
+    "${CMAKE_CURRENT_BINARY_DIR}/mcp-sdk")
 endif()
-add_library(myagent::mcp ALIAS myagent_mcp)
-
+if(NOT TARGET myagent_mcp)
+  add_library(myagent_mcp ALIAS mymcp)
+endif()
+if(NOT TARGET myagent::mcp)
+  add_library(myagent::mcp ALIAS mymcp)
+endif()
 add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp src/tool_policy.cpp
   src/chat_completions.cpp src/router.cpp src/memory_store.cpp src/agent_team_config.cpp
   src/team_checkpoint.cpp src/task_scheduler.cpp src/workspace_io.cpp src/file_io.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-target_link_libraries(myagent PUBLIC myagent_mcp PRIVATE yaml-cpp::yaml-cpp)
+target_link_libraries(myagent PUBLIC mymcp PRIVATE yaml-cpp::yaml-cpp)

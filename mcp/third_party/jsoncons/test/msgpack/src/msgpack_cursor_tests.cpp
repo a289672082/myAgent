@@ -1,0 +1,573 @@
+// Copyright 2013-2026 Daniel Parker
+// Distributed under Boost license
+
+#if defined(_MSC_VER)
+#include "windows.h" // test no inadvertant macro expansions
+#endif
+
+#include <jsoncons_ext/msgpack/msgpack_cursor.hpp>
+#include <jsoncons_ext/msgpack/msgpack.hpp>
+
+#include <jsoncons/json.hpp>
+#include <jsoncons/json_encoder.hpp>
+
+#include <sstream>
+#include <vector>
+#include <utility>
+#include <ctime>
+#include <catch/catch.hpp>
+
+using namespace jsoncons;
+
+TEST_CASE("msgpack_cursor reputon test")
+{
+    jsoncons::ojson j = jsoncons::ojson::parse(R"(
+    {
+       "application": "hiking",
+       "reputons": [
+       {
+           "rater": "HikingAsylum",
+           "assertion": "advanced",
+           "rated": "Marilyn C",
+           "rating": 0.90
+         }
+       ]
+    }
+    )");
+
+    std::vector<uint8_t> data;
+    msgpack::encode_msgpack(j, data);
+
+    SECTION("test 1")
+    {
+        msgpack::msgpack_bytes_cursor cursor(data);
+
+        CHECK(jsoncons::staj_events::begin_object == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::begin_array == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::begin_object == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::key == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::double_value == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::end_object == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::end_array == cursor.current().event_type());
+        cursor.next();
+        CHECK(jsoncons::staj_events::end_object == cursor.current().event_type());
+        cursor.next();
+        CHECK(cursor.done());
+    }
+}
+struct remove_mark_msgpack_filter
+{
+    bool reject_next_ = false;
+
+    bool operator()(const jsoncons::staj_event& event, const jsoncons::ser_context&) 
+    {
+        if (event.event_type()  == jsoncons::staj_events::key &&
+            event.get<jsoncons::string_view>() == "mark")
+        {
+            reject_next_ = true;
+            return false;
+        }
+        else if (reject_next_)
+        {
+            reject_next_ = false;
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+};
+
+
+TEST_CASE("msgpack_cursor with filter tests")
+{
+    auto j = jsoncons::ojson::parse(R"(
+    [
+        {
+            "enrollmentNo" : 100,
+            "firstName" : "Tom",
+            "lastName" : "Cochrane",
+            "mark" : 55
+        },
+        {
+            "enrollmentNo" : 101,
+            "firstName" : "Catherine",
+            "lastName" : "Smith",
+            "mark" : 95
+        },
+        {
+            "enrollmentNo" : 102,
+            "firstName" : "William",
+            "lastName" : "Skeleton",
+            "mark" : 60
+        }
+    ]
+    )");
+
+    std::vector<uint8_t> data;
+    msgpack::encode_msgpack(j, data);
+
+    msgpack::msgpack_bytes_cursor cursor(data);
+
+    auto filtered_c = cursor | remove_mark_msgpack_filter();
+
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::begin_array);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::begin_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::uint64_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::end_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::begin_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::uint64_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::end_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::begin_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::uint64_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::key);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::string_value);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::end_object);
+    filtered_c.next();
+    REQUIRE_FALSE(filtered_c.done());
+    CHECK(filtered_c.current().event_type() == jsoncons::staj_events::end_array);
+    filtered_c.next();
+    CHECK(filtered_c.done());
+}
+
+TEST_CASE("msgpack_parser reset", "")
+{
+    std::vector<uint8_t> input1 = {
+        0x92,0x01,0x02, // array(2), positive fixint(1), positive fixint(2)
+        0x81,0xa1,0x63,0x04, // map(1), text(1), "c", positive fixint(4)
+    };
+
+    std::vector<uint8_t> input2 = {
+        0x81,0xa1,0x65,0x06, // map(1), text(1), "e", positive fixint(6)
+    };
+
+    jsoncons::json expected1 = jsoncons::json::parse(R"([1,2])");
+    jsoncons::json expected2 = jsoncons::json::parse(R"({"c":4})");
+    jsoncons::json expected3 = jsoncons::json::parse(R"({"e":6})");
+
+    jsoncons::json_decoder<jsoncons::json> destination;
+    jsoncons::generic_to_json_visitor visitor{destination};
+    msgpack::basic_msgpack_parser<jsoncons::bytes_source> parser{ input1 };
+    std::error_code ec;
+
+    SECTION("keeping same source")
+    {
+        parser.parse(visitor, ec);
+        REQUIRE_FALSE(ec);
+        CHECK(destination.get_result() == expected1);
+
+        destination.reset();
+        parser.reset();
+        parser.parse(visitor, ec);
+        CHECK_FALSE(ec);
+        CHECK(parser.stopped());
+        // TODO: This fails: CHECK(parser.done());
+        CHECK(destination.get_result() == expected2);
+    }
+
+    SECTION("with different source")
+    {
+        parser.parse(visitor, ec);
+        REQUIRE_FALSE(ec);
+        CHECK(destination.get_result() == expected1);
+
+        destination.reset();
+        parser.reset(input2);
+        parser.parse(visitor, ec);
+        CHECK_FALSE(ec);
+        CHECK(parser.stopped());
+        // TODO: This fails: CHECK(parser.done());
+        CHECK(destination.get_result() == expected3);
+    }
+}
+
+struct msgpack_bytes_cursor_reset_test_traits
+{
+    using cursor_type = msgpack::msgpack_bytes_cursor;
+    using input_type = std::vector<uint8_t>;
+
+    static void set_input(input_type& input, input_type bytes) {input = bytes;}
+};
+
+struct msgpack_stream_cursor_reset_test_traits
+{
+    using cursor_type = msgpack::msgpack_stream_cursor;
+
+    // binary_stream_source::char_type is actually char, not uint8_t
+    using input_type = std::istringstream;
+
+    static void set_input(input_type& input, std::vector<uint8_t> bytes)
+    {
+        auto data = reinterpret_cast<const char*>(bytes.data());
+        std::string s(data, bytes.size());
+        input.str(s);
+    }
+};
+
+TEMPLATE_TEST_CASE("msgpack_cursor reset test", "",
+                   msgpack_bytes_cursor_reset_test_traits,
+                   msgpack_stream_cursor_reset_test_traits)
+{
+    using traits = TestType;
+    using input_type = typename traits::input_type;
+    using cursor_type = typename traits::cursor_type;
+    using source_type = typename cursor_type::source_type;
+
+    SECTION("keeping same source")
+    {
+        std::error_code ec;
+        input_type input;
+        traits::set_input(input, {
+            0xa3, 0x54, 0x6f, 0x6d, // str(3), "Tom"
+            0xd0, 0x9c, // int8(-100)
+            0xc0 // nil
+        });
+        source_type source(input);
+        cursor_type cursor(std::move(source));
+
+        REQUIRE_FALSE(cursor.done());
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        CHECK(jsoncons::semantic_tag::none == cursor.current().tag());
+        CHECK(std::string("Tom") == cursor.current().template get<std::string>());
+        CHECK(cursor.current().template get<jsoncons::string_view>() ==
+              jsoncons::string_view("Tom"));
+        cursor.next();
+        CHECK(cursor.done());
+
+        cursor.reset();
+        REQUIRE_FALSE(cursor.done());
+        CHECK(jsoncons::staj_events::int64_value == cursor.current().event_type());
+        CHECK(jsoncons::semantic_tag::none == cursor.current().tag());
+        CHECK(-100 == cursor.current().template get<int>());
+        cursor.next();
+        CHECK(cursor.done());
+
+        cursor.reset(ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE_FALSE(cursor.done());
+        CHECK(jsoncons::staj_events::null_value == cursor.current().event_type());
+        CHECK(jsoncons::semantic_tag::none == cursor.current().tag());
+        cursor.next(ec);
+        REQUIRE_FALSE(ec);
+        CHECK(cursor.done());
+    }
+
+    SECTION("with another source")
+    {
+        std::error_code ec;
+        input_type input0;
+        input_type input1;
+        input_type input2;
+        input_type input3;
+        traits::set_input(input0, {});
+        traits::set_input(input1, {0xa3, 0x54, 0x6f, 0x6d}); // str(3), "Tom"
+        traits::set_input(input2, {0xc1}); // never used
+        traits::set_input(input3, {0xd0, 0x9c}); // int8(-100)
+
+        // Constructing cursor with blank input results in unexpected_eof
+        // error because it eagerly parses the next event upon construction.
+        cursor_type cursor(input0, ec);
+        CHECK(ec == msgpack::msgpack_errc::unexpected_eof);
+        CHECK_FALSE(cursor.done());
+
+        // Reset to valid input1
+        cursor.reset(input1);
+        CHECK(jsoncons::staj_events::string_value == cursor.current().event_type());
+        CHECK(jsoncons::semantic_tag::none == cursor.current().tag());
+        CHECK(std::string("Tom") == cursor.current().template get<std::string>());
+        CHECK(cursor.current().template get<jsoncons::string_view>() ==
+              jsoncons::string_view("Tom"));
+        ec = msgpack::msgpack_errc::success;
+        REQUIRE_FALSE(cursor.done());
+        cursor.next(ec);
+        CHECK_FALSE(ec);
+        CHECK(cursor.done());
+
+        // Reset to invalid input2
+        ec = msgpack::msgpack_errc::success;
+        cursor.reset(input2, ec);
+        CHECK(ec == msgpack::msgpack_errc::unknown_type);
+        CHECK_FALSE(cursor.done());
+
+        // Reset to valid input3
+        ec = msgpack::msgpack_errc::success;
+        cursor.reset(input3, ec);
+        REQUIRE_FALSE(ec);
+        CHECK(jsoncons::staj_events::int64_value == cursor.current().event_type());
+        CHECK(jsoncons::semantic_tag::none == cursor.current().tag());
+        CHECK(-100 == cursor.current().template get<int>());
+        REQUIRE_FALSE(cursor.done());
+        cursor.next(ec);
+        CHECK_FALSE(ec);
+        CHECK(cursor.done());
+    }
+}
+
+TEST_CASE("msgpack_event_reader reputon test")
+{
+    jsoncons::ojson j = jsoncons::ojson::parse(R"(
+    {
+       "application": "hiking",
+       "reputons": [
+       {
+           "rater": "HikingAsylum",
+           "assertion": "advanced",
+           "rated": "Marilyn C",
+           "rating": 0.90
+         }
+       ]
+    }
+    )");
+
+    std::vector<uint8_t> data;
+    msgpack::encode_msgpack(j, data);
+
+    SECTION("test 1")
+    {
+        msgpack::msgpack_bytes_cursor reader(data);
+
+        CHECK(reader.current().event_type() == jsoncons::staj_events::begin_object);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::begin_array);
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::begin_object);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        reader.next();
+        CHECK(reader.current().event_type() == (jsoncons::staj_events::string_value | jsoncons::staj_events::key_flag));  // key
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::double_value);
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::end_object);
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::end_array);
+        reader.next();
+        CHECK(reader.current().event_type() == jsoncons::staj_events::end_object);
+        reader.next();
+        CHECK(reader.done());
+    }
+}
+
+struct msgpack_bytes_cursor2_reset_test_traits
+{
+    using event_reader_type = msgpack::msgpack_bytes_cursor;
+    using input_type = std::vector<uint8_t>;
+
+    static void set_input(input_type& input, input_type bytes) {input = bytes;}
+};
+
+struct msgpack_stream_cursor2_reset_test_traits
+{
+    using event_reader_type = msgpack::msgpack_stream_cursor;
+
+    // binary_stream_source::char_type is actually char, not uint8_t
+    using input_type = std::istringstream;
+
+    static void set_input(input_type& input, std::vector<uint8_t> bytes)
+    {
+        auto data = reinterpret_cast<const char*>(bytes.data());
+        std::string s(data, bytes.size());
+        input.str(s);
+    }
+};
+
+TEMPLATE_TEST_CASE("msgpack_event_reader reset test", "",
+                   msgpack_bytes_cursor2_reset_test_traits,
+                   msgpack_stream_cursor2_reset_test_traits)
+{
+    using traits = TestType;
+    using input_type = typename traits::input_type;
+    using event_reader_type = typename traits::event_reader_type;
+    using source_type = typename event_reader_type::source_type;
+
+    SECTION("keeping same source")
+    {
+        std::error_code ec;
+        input_type input;
+        traits::set_input(input, {
+            0xa3, 0x54, 0x6f, 0x6d, // str(3), "Tom"
+            0xd0, 0x9c, // int8(-100)
+            0xc0 // nil
+        });
+        source_type source(input);
+        event_reader_type reader(std::move(source));
+
+        REQUIRE_FALSE(reader.done());
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        CHECK(reader.current().tag() == jsoncons::semantic_tag::none);
+        CHECK(reader.current().template get<std::string>() == std::string("Tom"));
+        CHECK(reader.current().template get<jsoncons::string_view>() ==
+              jsoncons::string_view("Tom"));
+        reader.next();
+        CHECK(reader.done());
+
+        reader.reset();
+        REQUIRE_FALSE(reader.done());
+        CHECK(reader.current().event_type() == jsoncons::staj_events::int64_value);
+        CHECK(reader.current().tag() == jsoncons::semantic_tag::none);
+        CHECK(reader.current().template get<int>() == -100);
+        reader.next();
+        CHECK(reader.done());
+
+        reader.reset(ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE_FALSE(reader.done());
+        CHECK(reader.current().event_type() == jsoncons::staj_events::null_value);
+        CHECK(reader.current().tag() == jsoncons::semantic_tag::none);
+        reader.next(ec);
+        REQUIRE_FALSE(ec);
+        CHECK(reader.done());
+    }
+
+    SECTION("with another source")
+    {
+        std::error_code ec;
+        input_type input0;
+        input_type input1;
+        input_type input2;
+        input_type input3;
+        traits::set_input(input0, {});
+        traits::set_input(input1, {0xa3, 0x54, 0x6f, 0x6d}); // str(3), "Tom"
+        traits::set_input(input2, {0xc1}); // never used
+        traits::set_input(input3, {0xd0, 0x9c}); // int8(-100)
+
+        // Constructing reader with blank input results in unexpected_eof
+        // error because it eagerly parses the next event upon construction.
+        event_reader_type reader(input0, ec);
+        CHECK(ec == msgpack::msgpack_errc::unexpected_eof);
+        CHECK_FALSE(reader.done());
+
+        // Reset to valid input1
+        reader.reset(input1);
+        CHECK(reader.current().event_type() == jsoncons::staj_events::string_value);
+        CHECK(reader.current().tag() == jsoncons::semantic_tag::none);
+        CHECK(reader.current().template get<std::string>() == std::string("Tom"));
+        CHECK(reader.current().template get<jsoncons::string_view>() ==
+              jsoncons::string_view("Tom"));
+        ec = msgpack::msgpack_errc::success;
+        REQUIRE_FALSE(reader.done());
+        reader.next(ec);
+        CHECK_FALSE(ec);
+        CHECK(reader.done());
+
+        // Reset to invalid input2
+        reader.reset(input2, ec);
+        CHECK(ec == msgpack::msgpack_errc::unknown_type);
+        CHECK_FALSE(reader.done());
+
+        // Reset to valid input3
+        ec = msgpack::msgpack_errc::success;
+        reader.reset(input3, ec);
+        REQUIRE_FALSE(ec);
+        CHECK(reader.current().event_type() == jsoncons::staj_events::int64_value);
+        CHECK(reader.current().tag() == jsoncons::semantic_tag::none);
+        CHECK(reader.current().template get<int>() == -100);
+        REQUIRE_FALSE(reader.done());
+        reader.next(ec);
+        CHECK_FALSE(ec);
+        CHECK(reader.done());
+    }
+}

@@ -31,7 +31,7 @@
     <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\sdk\$(Configuration)\myagent.lib</NMakeOutput>
-    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)mcp\sdk\include;$(SolutionDir)mcp\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
     <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -39,7 +39,7 @@
     <NMakeReBuildCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\sdk\$(Configuration)\myagent.lib</NMakeOutput>
-    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
+    <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)mcp\sdk\include;$(SolutionDir)mcp\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
     <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <ItemGroup>
