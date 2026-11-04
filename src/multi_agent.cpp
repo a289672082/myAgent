@@ -804,7 +804,10 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       "You are the coordinator. Return ONLY a JSON object with tasks: "
       "{\"tasks\":[{\"id\":\"t1\",\"agent\":\"registered_name\","
       "\"description\":\"specific work\",\"depends_on\":[],"
-      "\"mode\":\"react\"}]}. Modes: react, plan, reflect, evaluate. "
+      "\"mode\":\"react\"}]}. Modes: react, plan, reflect, evaluate, rewoo"+(options.worker_loop.verify_execution
+          ?std::string(", execute_verify_repair"):std::string{})+
+      ". ReWOO needs predefined MCP tools; execute_verify_repair is only "
+      "available if the host installed a trusted verification callback. "
       "Dependencies must point to earlier tasks. "
       "Only assign registered agents. Never invent subagents, "
       "credential changes or tool permissions. Limit tasks to "+
