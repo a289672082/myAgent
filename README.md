@@ -412,7 +412,7 @@ agent.reset_usage();   // 显式清空最近一次与累计统计（不会影响
 本功能只计 Responses 模型调用。图片若进入 Responses 模型计费会出现在该模型的 usage 中；独立的音频转写/语音合成接口不在此统计范围内，也不自动计算 API 费用。不同模型和供应商的价格不相同，缓存和推理 Token 不得重复计数。
 
 独立的离线示例 `examples/run_token_usage_demo.cpp` 提供 `run_token_usage_demo()`；测试 `tests/test_token_usage.cpp` 模拟真实 usage、工具轮次、模型缺失统计以及失败任务的账本保留。
-## 统一 Agent 循环（四种策略 + 图片和音频）
+## 统一 Agent 循环（六种策略 + 图片和音频）
 
 新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供四种策略：
 - ReAct：决策 → 工具调用 → 观察 → 最终回答。
@@ -1033,3 +1033,80 @@ std::cout << coder->ask("你好") << '\n';
 cmake --build build --target run_agent_router_demo myagent_router_tests
 ctest --test-dir build -R 'myagent_(router|router_demo)$' --output-on-failure
 ~~~
+
+
+## P1 新增两种 Loop：ReWOO / Execute-Verify-Repair（中文源码注释）
+
+现有 4 种 Loop：react、plan_and_execute、reflect、evaluate_and_optimize 保持兼容。新增 LoopMode::ReWOO 和 LoopMode::ExecuteVerifyRepair（尾部追加，不改变旧枚举值），并为多媒体 LoopInput 和文本任务分别提供同名入口。新 Loop 仍受原有模型/工具调用上限、超时/取消、MCP ToolPolicy、人工审批、对话事件、Token/费用统计和 Checkpoint 控制。
+
+### 1. ReWOO：一次计划 → C++ 直接调用工具 → 最终汇总
+
+- **用途**：适用于多个工具调用参数可以提前确定的任务，例如查询文件、收集项目结构、检查多个独立资源。与 ReAct 的工具观察后再决定下一步不同，ReWOO 在工具执行期间不需要额外的模型推理。
+- **规划**：Planner（只允许文本，无工具权限）输出 JSON：{"steps":[{"id":"read","tool":"local__read_file","arguments":{"path":"src/main.cpp"},"depends_on":[]}]}。计划提交前由 C++ 完整校验 ID 唯一性、已注册 MCP 工具、JSON 参数、前序依赖和预算。
+- **执行**：依次调用 MCP；每次执行都经过 ToolPolicy、人工 on_tool_approval、全局 allow_tool_execution、接收限额、Checkpoint 及非幂等重复意图拦截。工具失败**立即停止**，不会继续下一步并声称成功。
+- **汇总**：Solver 在无工具权限阶段读取真实工具观察结果并回答。默认不会在 conversation callback 中暴露工具参数/结果，只有显式开启 include_tool_payloads 才会发出。
+- **限制**：不支持在运行时修改既定计划，也不支持把前一个工具输出动态插入后一个工具参数。单条观察有上下文大小上限；如需要根据工具观察重新规划，应使用 ReAct。
+
+~~~cpp
+#include "myagent/agent.hpp"
+using namespace myagent;
+Agent agent(config);
+// 事先注册 read_file、inspect 等已审计工具（参见 run_rewoo_demo.cpp）。
+LoopOptions opts;
+opts.max_plan_steps = 4;
+opts.max_model_calls = 4; // 至少 2 次：Planner + Solver。
+opts.max_tool_calls = 4;
+opts.on_tool_approval = [](const ToolApprovalRequest& request) {
+    // 用户/宿主有权限时返回 Approve；不能由模型直接批准。
+    return ToolDecision::Approve;
+};
+const auto result = agent.rewoo("读取源码并汇总测试目标", opts);
+if (result.status == LoopStatus::Completed)
+    std::cout << result.answer << '\n';
+~~~
+
+### 2. Execute-Verify-Repair：执行 → 宿主验证 → 按错误修复 → 再验证
+
+- **用途**：面向 C++ 编译、单元测试、代码检查等需要**客观证据**的任务。
+- **执行**：Executor 使用授权 MCP 工具完成任务，返回结构化 JSON {"status":"completed","summary":"..."}；它的状态不是成功凭据。
+- **验证**：必须提供 LoopOptions::verify_execution(execution, tool_results, attempt)。宿主运行真正的构建或测试并返回 ExecutionVerification{passed, reason, evidence}。缺少验证器会在首次模型请求前失败。
+- **修复**：验证失败时将错误摘要和证据反馈给模型，执行新一轮修复，并重新调用宿主验证器。只有执行器状态 completed 且宿主 passed=true 才结束。最多执行 max_repairs+1 轮，仍受 max_iterations/max_model_calls/max_tool_calls 限制。
+- **安全**：不要让不可信模型任意选择 verifier 命令；真实编译、测试由可信宿主实现并设置独立资源限额。evidence 可能包含内部路径、日志和机密，宿主需要裁剪和脱敏。失败不自动重放相同非幂等工具；如果工具执行结果未知，恢复前需要人工核实。
+
+~~~cpp
+#include "myagent/agent.hpp"
+using namespace myagent;
+Agent agent(config);
+LoopOptions opts;
+opts.max_repairs = 2;
+opts.max_iterations = 3;
+opts.verify_execution = [](const Json& execution,
+                           const Json& tool_results,
+                           unsigned attempt) -> ExecutionVerification {
+    // 在可信宿主运行真正的编译和测试；本例仅展示结果的返回形式。
+    const bool passed = run_build_and_tests_in_sandbox(); // 由宿主自行实现
+    return {passed, passed ? "build/test passed" : "build/test failed",
+            mymcp::json::object{{"attempt",attempt},{"passed",passed}}};
+};
+const auto result = agent.execute_verify_repair("实现功能并确保测试通过", opts);
+if (result.status == LoopStatus::Completed)
+    std::cout << result.answer << '\n';
+else
+    std::cerr << result.error << '\n';
+~~~
+
+上面的 run_build_and_tests_in_sandbox() 是宿主接口占位符，不是 myAgent 内置函数。可运行的 run_execute_verify_repair_demo.cpp 使用离线模拟编译器展示先失败、再根据退出码修复、再次成功的完整过程，无外部服务依赖。
+
+### Demo、CTest 与团队 Worker
+
+~~~sh
+cmake --build build --target run_rewoo_demo run_execute_verify_repair_demo myagent_p1_loop_modes_tests
+ctest --test-dir build -R "myagent_(rewoo_demo|execute_verify_repair_demo|p1_loop_modes)$" --output-on-failure
+~~~
+
+- run_rewoo_demo：双工具依赖、Planner/Solver 调用次数、工具审批和非法计划拒绝。
+- run_execute_verify_repair_demo：写代码、宿主模拟编译失败、模型修复、再次验证通过，以及无验证器时拒绝运行。
+- myagent_p1_loop_modes_tests：Checkpoint 暂停恢复、非法依赖、重复非幂等调用拦截，以及宿主验证失败时的修复次数上限。
+- AgentTeam 中可设置 TeamTask.mode 为 LoopMode::ReWOO 或 LoopMode::ExecuteVerifyRepair。后一种的 Worker 必须通过 TeamOptions::worker_loop.verify_execution 提供宿主验证器，否则按失败处理。
+
+**Checkpoint 注意**：恢复需使用相同的 Agent 配置、工具目录和可信批准/核实回调。ReWOO 回归测试覆盖暂停前工具未执行、恢复后工具只执行一次。验证器通常应该是只读检查；恢复时可能需要重新执行验证，不要让它产生不可重放的副作用。
