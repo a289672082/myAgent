@@ -86,6 +86,7 @@ struct LoopOptions {
   // 安全追踪仅包含模型/工具名、耗时、错误类别，不复制提示词及响应正文。
   std::function<void(const Json&)> on_span;
   std::string trace_id; // 可选的外部 Trace ID（32 个十六进制字符），用于多 Agent 关联。
+  std::string task_id; // 可选的宿主任务 ID；团队并行任务使用，回调可关联具体委派。
   // 嵌套子 Agent 可复用原子全局配额；false 时拒绝新的实际模型/工具操作。
   std::function<bool()> allow_model_request;
   std::function<bool()> allow_tool_execution;
