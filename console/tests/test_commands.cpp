@@ -75,6 +75,9 @@ int main() {
     check(session.endpoints().size()==1,"MCP removal not applied");
     check(is(session,"/mcp remove unknown",CommandKind::Error),
           "unknown MCP removal did not fail");
+    check(is(session,"/tools",CommandKind::Info),"DeveloperTools status failed");
+    check(is(session,"/tools off",CommandKind::Info),"DeveloperTools disable failed");
+    check(is(session,"/tools on",CommandKind::Info),"DeveloperTools enable failed");
     check(is(session,"/new",CommandKind::Info),"new turn reset failed");
     check(is(session,"/clear",CommandKind::ClearView),"clear view failed");
     check(is(session,"/exit",CommandKind::Exit),"quit failed");

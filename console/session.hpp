@@ -62,6 +62,7 @@ class ConsoleSession {
   std::shared_ptr<myagent::Model> test_model_;
   std::unique_ptr<myagent::Agent> agent_;
   std::vector<McpEntry> endpoints_;
+  bool native_tools_enabled_=true;  // 仅供可选 DeveloperTools 编译开关；默认启用
   Permissions permissions_=Permissions::Ask;
   myagent::LoopMode mode_=myagent::LoopMode::ReAct;
 };

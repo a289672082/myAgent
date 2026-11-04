@@ -8,16 +8,30 @@ SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
 SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
 
+## 23 个 DeveloperTools：原生 Agent + MCP 双注册
+
+独立 `tools/developer_tools/` 维护一套 C++ Handler 和 JSON Schema，既可调用
+`developer_tools::RegisterToAgent(agent, context)`，也可调用
+`developer_tools::RegisterToMcp(server, context)`，无需复制 23 个工具的实现。
+
+控制台默认通过 `Agent::tool()` 注册 23 个原生工具，可用 `/tools` 查看或
+`/tools off` 禁用；危险工具受控制台逐次执行审批约束。仓库还会构建独立
+`myagent_developer_tools_mcp` stdio Server，供其他 MCP 客户端发现工具。
+核心 SDK 独立构建时**不包含**这 23 个工具。详见
+[DeveloperTools 使用指南](tools/developer_tools/README.md)。
+
 ## 目录结构与快速启动
 
 ```text
 myAgent/
 ├── CMakeLists.txt           # 默认控制台入口
-├── console/                 # Codex 风格 TUI：/mcp /baseurl /apikey
+├── console/                 # Codex 风格 TUI：/mcp /baseurl /apikey /tools
 ├── sdk/
 │   ├── CMakeLists.txt       # 可独立 CMake 构建 SDK
 │   ├── include/myagent/     # SDK 公共接口（不变）
 │   └── src/                 # SDK 核心源码
+├── tools/developer_tools/   # 共享 23 个 C++ 工具和双注册适配器
+├── mcp_servers/developer_tools/ # 独立 MCP stdio Server
 ├── examples/                # 独立示例及 CMakeLists.txt
 ├── tests/                   # SDK 回归测试及 CMakeLists.txt
 └── third_party/
