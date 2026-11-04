@@ -26,6 +26,10 @@ jobs:
         run: cmake --build build --parallel 2
       - name: Tests
         run: ctest --test-dir build --output-on-failure
+      - name: Standalone SDK CMake (no FTXUI)
+        run: cmake -S sdk -B build-sdk-standalone -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Standalone SDK library build
+        run: cmake --build build-sdk-standalone --target myagent --parallel 2
   windows:
     runs-on: windows-2022
     steps:
@@ -38,6 +42,8 @@ jobs:
         run: cmake --build build --config Debug --parallel 2
       - name: Tests
         run: ctest --test-dir build -C Debug --output-on-failure
+      - name: Standalone SDK CMake (without FTXUI)
+        run: cmake -S sdk -B build-sdk-standalone -A x64
 
   linux-release:
     runs-on: ubuntu-24.04

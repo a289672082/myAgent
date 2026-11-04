@@ -19,7 +19,7 @@ jobs:
       - name: Install prerequisites
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
       - name: Configure root console using vendored FTXUI
-        run: cmake -S . -B build-console -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMYAGENT_BUILD_CONSOLE=ON -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF
+        run: cmake -S . -B build-console -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build console and offline tests
         run: cmake --build build-console --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
       - name: Run console CTests
@@ -31,7 +31,7 @@ jobs:
         with:
           submodules: recursive
       - name: Configure root console using vendored FTXUI
-        run: cmake -S . -B build-console -A x64 -DMYAGENT_BUILD_CONSOLE=ON -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF
+        run: cmake -S . -B build-console -A x64 -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build console and offline tests
         run: cmake --build build-console --config Debug --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
       - name: Run console CTests
