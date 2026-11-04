@@ -386,6 +386,8 @@ private:
   std::deque<std::chrono::steady_clock::time_point> recent_model_requests_;
   double last_cost_usd_=0;
   std::string active_trace_id_;
+  std::string active_turn_id_; // 单次 ask/Loop 生命周期关联 ID，不写入历史。
+  std::string active_task_id_; // 团队任务 ID，不参与模型请求。
   void emit_span(const std::string& name,const std::string& status,
                  std::uint64_t start_unix_ns,
                  std::uint64_t duration_ns,
