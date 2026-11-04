@@ -127,7 +127,8 @@ std::string help() {
 }
 } // namespace
 
-ConsoleSession::ConsoleSession() {
+ConsoleSession::ConsoleSession(std::shared_ptr<myagent::Model> test_model)
+    :test_model_(std::move(test_model)) {
   config_.agent_id="console";
   config_.instructions="You are a useful coding assistant. Use configured tools "
                         "only when necessary, and report failures accurately.";
@@ -320,9 +321,9 @@ CommandResult ConsoleSession::handle(std::string_view input) {
 
 void ConsoleSession::ensure_agent() {
   if(agent_)return;
-  if(config_.base_url=="https://api.openai.com" && !has_credentials())
+  if(config_.base_url=="https://api.openai.com" && !has_credentials() && !test_model_)
     throw std::runtime_error("缺少 API Key。输入 /apikey 或设置 MYAGENT_API_KEY。");
-  auto created=std::make_unique<myagent::Agent>(config_);
+  auto created=std::make_unique<myagent::Agent>(config_,test_model_);
   for(const auto& endpoint:endpoints_) {
     if(endpoint.transport=="stdio") {
       created->add_mcp_stdio(endpoint.name,endpoint.target,endpoint.args);
