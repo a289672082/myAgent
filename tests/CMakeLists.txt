@@ -2,9 +2,9 @@
   enable_testing()
   add_executable(myagent_tests test_agent.cpp)
   target_link_libraries(myagent_tests PRIVATE myagent)
-  # Exercise the real myMcpTools stdio client/server end-to-end.
+  # Exercise the integrated local MCP SDK stdio client/server end-to-end.
   add_executable(myagent_test_stdio_server
-    "${MYAGENT_MCP_DIR}/examples/run_stdio_server_demo.cpp")
+    "${CMAKE_SOURCE_DIR}/mcp/examples/run_stdio_server_demo.cpp")
   target_link_libraries(myagent_test_stdio_server PRIVATE myagent_mcp)
   add_dependencies(myagent_tests myagent_test_stdio_server)
   target_compile_definitions(myagent_tests PRIVATE
