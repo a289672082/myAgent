@@ -1,0 +1,62 @@
+name: One-time MCP source vendor integration
+on:
+  push:
+    branches:
+      - feat/vendor-mcp-sdk-20261105
+    paths:
+      - .github/workflows/bootstrap-vendor-mcp.yml
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: true
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Check integration script
+        run: python3 -m py_compile tools/integrate_mcp.py
+      - name: Import and reorganize exact latest upstream MCP sources
+        run: python3 tools/integrate_mcp.py
+      - name: Commit integrated sources and remove myMcpTools gitlink
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: embed myMcpTools SDK, demos, tests and dependencies"
+          fi
+          git push origin HEAD:feat/vendor-mcp-sdk-20261105
+      - name: Initialize remaining yaml-cpp submodule (not MCP)
+        run: git submodule update --init --recursive -- third_party/yaml-cpp
+      - name: Build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y ninja-build cmake libssl-dev
+      - name: Configure Agent + MCP demos and tests
+        run: >-
+          cmake -S . -B build-integration -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DMYAGENT_BUILD_CONSOLE=OFF
+          -DMYAGENT_CONSOLE_BUILD_TESTS=OFF
+          -DMYAGENT_BUILD_EXAMPLES=ON
+          -DMYAGENT_BUILD_TESTS=ON
+          -DMYAGENT_BUILD_MCP_EXAMPLES=ON
+          -DMYAGENT_BUILD_MCP_TESTS=ON
+      - name: Compile Agent and MCP together
+        run: cmake --build build-integration --parallel 2
+      - name: Run Agent and MCP tests
+        run: ctest --test-dir build-integration --output-on-failure
+      - name: Configure standalone MCP
+        run: cmake -S mcp -B build-mcp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Build standalone MCP
+        run: cmake --build build-mcp --parallel 2
+      - name: Test standalone MCP
+        run: ctest --test-dir build-mcp --output-on-failure
+      - name: Configure standalone Agent SDK
+        run: cmake -S sdk -B build-agent-sdk -G Ninja
+      - name: Compile standalone Agent SDK
+        run: cmake --build build-agent-sdk --parallel 2
