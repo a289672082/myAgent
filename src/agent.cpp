@@ -1228,8 +1228,15 @@ void Agent::set_conversation_callback(ConversationCallback callback,
 
 void Agent::emit_conversation(const Json& event) noexcept {
   if(!conversation_callback_)return;
-  try { conversation_callback_(event); }
-  catch(...) { /* 宿主观察者异常不能影响模型事务或工具调用。 */ }
+  try {
+    Json message=event;
+    // 同一个 ask/Loop 内的 delta、工具与最终答复共享 turn_id。
+    message["turn_id"]=active_turn_id_;
+    if(!active_task_id_.empty())message["task_id"]=active_task_id_;
+    conversation_callback_(message);
+  } catch(...) {
+    // 监听回调只做旁路观察：UI 代码异常不得破坏工具状态或提交事务。
+  }
 }
 
 std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_calls,
@@ -1239,8 +1246,34 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
   last_usage_ = {}; // 无论本次 ask 是否成功，last_usage 都属于本次调用。
   retries_used_=0;last_cost_usd_=0;
   last_model_attempts_ = 0;
+  active_turn_id_=detail::trace_hex(16);
+  active_task_id_.clear();
+  struct ResetConversation {
+    std::function<void()> reset;
+    ~ResetConversation(){reset();}
+  } reset_conversation{[this](){active_turn_id_.clear();active_task_id_.clear();}};
+  // 对于 ask_parts / ask_image，原始内容可能包含完整 base64 图片。
+  // 输入回调只提供文本和媒体类型，不复制 data URL 或其他二进制内容。
+  Json visible_content=user_content;
+  if(user_content.is_array()) {
+    visible_content=json::array{};
+    for(const auto& part:user_content.array_range()) {
+      if(!part.is_object()) {
+        visible_content.push_back(json::object{{"type","unknown"}});
+        continue;
+      }
+      const std::string type=as_string(part,"type","unknown");
+      Json metadata=json::object{{"type",type}};
+      if(type=="input_text") {
+        if(const auto* text=json::if_contains(part,"text");text && text->is_string())
+          metadata["text"]=*text;
+      }
+      visible_content.push_back(std::move(metadata));
+    }
+  }
   emit_conversation(json::object{{"event","user_message"},{"agent_id",config_.agent_id},
-    {"content",user_content},{"phase","ask"}});
+    {"content",visible_content},{"phase","ask"}});
+  const auto turn_started=std::chrono::steady_clock::now();
   Json working = history_;
   unsigned model_calls = 0, tool_calls = 0;
   std::set<std::string> executed_effects;
@@ -1270,7 +1303,11 @@ std::string Agent::run(Json user_content, bool allow_tools, unsigned max_model_c
     {"phase","ask"},{"content",turn.answer}});
   emit_conversation(json::object{{"event","turn_completed"},{"agent_id",config_.agent_id},
     {"phase","ask"},{"answer",turn.answer},{"model_calls",model_calls},
-    {"tool_calls",tool_calls}});
+    {"tool_calls",tool_calls},{"total_tokens",last_usage_.total_tokens},
+    {"unreported_calls",last_usage_.unreported_calls},
+    {"estimated_cost_usd",last_cost_usd_},
+    {"duration_ms",std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now()-turn_started).count()}});
   return turn.answer;
   } catch(const std::exception& e) {
     emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
