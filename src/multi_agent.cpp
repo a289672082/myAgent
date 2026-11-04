@@ -69,6 +69,9 @@ std::string mode_name(LoopMode m) {
     case LoopMode::PlanAndExecute: return "plan";
     case LoopMode::Reflection: return "reflect";
     case LoopMode::EvaluatorOptimizer: return "evaluate";
+    // 新模式可以作为 TeamTask.mode 交给指定 Worker，保留原来的名称编码。
+    case LoopMode::ReWOO: return "rewoo";
+    case LoopMode::ExecuteVerifyRepair: return "execute_verify_repair";
     default: return "react";
   }
 }
@@ -110,6 +113,8 @@ LoopMode parse_mode(const Json& v) {
   if (name == "plan") return LoopMode::PlanAndExecute;
   if (name == "reflect") return LoopMode::Reflection;
   if (name == "evaluate") return LoopMode::EvaluatorOptimizer;
+  if (name == "rewoo") return LoopMode::ReWOO;
+  if (name == "execute_verify_repair") return LoopMode::ExecuteVerifyRepair;
   throw std::runtime_error("Unsupported worker Loop mode: " + name);
 }
 void validate_options(const TeamOptions& o) {
@@ -799,7 +804,10 @@ TeamResult AgentTeam::run(const std::string& goal, const TeamOptions& options) {
       "You are the coordinator. Return ONLY a JSON object with tasks: "
       "{\"tasks\":[{\"id\":\"t1\",\"agent\":\"registered_name\","
       "\"description\":\"specific work\",\"depends_on\":[],"
-      "\"mode\":\"react\"}]}. Modes: react, plan, reflect, evaluate. "
+      "\"mode\":\"react\"}]}. Modes: react, plan, reflect, evaluate, rewoo"+(options.worker_loop.verify_execution
+          ?std::string(", execute_verify_repair"):std::string{})+
+      ". ReWOO needs predefined MCP tools; execute_verify_repair is only "
+      "available if the host installed a trusted verification callback. "
       "Dependencies must point to earlier tasks. "
       "Only assign registered agents. Never invent subagents, "
       "credential changes or tool permissions. Limit tasks to "+

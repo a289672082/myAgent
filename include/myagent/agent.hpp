@@ -281,6 +281,24 @@ public:
   LoopResult evaluate_and_optimize(const LoopInput& input, const LoopOptions& options = {});
   LoopResult evaluate_and_optimize(const std::string& task, const LoopOptions& options = {});
 
+  // ReWOO（Reasoning Without Observation 的工程化工具计划执行）：
+  // 1. Planner 一次生成工具名称、JSON 参数及前置依赖；
+  // 2. C++ 执行器逐个校验权限/审批/预算/Checkpoint 并直接调用 MCP，
+  //    不在每一步重新向模型请求下一条工具指令；
+  // 3. Solver 根据实际工具结果生成回答。工具错误直接失败，不假装成功。
+  // 使用场景：批量读取/查询、多个独立信息采集步骤；不适合需要每次观察后改变计划的任务。
+  LoopResult rewoo(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult rewoo(const std::string& task, const LoopOptions& options = {});
+
+  // Execute-Verify-Repair（执行-验证-修复）：
+  // 1. Executor 用授权工具完成一次工作；
+  // 2. LoopOptions::verify_execution 调用宿主真实编译/测试/校验；
+  // 3. 若验证失败，把真实原因反馈给模型进行修复，再调用宿主验证；
+  // 4. 仅宿主返回 passed=true 才成功；否则遵守 max_repairs/max_iterations。
+  // 禁止省略验证器；既有工具权限、审批/取消/断点机制仍适用。
+  LoopResult execute_verify_repair(const LoopInput& input, const LoopOptions& options = {});
+  LoopResult execute_verify_repair(const std::string& task, const LoopOptions& options = {});
+
   // 统一对话事件：user_message、assistant_delta、assistant_message、
   // tool_call、tool_result、turn_completed、turn_failed。
   // 回调同步执行；内部捕获宿主异常，避免破坏事务和工具执行。
