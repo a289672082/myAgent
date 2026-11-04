@@ -911,13 +911,45 @@ agent.set_conversation_callback([](const myagent::Json& event) {
 auto answer = agent.ask("你好");
 ```
 
+若只关心部分事件，可以使用具名的 `ConversationCallbacks` 回调组；
+它与上述统一 JSON 事件回调可以同时使用，互不影响：
+
+```cpp
+myagent::ConversationCallbacks hooks;
+hooks.on_user_message = [](const myagent::Json& e) {
+  std::cout << "提交内容: " << myagent::json::serialize(e.at("content")) << '\\n';
+};
+hooks.on_assistant_delta = [](const myagent::Json& e) {
+  std::cout << e.at("delta").as_string() << std::flush;
+};
+hooks.on_assistant_message = [](const myagent::Json& e) {
+  std::cout << "最终回复: " << e.at("content").as_string() << '\\n';
+};
+hooks.on_tool_call = [](const myagent::Json& e) {
+  std::cout << "工具: " << e.at("name").as_string() << '\\n';
+};
+hooks.on_tool_result = [](const myagent::Json& e) {
+  std::cout << "工具完成: " << e.at("call_id").as_string() << '\\n';
+};
+hooks.on_turn_completed = [](const myagent::Json& e) {
+  std::cout << "Token: " << e.at("total_tokens").as_uint64() << '\\n';
+};
+hooks.on_turn_failed = [](const myagent::Json& e) {
+  std::cerr << "执行未成功: " << e.at("error").as_string() << '\\n';
+};
+// 若要在工具回调中读取完整 arguments/output，显式设置：
+// hooks.include_tool_payloads = true;
+agent.set_conversation_callbacks(std::move(hooks));
+```
+
 工具参数和工具结果默认不放入回调；显式传入 `true` 才会包含
 `arguments` / `output`。对于 `ask_image()` 和 `ask_parts()`，
 `user_message` 只携带原始文字与媒体类型，不复制图片 Data URL/base64；
 原始多媒体内容仍按正常流程发给模型。
 
 多 Agent 推荐先调用
-`team.set_conversation_callback(callback)`，它会自动给协调器、已经
+`team.set_conversation_callback(callback)` 或
+`team.set_conversation_callbacks(hooks)`，它们会自动给协调器、已经
 注册以及之后通过 `add_agent` 注册的 Worker 设置相同监听器。
 也可以通过 `team.agent("worker").set_conversation_callback(...)`
 或 `team.set_coordinator_conversation_callback(...)` 分别覆盖。
