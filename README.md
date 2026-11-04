@@ -887,3 +887,30 @@ ctest --test-dir build -C Debug --output-on-failure -R "myagent_(agent_pinned_co
 与宿主配置的价格；成本上限是软预算，并不保证本次请求恰好不超额。
 Checkpoint 是为崩溃恢复提供的审计日志；对已启动但结果未知的外部副作用，
 仍需宿主核实，不能盲目重放。
+
+
+## 统一对话回调（C++）
+
+`Agent::set_conversation_callback(callback, include_tool_payloads=false)` 可监听普通
+`ask()`、`ask_parts()`、`react()`、其他 Loop，以及各个独立的子 Agent。
+事件是 JSON，`event` 字段包括 `user_message`、`assistant_delta`、
+`assistant_message`、`tool_call`、`tool_result`、`turn_completed`
+和 `turn_failed`。事件包含 `agent_id` 和 `phase`；Loop 的开始/结束
+事件还包含 `trace_id`。模型 SSE 流式输出时才会收到 `assistant_delta`；
+离线 Mock 或非流式后端不保证产生增量。
+
+```cpp
+agent.set_conversation_callback([](const myagent::Json& event) {
+  std::cout << myagent::json::serialize(event) << '\\n';
+});
+auto answer = agent.ask("你好");
+```
+
+工具参数和工具结果默认不放入回调；显式传入 `true` 才会包含
+`arguments` / `output`。多 Agent 可以通过
+`team.agent("worker").set_conversation_callback(...)` 为各 worker 订阅，
+也可通过 `team.coordinator()` 获取协调器（该访问器是 const，不支持修改）。
+回调同步执行且不允许在回调里重入同一 Agent；宿主回调抛出的异常会被捕获，
+避免影响执行。GUI 应将事件转发至 UI 线程。断点回放的已完成工具不会重复发
+工具事件；审批暂停前的工具意图事件可能在恢复时再次出现，应以 `call_id`
+去重。详见 `run_agent_conversation_callbacks_demo`。
