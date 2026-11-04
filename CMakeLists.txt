@@ -127,8 +127,7 @@ if(MYAGENT_BUILD_EXAMPLES)
   # 固定示例资源目录，保证从 build 或任意工作目录启动时都能找到样例。
   target_compile_definitions(run_skill_yaml_demo PRIVATE
     MYAGENT_SKILL_YAML_DEMO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/skill_yaml_demo")
-  # 四种循环各自使用独立源码和 run_xxx_demo() 函数。
-  # 六种 Loop 各自有带中文流程说明的独立演示，原有四种不受影响。
+  # 六种 Loop 各自有中文流程说明与独立 run_xxx_demo()，保留原有四种入口。
   foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer rewoo execute_verify_repair)
     add_executable(run_${mode}_demo examples/run_${mode}_demo.cpp)
     target_link_libraries(run_${mode}_demo PRIVATE myagent)
@@ -263,8 +262,8 @@ if(MYAGENT_BUILD_TESTS)
   add_test(NAME myagent_loops COMMAND myagent_loop_tests)
   set_tests_properties(myagent_loops PROPERTIES TIMEOUT 45)
   if(MYAGENT_BUILD_EXAMPLES)
-    # 六种 Loop 各自有带中文流程说明的独立演示，原有四种不受影响。
-  foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer rewoo execute_verify_repair)
+    # 运行全部六种 Loop Demo，验证行为而不仅是参与编译。
+    foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer rewoo execute_verify_repair)
       add_test(NAME myagent_${mode}_demo COMMAND run_${mode}_demo)
       set_tests_properties(myagent_${mode}_demo PROPERTIES TIMEOUT 30)
     endforeach()
