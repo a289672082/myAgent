@@ -43,6 +43,13 @@ int run_team_conversation_callbacks_demo() {
       std::lock_guard<std::mutex> lock(mu);
       events.push_back(event);
     });
+    unsigned named_completions=0;
+    myagent::ConversationCallbacks named;
+    named.on_turn_completed=[&](const myagent::Json&) {
+      std::lock_guard<std::mutex> lock(mu);
+      ++named_completions;
+    };
+    team.set_conversation_callbacks(std::move(named));
 
     myagent::TeamTask task;
     task.id="task-001";
@@ -110,6 +117,8 @@ int run_team_conversation_callbacks_demo() {
     }
     advanced_demo::ensure(saw_coordinator && saw_planned_worker,
                           "自动协作中协调器/子任务回调不完整");
+    advanced_demo::ensure(named_completions>=5,
+                          "团队具名回调未覆盖已注册/后注册 Worker 或 Coordinator");
 
     std::cout<<"run_team_conversation_callbacks_demo: team / delegate / run OK\n";
     return 0;
