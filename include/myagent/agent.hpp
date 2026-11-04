@@ -167,9 +167,6 @@ public:
               const std::string& model = "gpt-4o-mini-tts",
               std::chrono::milliseconds timeout = {}) const;
 private:
-  void emit_conversation(const Json& event) noexcept;
-  ConversationCallback conversation_callback_;
-  bool include_tool_payloads_ = false;
   Config config_;
 };
 
@@ -370,6 +367,9 @@ private:
   Json prepare_loop_input(const LoopInput& input, std::string& transcript,
       const std::function<std::chrono::milliseconds()>& remaining_time = {});
 
+  void emit_conversation(const Json& event) noexcept;
+  ConversationCallback conversation_callback_;
+  bool include_tool_payloads_ = false;
   Config config_;
   std::atomic_bool pause_requested_{false};
   detail::ExecutionJournal* active_journal_=nullptr; // 仅在 run_loop 持锁期间有效。
