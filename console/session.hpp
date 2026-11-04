@@ -32,7 +32,8 @@ enum class Permissions { Ask, Deny, Allow };
 // 新增功能若需 SDK 特性，应通过公开 API 实现，不为控制台增加 SDK 专用接口。
 class ConsoleSession {
  public:
-  ConsoleSession();
+  // 可注入 Model，仅供控制台自身的离线聊天回归测试使用，不修改 SDK。
+  explicit ConsoleSession(std::shared_ptr<myagent::Model> test_model = {});
 
   CommandResult handle(std::string_view command);
   void set_api_key(std::string value);
@@ -58,6 +59,7 @@ class ConsoleSession {
   void reset_agent();
   void ensure_agent();
   myagent::Config config_;
+  std::shared_ptr<myagent::Model> test_model_;
   std::unique_ptr<myagent::Agent> agent_;
   std::vector<McpEntry> endpoints_;
   Permissions permissions_=Permissions::Ask;
