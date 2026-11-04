@@ -61,8 +61,8 @@ struct LoopOptions {
   unsigned max_iterations = 8;
   unsigned max_model_calls = 32; // Total across all phases and tool calls.
   unsigned max_tool_calls = 32;  // Total across all phases.
-  // ReWOO：最多允许多少个预先确定的工具步骤（含依赖，运行时不可扩充）。
-  // 每一步都按 ToolPolicy / on_tool_approval 审批；工具失败立即结束，不擅自重试。
+  // Plan-and-Execute / ReWOO 共用的最大计划步骤数；ReWOO 运行时不可扩充计划。
+  // ReWOO 每一步都按 ToolPolicy / on_tool_approval 审批，失败立即终止而不擅自重试。
   unsigned max_plan_steps = 8;
   unsigned max_replans = 1;
   unsigned max_step_retries = 0; // 默认不重试，避免重复执行写文件/提交等有副作用的工具。
