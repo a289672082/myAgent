@@ -128,7 +128,8 @@ if(MYAGENT_BUILD_EXAMPLES)
   target_compile_definitions(run_skill_yaml_demo PRIVATE
     MYAGENT_SKILL_YAML_DEMO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/skill_yaml_demo")
   # 四种循环各自使用独立源码和 run_xxx_demo() 函数。
-  foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer)
+  # 六种 Loop 各自有带中文流程说明的独立演示，原有四种不受影响。
+  foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer rewoo execute_verify_repair)
     add_executable(run_${mode}_demo examples/run_${mode}_demo.cpp)
     target_link_libraries(run_${mode}_demo PRIVATE myagent)
     target_compile_definitions(run_${mode}_demo PRIVATE
@@ -250,6 +251,11 @@ if(MYAGENT_BUILD_TESTS)
     add_test(NAME myagent_token_usage_demo COMMAND run_token_usage_demo)
     set_tests_properties(myagent_token_usage_demo PROPERTIES TIMEOUT 30)
   endif()
+  # P1 新增 ReWOO / Execute-Verify-Repair：工具安全、Checkpoint 和宿主验证回归。
+  add_executable(myagent_p1_loop_modes_tests tests/test_p1_loop_modes.cpp)
+  target_link_libraries(myagent_p1_loop_modes_tests PRIVATE myagent)
+  add_test(NAME myagent_p1_loop_modes COMMAND myagent_p1_loop_modes_tests)
+  set_tests_properties(myagent_p1_loop_modes PROPERTIES TIMEOUT 45)
   add_executable(myagent_loop_tests tests/test_loops.cpp)
   target_link_libraries(myagent_loop_tests PRIVATE myagent)
   target_compile_definitions(myagent_loop_tests PRIVATE
@@ -257,7 +263,8 @@ if(MYAGENT_BUILD_TESTS)
   add_test(NAME myagent_loops COMMAND myagent_loop_tests)
   set_tests_properties(myagent_loops PROPERTIES TIMEOUT 45)
   if(MYAGENT_BUILD_EXAMPLES)
-    foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer)
+    # 六种 Loop 各自有带中文流程说明的独立演示，原有四种不受影响。
+  foreach(mode IN ITEMS react plan_execute reflection evaluator_optimizer rewoo execute_verify_repair)
       add_test(NAME myagent_${mode}_demo COMMAND run_${mode}_demo)
       set_tests_properties(myagent_${mode}_demo PROPERTIES TIMEOUT 30)
     endforeach()
