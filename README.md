@@ -11,7 +11,7 @@
 - 图片输入：PNG / JPEG / WebP / GIF 转 base64 Data URL
 - 音频输入：转写成文字后继续对话；音频输出：合成 MP3
 - 保存/加载对话历史，注入 Model mock 做离线测试
-- 四种循环 ReAct / Plan-and-Execute / Reflection / Evaluator-Optimizer（统一工具预算，支持多图及音频转写）
+- 六种循环：ReAct / Plan-and-Execute / Reflection / Evaluator-Optimizer / ReWOO / Execute-Verify-Repair（统一预算，支持多图及音频转写）
 - Token 用量统计：Responses 真实 usage、单次与累计、按循环阶段和模型分组、缓存与推理 Token
 - P0/P1/P2：完整轮次上下文压缩、独立模型配置的 AgentTeam、任务委派、顺序及并行协作、工作区受限文件工具
 
@@ -376,7 +376,7 @@ team.add_agent(worker);
 - **验证扩展**：新增 `myagent_audit` 测试；CI 增加 Linux/Windows Release 与 Linux ASan/UBSan；Release 版测试保持 assert 检查有效。
 ## Token 消耗统计（Responses usage）
 
-Agent 直接读取每次 Responses API 返回的 `usage`，**不靠文字字符数估算**。支持普通 `ask()`、图片请求、工具调用后的模型轮次，以及全部四种 Agent Loop。每个 Loop 都会统计所有规划、执行、反思、评估阶段的用量。
+Agent 直接读取每次 Responses API 返回的 `usage`，**不靠文字字符数估算**。支持普通 `ask()`、图片请求、工具调用后的模型轮次，以及全部六种 Agent Loop。每个 Loop 都会统计所有规划、执行、反思、评估阶段的用量。
 
 ```cpp
 myagent::Agent agent(config);
@@ -414,7 +414,7 @@ agent.reset_usage();   // 显式清空最近一次与累计统计（不会影响
 独立的离线示例 `examples/run_token_usage_demo.cpp` 提供 `run_token_usage_demo()`；测试 `tests/test_token_usage.cpp` 模拟真实 usage、工具轮次、模型缺失统计以及失败任务的账本保留。
 ## 统一 Agent 循环（六种策略 + 图片和音频）
 
-新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供四种策略：
+新增 myagent::LoopInput、LoopOptions、LoopResult、LoopMode、LoopStatus（include/myagent/loop.hpp），在不破坏原有 ask() 的基础上提供六种策略（下面先介绍原有四种，新增两种见文末 P1 章节）：
 - ReAct：决策 → 工具调用 → 观察 → 最终回答。
 - Plan-and-Execute：严格 JSON 规划 → 单步执行 → 阻塞时受限重规划 → 汇总。
 - Reflection：草稿 → JSON 自评 → 修订 → 检查完成。
@@ -445,7 +445,7 @@ image_task.text = "比较两张图片";
 image_task.images = {"before.png", "after.png"};
 auto image_result = agent.evaluate_and_optimize(image_task, options);
 
-// 音频先转写为文字后进入四种循环，不是原始音频声学推理。
+// 音频先转写为文字后进入六种循环，不是原始音频声学推理。
 // 真实转写/语音合成需要兼容的独立 API 端点。
 myagent::LoopInput audio_task;
 audio_task.text = "总结录音";
