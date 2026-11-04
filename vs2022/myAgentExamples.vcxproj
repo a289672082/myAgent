@@ -32,7 +32,7 @@
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" examples "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\examples\examples\$(Configuration)\run_agent_demo.exe</NMakeOutput>
     <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
-    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64;%(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
     <LocalDebuggerCommand>$(SolutionDir)build-vs2022\examples\examples\$(Configuration)\run_agent_demo.exe</LocalDebuggerCommand>
     <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
@@ -43,7 +43,7 @@
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" examples "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\examples\examples\$(Configuration)\run_agent_demo.exe</NMakeOutput>
     <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
-    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64;%(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
     <LocalDebuggerCommand>$(SolutionDir)build-vs2022\examples\examples\$(Configuration)\run_agent_demo.exe</LocalDebuggerCommand>
     <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>

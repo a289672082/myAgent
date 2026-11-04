@@ -32,7 +32,7 @@
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\sdk\$(Configuration)\myagent.lib</NMakeOutput>
     <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
-    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64;%(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions>_DEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <NMakeBuildCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)"</NMakeBuildCommandLine>
@@ -40,7 +40,7 @@
     <NMakeCleanCommandLine>"$(ProjectDir)build.cmd" sdk "$(Configuration)" clean</NMakeCleanCommandLine>
     <NMakeOutput>$(SolutionDir)build-vs2022\sdk\$(Configuration)\myagent.lib</NMakeOutput>
     <NMakeIncludeSearchPath>$(SolutionDir)sdk\include;$(SolutionDir)third_party\myMcpTools\include;$(SolutionDir)third_party\myMcpTools\third_party\jsoncons\include;$(SolutionDir)third_party\FTXUI\include;$(SolutionDir)third_party\yaml-cpp\include</NMakeIncludeSearchPath>
-    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64;%(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions>NDEBUG;WIN32;_WIN64</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <ItemGroup>
     <ClInclude Include="..\sdk\include\myagent\agent.hpp" />
