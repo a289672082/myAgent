@@ -91,7 +91,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ~~~
 
-已经克隆时可以执行 git submodule update --init --recursive。CMake 默认完全离线，不会在配置过程中下载依赖。也可以用 -DMYAGENT_MCP_DIR=/path/to/myMcpTools 指向已有 SDK 源码。
+已经克隆时可以执行 git submodule update --init --recursive。CMake 默认完全离线，不会在配置过程中下载依赖。MCP SDK 和依赖源码已内置于 mcp/；无需额外下载或指定 MYAGENT_MCP_DIR。
 
 ## 快速示例
 
