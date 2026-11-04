@@ -1,0 +1,46 @@
+name: Isolated console (FTXUI)
+on:
+  push:
+    branches: [main]
+    paths: ['console/**', '.github/workflows/console.yml']
+  pull_request:
+    paths: ['console/**', '.github/workflows/console.yml']
+  workflow_dispatch:
+
+# 控制台是独立程序。此 CI 从 console/CMakeLists.txt 进入，
+# SDK 主 CI 仍照旧从仓库根目录构建，不会下载 FTXUI。
+jobs:
+  linux-console:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install C++20 and OpenSSL dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
+      - name: Configure standalone console
+        run: >
+          cmake -S console -B build-console -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DMYAGENT_CONSOLE_FETCH_FTXUI=ON
+          -DMYAGENT_CONSOLE_BUILD_TESTS=ON
+      - name: Build standalone console and commands tests
+        run: cmake --build build-console --target myagent_console myagent_console_commands_tests --parallel 2
+      - name: Test console command parser without API Key or external MCP
+        run: ctest --test-dir build-console --output-on-failure --timeout 30
+
+  windows-console:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure standalone console
+        run: >
+          cmake -S console -B build-console -A x64
+          -DMYAGENT_CONSOLE_FETCH_FTXUI=ON
+          -DMYAGENT_CONSOLE_BUILD_TESTS=ON
+      - name: Build standalone console and commands tests
+        run: cmake --build build-console --config Debug --target myagent_console myagent_console_commands_tests --parallel 2
+      - name: Test offline console commands
+        run: ctest --test-dir build-console -C Debug --output-on-failure --timeout 30
