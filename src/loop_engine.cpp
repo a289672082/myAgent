@@ -48,12 +48,14 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
                            const LoopOptions& options) {
   const std::lock_guard<std::recursive_mutex> session_guard(session_mutex_);
   LoopResult result;
+  const auto turn_started=std::chrono::steady_clock::now();
   // 指针仅在持有 session_mutex_ 的本次 Loop 内有效；异常也必须清理。
   struct ResetActive {
     std::function<void()> reset;
     ~ResetActive(){reset();}
   } reset_active{[&]{active_journal_=nullptr;active_loop_options_=nullptr;
-                       active_trace_id_.clear();}};
+                       active_trace_id_.clear();active_turn_id_.clear();
+                       active_task_id_.clear();}};
   std::unique_ptr<detail::ExecutionJournal> journal;
   Json compacted_history_prefix = json::array{}; // 记录本次 Loop 被压缩的原始会话前缀。
   std::set<std::string> executed_effects; // 跨阶段防止非幂等调用被重新规划重复执行。
@@ -66,6 +68,8 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
      }))
     throw std::invalid_argument("Trace ID must be 32 lowercase hex characters");
   result.trace_id=active_trace_id_;
+  active_turn_id_=detail::trace_hex(16);
+  active_task_id_=options.task_id;
   Json working = history_; // All phases share an isolated working history.
   Json original_input = nullptr;
   Json latest_response = nullptr;
@@ -423,7 +427,12 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
       {"phase","loop"},{"content",result.answer},{"trace_id",result.trace_id}});
     emit_conversation(json::object{{"event","turn_completed"},{"agent_id",config_.agent_id},
       {"phase","loop"},{"answer",result.answer},{"trace_id",result.trace_id},
-      {"model_calls",result.model_calls},{"tool_calls",result.tool_calls}});
+      {"model_calls",result.model_calls},{"tool_calls",result.tool_calls},
+      {"total_tokens",result.usage.total_tokens},
+      {"unreported_calls",result.usage.unreported_calls},
+      {"estimated_cost_usd",result.estimated_cost_usd},
+      {"duration_ms",std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now()-turn_started).count()}});
     return result;
   } catch (const detail::LoopAbort& e) {
     result.status = e.status;
@@ -450,7 +459,11 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
   // 暂停与失败都报告终止状态；不把已执行工具结果当作可重放。
   emit_conversation(json::object{{"event","turn_failed"},{"agent_id",config_.agent_id},
     {"phase","loop"},{"trace_id",result.trace_id},{"error",result.error},
-    {"status",static_cast<int>(result.status)}});
+    {"status",static_cast<int>(result.status)},
+    {"model_calls",result.model_calls},{"tool_calls",result.tool_calls},
+    {"total_tokens",result.usage.total_tokens},
+    {"duration_ms",std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now()-turn_started).count()}});
   // No commit on error: partial tool side effects cannot be automatically reverted.
   return result;
 }
