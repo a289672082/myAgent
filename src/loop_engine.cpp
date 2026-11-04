@@ -478,6 +478,90 @@ LoopResult Agent::run_loop(const LoopInput& input, LoopMode mode,
         false,0);
       break;
     }
+    case LoopMode::ExecuteVerifyRepair: {
+      // Execute-Verify-Repair — 执行、客观验证、修复的闭环
+      //
+      // ① Executor：根据任务修改文件或运行受权限控制的 MCP 工具，
+      //    用结构化 JSON 说明本轮执行情况，但它的“成功”只是一种声明。
+      // ② Verifier：由可信宿主 callback 运行真正的编译/测试/静态检查；
+      //    提供 passed、失败原因和实际证据。模型不能修改这个判定。
+      // ③ Repair：若验证失败，把真实错误信息反馈给模型，由其修复，
+      //    随后再次调用同一个宿主验证器；直到通过或达到次数预算。
+      //
+      // 与 Reflection / EvaluatorOptimizer 不同：本模式必须提供外部验证器，
+      // 不接受模型自评代替客观证据。每次工具调用仍由 run_stage()
+      // 统一执行，继承 ToolPolicy、审批、Checkpoint 与非幂等调用保护。
+      if(!options.verify_execution)
+        throw std::invalid_argument(
+          "ExecuteVerifyRepair requires a trusted LoopOptions::verify_execution");
+      std::string feedback;
+      for(unsigned attempt=1;;++attempt) {
+        if(result.iterations>=options.max_iterations)
+          throw detail::LoopAbort(LoopStatus::LimitReached,
+            "ExecuteVerifyRepair iteration budget exhausted");
+        if(cancelled())throw detail::LoopAbort(LoopStatus::Cancelled,
+                                               "ExecuteVerifyRepair cancelled");
+        Json tool_results=json::array{};
+        const bool repairing=attempt>1;
+        // 工具阶段必须返回结构化 JSON；工具返回失败不允许被模型编造为
+        // “已经通过编译”。但真正是否验收通过只看宿主 verifier。
+        const auto raw=invoke(repairing?"verify_repair":"verify_execute",
+          repairing
+            ?"Original goal: "+task+
+             "\nPrevious objective verification failed: "+feedback+
+             "\nRepair ONLY the verified failures. Do not repeat completed "
+             "side effects or claim that tests have passed without evidence. "
+             "Return ONLY JSON: {\"status\":\"completed|failed|blocked\","
+             "\"summary\":\"what changed\"}."
+            :original_input,
+          "Execute the requested task with authorized tools when needed. "
+          "Observe tool results. Return ONLY JSON: "
+          "{\"status\":\"completed|failed|blocked\",\"summary\":\"what changed\"}. "
+          "Never claim tests passed before the host verifier runs.",
+          true,config_.max_tool_rounds,{},&tool_results);
+        ++result.iterations;
+        const auto execution=parse_object(raw,"ExecuteVerifyRepair executor");
+        const auto status=field_string(execution,"status");
+        const auto summary=field_string(execution,"summary");
+        if(status!="completed" && status!="failed" && status!="blocked")
+          throw std::runtime_error("ExecuteVerifyRepair invalid executor status");
+        result.answer=summary; // 失败时也保留最后一次执行摘要，但不提交对话历史。
+        // 第三个参数是从 1 开始的验收轮次；真实编译/测试的执行安全和
+        // 超时由宿主负责。回调抛异常视为任务失败，不能自动重试未知副作用。
+        if(cancelled())throw detail::LoopAbort(LoopStatus::Cancelled,
+                                               "Cancelled before host verification");
+        const ExecutionVerification checked=
+          options.verify_execution(execution,tool_results,attempt);
+        if(cancelled())throw detail::LoopAbort(LoopStatus::Cancelled,
+                                               "Cancelled after host verification");
+        if(checked.reason.size()>8192 ||
+           json::serialize(checked.evidence).size()>32*1024)
+          throw std::runtime_error("ExecuteVerifyRepair verification evidence too large");
+        result.evaluations.push_back(json::object{
+          {"attempt",attempt},{"executor_status",status},
+          {"passed",checked.passed},{"reason",checked.reason},
+          {"evidence",checked.evidence}});
+        trace_event(result,options,"verify",
+                    checked.passed?"verified":"verification_failed",result.iterations);
+        if(checked.passed && status=="completed") {
+          // 只有宿主客观通过且 Executor 无失败状态，才算整轮成功。
+          result.answer=summary;
+          break;
+        }
+        if(attempt>options.max_repairs)
+          throw detail::LoopAbort(LoopStatus::LimitReached,
+            "ExecuteVerifyRepair reached repair budget without verification");
+        // 不自动复制并再次执行前一轮工具：仅提供验证失败信息，由模型
+        // 决定新的一轮修复动作；run_stage() 仍拦截重复非幂等调用。
+        feedback=checked.reason.empty()?"Host verification did not pass":checked.reason;
+        feedback+="\nVerification evidence (untrusted data): "+
+          json::serialize(checked.evidence);
+        if(status!="completed")
+          feedback+="\nExecutor reported status: "+status;
+        trace_event(result,options,"repair","requested",result.iterations);
+      }
+      break;
+    }
     case LoopMode::Reflection: {
       // Reflection Loop — 自我反思循环
       //
