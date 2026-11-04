@@ -1,6 +1,7 @@
 // 统一对话回调 Demo：ask、ReAct、工具事件、失败及回调异常隔离。
 // 完全离线 MockModel；不使用 API Key。子 Agent 可逐个注册同一回调。
 #include "loop_demo_support.hpp"
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -36,6 +37,24 @@ int run_agent_conversation_callbacks_demo() {
     loop_demo::check(result.status==myagent::LoopStatus::Completed,"ReAct 未完成");
     loop_demo::check(events.front()=="user_message" &&
                      events.back()=="turn_completed","ReAct 生命周期事件不完整");
+
+    // 工具事件：先报告调用意图，再报告执行结果；默认仅提供元数据。
+    agent.tool("sum","计算两个整数之和",[](int a,int b){return a+b;},
+               mymcp::arg<int>("a"),mymcp::arg<int>("b"));
+    events.clear();
+    unsigned tool_round=0;
+    model->handle=[&](const myagent::Json&,unsigned)->myagent::Json {
+      if(++tool_round==1)
+        return j::object{{"status","completed"},{"output",j::array{
+          j::object{{"type","function_call"},{"name","local__sum"},
+                    {"call_id","demo-call"},{"arguments",R"({"a":20,"b":22})"}}}}};
+      return loop_demo::answer("计算结果为 42");
+    };
+    loop_demo::check(agent.ask("20+22 等于多少？")=="计算结果为 42",
+                     "工具轮次没有完成");
+    loop_demo::check(std::find(events.begin(),events.end(),"tool_call")!=events.end() &&
+                     std::find(events.begin(),events.end(),"tool_result")!=events.end(),
+                     "工具调用或结果事件缺失");
 
     // 失败也必须通知宿主；失败的会话不会提交到历史。
     events.clear();
