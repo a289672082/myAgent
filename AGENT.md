@@ -1,3 +1,7 @@
+# MCP SDK 整合约束（2026-11）：MCP 所有源码在 mcp/sdk/include、mcp/sdk/src，
+# MCP Demo 在 mcp/examples，MCP 测试在 mcp/tests；Agent 独立于 MCP 演示程序。
+# 严禁重新添加 third_party/myMcpTools (已删除) 子模块或配置时动态下载源码。
+# jsoncons、cpp-httplib 是本仓库直接维护的独立、固定版本 Git 子模块。
 # DeveloperTools 一份实现、多适配器；不允许把 23 个工具加入 SDK 公共头和链接接口。
 # 所有 Native/MCP Handler 应共享 tools/developer_tools/src 的定义和 Schema。
 # VS2022 规范：myAgent.sln 为版本化的 NMake 包装工程，vs2022/build.cmd 调用唯一 CMake；
@@ -113,7 +117,7 @@ myagent::Agent agent(config);
 
 ## MCP 设计
 
-myMcpTools 作为独立 SDK 通过 third_party/myMcpTools Git submodule 使用。
+myMcpTools 作为独立 SDK 通过 third_party/myMcpTools (已删除) Git submodule 使用。
 项目直接编译 SDK 的现有 mcp.cpp、schema.cpp、oauth.cpp 和 oauth_client.cpp，复用 jsoncons、cpp-httplib；不复制或维护第二套 MCP 协议实现。
 普通调用方使用 Agent 快捷接口，Client 生命周期由 Agent 管理：
 

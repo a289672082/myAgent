@@ -1,0 +1,42 @@
+name: MCP standalone SDK, demos and tests
+on:
+  push:
+    branches: [main]
+    paths: ['mcp/**', 'third_party/jsoncons', 'third_party/cpp-httplib', '.gitmodules', 'sdk/CMakeLists.txt', '.github/workflows/mcp.yml']
+  pull_request:
+    paths: ['mcp/**', 'third_party/jsoncons', 'third_party/cpp-httplib', '.gitmodules', 'sdk/CMakeLists.txt', '.github/workflows/mcp.yml']
+  workflow_dispatch:
+concurrency:
+  group: myagent-mcp-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  mcp-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev python3
+      - name: Configure standalone MCP (offline)
+        run: cmake -S mcp -B build-mcp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Build complete MCP SDK, demos and tests
+        run: cmake --build build-mcp --parallel 2
+      - name: Run MCP CTest suite
+        run: ctest --test-dir build-mcp --output-on-failure --timeout 90
+      - name: Standalone MCP SDK-only configure/build
+        run: cmake -S mcp/sdk -B build-mcp-sdk -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFETCHCONTENT_FULLY_DISCONNECTED=ON && cmake --build build-mcp-sdk --target myagent_mcp --parallel 2
+  mcp-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure standalone MCP (offline)
+        run: cmake -S mcp -B build-mcp -A x64 -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Build complete MCP SDK, demos and tests
+        run: cmake --build build-mcp --config Debug --parallel 2
+      - name: Run MCP CTest suite
+        run: ctest --test-dir build-mcp -C Debug --output-on-failure --timeout 90
+      - name: Standalone MCP SDK-only configure
+        run: cmake -S mcp/sdk -B build-mcp-sdk -A x64 -DFETCHCONTENT_FULLY_DISCONNECTED=ON

@@ -2,9 +2,9 @@ name: Console entry (pinned local FTXUI)
 on:
   push:
     branches: [main]
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'mcp/**', 'third_party/jsoncons', 'third_party/cpp-httplib', 'tools/**', 'mcp_servers/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   pull_request:
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'mcp/**', 'third_party/jsoncons', 'third_party/cpp-httplib', 'tools/**', 'mcp_servers/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   workflow_dispatch:
 concurrency:
   group: myagent-console-${{ github.event.pull_request.number || github.ref }}

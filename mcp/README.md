@@ -1,3 +1,27 @@
+# MCP SDK — integrated with myAgent
+
+本目录是从独立仓库 **a289672082/myMcpTools** 的 `main` 最新提交
+`3a6c8bf434ae3c1fd708ff43aab6b24f3e8dbd30` 导入的源码、示例、回归测试及文档。
+该仓库不再是构建、运行或 Git 子模块依赖。MCP 公共 API 名称（`mymcp::Client`、`mymcp::Server`）保持不变。
+
+目录：`mcp/sdk/include/mymcp`、`mcp/sdk/src`、`mcp/examples`、`mcp/tests`。
+直接依赖源码位于仓库根目录的 `third_party/jsoncons` 和 `third_party/cpp-httplib`
+（固定上游子模块；需首次运行 `git submodule update --init --recursive`）。
+
+```sh
+cmake -S mcp/sdk -B build-mcp-sdk
+cmake --build build-mcp-sdk
+
+cmake -S mcp -B build-mcp -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-mcp
+ctest --test-dir build-mcp --output-on-failure
+```
+
+下面保留了上游完整功能说明，但其中从独立 myMcpTools 仓库根目录运行的历史命令
+在本仓库中需将 `-S .` 改为 `-S mcp`，路径 `examples/` 改为 `mcp/examples/`。
+
+---
+
 # myMcpTools
 
 A C++20 MCP client and server library with convenient typed tool registration.

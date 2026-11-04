@@ -4,7 +4,7 @@
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
 **Visual Studio 2022：** 仓库根目录已包含 [myAgent.sln](myAgent.sln)。
-直接打开解决方案即可使用 Console、SDK、Examples、Tests 四个项目（x64 Debug/Release）；
+直接打开解决方案即可使用 Console、Agent SDK、MCP SDK、各自示例和测试项目（x64 Debug/Release）；
 控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
 SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
 
@@ -29,14 +29,19 @@ myAgent/
 ├── sdk/
 │   ├── CMakeLists.txt       # 可独立 CMake 构建 SDK
 │   ├── include/myagent/     # SDK 公共接口（不变）
-│   └── src/                 # SDK 核心源码
+│   └── src/                 # Agent SDK 核心源码
+├── mcp/
+│   ├── sdk/                 # 独立 MCP C++ SDK（本仓库直接管理源码）
+│   ├── examples/            # MCP 独立示例
+│   └── tests/               # MCP 独立测试与 fixtures
 ├── tools/developer_tools/   # 共享 23 个 C++ 工具和双注册适配器
 ├── mcp_servers/developer_tools/ # 独立 MCP stdio Server
 ├── examples/                # 独立示例及 CMakeLists.txt
 ├── tests/                   # SDK 回归测试及 CMakeLists.txt
 └── third_party/
     ├── FTXUI/               # v7.0.3 Git 子模块，固定源码
-    ├── myMcpTools/          # MCP 子模块
+    ├── jsoncons/            # MCP JSON 依赖，固定上游 Git 版本
+    ├── cpp-httplib/         # MCP HTTP 依赖，固定上游 Git 版本
     └── yaml-cpp/            # YAML 子模块
 ```
 
@@ -66,10 +71,30 @@ cmake --build build-sdk-tests --config Debug
 ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 ```
 
+## MCP SDK 独立构建 / Demo / 测试
+
+```sh
+# 只构建 MCP SDK（不编译 Agent、不依赖 FTXUI）
+cmake -S mcp/sdk -B build-mcp-sdk
+cmake --build build-mcp-sdk --config Debug
+
+# MCP SDK + 全部 MCP Demo + 完整协议测试（Windows/Linux）
+cmake -S mcp -B build-mcp -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-mcp --config Debug --parallel 2
+ctest --test-dir build-mcp -C Debug --output-on-failure
+```
+
+MCP Demo 在 [mcp/examples/](mcp/examples/)，MCP 测试在 [mcp/tests/](mcp/tests/)；
+Agent 的 Demo 仍在 [examples/](examples/)，测试仍在 [tests/](tests/)。
+MCP 协议兼容性与安全说明保留在 [mcp/README.md](mcp/README.md)、
+[mcp/COMPATIBILITY.md](mcp/COMPATIBILITY.md) 及 [mcp/SECURITY.md](mcp/SECURITY.md)。
+
 ---
 
 ## 原有 SDK 使用指南
-独立 C++20 Agent 项目，复用 [myMcpTools](https://github.com/a289672082/myMcpTools) 的 MCP 客户端、服务端、JSON、HTTP、OAuth 和其第三方源码。myMcpTools 使用固定提交的 Git submodule；Agent 源码全部在本仓库。
+本项目现已把 [myMcpTools](https://github.com/a289672082/myMcpTools) 的最新 MCP SDK 源码与全部独立 Demo/测试整合进 `mcp/`，源自上游提交 `3a6c8bf434ae3c1fd708ff43aab6b24f3e8dbd30`。
+**不再需要克隆或初始化 myMcpTools 仓库**；Agent SDK 位于 `sdk/`，MCP SDK 位于 `mcp/sdk/`，分别可独立编译。
+MCP 的直接第三方依赖为固定提交的 `jsoncons` 和 `cpp-httplib` Git 子模块，子模块初始化后 CMake 完全离线。
 
 ## 功能
 
@@ -96,7 +121,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ~~~
 
-已经克隆时可以执行 git submodule update --init --recursive。CMake 默认完全离线，不会在配置过程中下载依赖。也可以用 -DMYAGENT_MCP_DIR=/path/to/myMcpTools 指向已有 SDK 源码。
+已经克隆时请执行 `git submodule sync --recursive && git submodule update --init --recursive`。CMake 默认完全离线，不会从 GitHub 拉取 myMcpTools；`MYAGENT_MCP_DIR` 旧选项已废弃，不再需要。
 
 ## 快速示例
 
@@ -686,12 +711,12 @@ For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow
 
 - The Agent uses bounded paginated MCP tool discovery and rejects oversized schemas/catalogs. The **MCP SDK transport** must also enforce payload limits; an in-process callback can still allocate a large JSON response before returning it.
 - History and Memory saves refuse simultaneous writers using an adjacent `*.lock` directory, as Checkpoints already do. A crashed process can leave a stale directory; remove it **only after verifying no writer is active**. Loaded or previously saved files also use compare-and-replace within the lock, rejecting stale revisions instead of silently overwriting newer content. First saves to a different destination have no prior revision and intentionally replace the destination. Applications should use load() before updating a shared history/memory file, or explicitly coordinate initial writes.
-- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, and the pinned stdio transport now enforces a finite deadline for non-cooperative children. 
+- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The integrated MCP SDK HTTP transport has its own network read timeout, and the pinned stdio transport now enforces a finite deadline for non-cooperative children. 
 
 
 ## P0/P1 MCP 硬截止时间与严格进程隔离（2026-11-01）
 
-Agent 通过 myMcpTools 的 RequestOptions 在 MCP JSON 解析之前执行字节限制，并把 Loop 剩余时间传入发现、分页和工具调用。默认 mcp_timeout_seconds=30，max_mcp_response_bytes=1 MiB，后者不得超过 4 MiB。
+Agent 通过仓库内 MCP SDK 的 RequestOptions 在 MCP JSON 解析之前执行字节限制，并把 Loop 剩余时间传入发现、分页和工具调用。默认 mcp_timeout_seconds=30，max_mcp_response_bytes=1 MiB，后者不得超过 4 MiB。
 
 ~~~cpp
 myagent::Config config;

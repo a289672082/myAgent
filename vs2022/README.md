@@ -5,7 +5,10 @@
 - **myAgentConsole**（默认启动/默认编译项目）：构建 `console/` 的 FTXUI 交互控制台，可直接 F5 调试，工作目录为仓库根。
 - **myAgentSDK**：只构建 `sdk/` 公共 C++20 SDK，不读取 FTXUI。
 - **myAgentExamples**：构建 SDK 全部示例，未绑定控制台。
-- **myAgentTests**：构建/运行 SDK 全部 CTest（由 `build.cmd` 完成）。
+- **myAgentTests**：构建/运行 Agent SDK 全部 CTest（由 `build.cmd` 完成）。
+- **myMcpSDK**：只编译 `mcp/sdk/` 的 MCP Runtime，不需要 Agent SDK 或 FTXUI。
+- **myMcpExamples**：构建 `mcp/examples/` 中全部 MCP 演示程序。
+- **myMcpTests**：构建并运行 `mcp/tests/` 中完整 MCP 协议、HTTP、OAuth 和 SSE 测试。
 
 这些 `.vcxproj` 是 VS2022 的 **Makefile/NMake 桥接工程**：解决方案可直接打开、浏览源码、执行 Build/Clean/Rebuild、F5 调试；底层编译仍由仓库唯一的 CMakeLists 管理，这样不会手工复制 3rd-party 依赖或 SDK 编译选项。它们不是手工维护的 `ClCompile` 构建规则（源码条目用于 VS 浏览）。
 
@@ -35,3 +38,19 @@ rem 打开 build-vs2022\native-sdk-demos\myAgentConsole.sln
 ```
 
 注意：`build-vs2022/` 是构建输出，不提交至 Git。实际源码、SDK API、CMake 选项和 SDK CI 不因这些 VS 文件而改变。
+
+## MCP 独立 Visual Studio 项目
+
+`myAgent.sln` 还包含 `myMcpSDK`、`myMcpExamples`、
+`myMcpTests` 三个 NMake 工程。默认解决方案构建目标仍是控制台，
+需要单独编译/测试 MCP 时右键对应项目选择“生成”。
+
+也可用 CMake 直接生成原生 VS2022 工程：
+
+```bat
+cmake -S mcp -B build-mcp-vs2022 -G "Visual Studio 17 2022" -A x64
+cmake --build build-mcp-vs2022 --config Debug
+ctest --test-dir build-mcp-vs2022 -C Debug --output-on-failure
+```
+
+MCP SDK 已位于仓库 `mcp/sdk`，不存在 `third_party/myMcpTools` 依赖。
