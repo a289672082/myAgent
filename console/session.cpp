@@ -1,4 +1,8 @@
 #include "session.hpp"
+#ifdef MYAGENT_CONSOLE_DEVELOPER_TOOLS
+#include "developer_tools/developer_tools.hpp"
+#include <filesystem>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -111,6 +115,8 @@ std::string help() {
     "  /apikey env <VAR>            从环境变量获取 API Key\n"
     "  /apikey clear                清除 API Key\n"
     "  /mcp                        列出 MCP 服务\n"
+    "  /tools                      查看/开关内置原生开发工具\n"
+    "  /tools on|off               开启/禁用 23 个原生工具\n"
     "  /mcp add <name> stdio <program> [args...]\n"
     "  /mcp add <name> http <https://...> [TOKEN_ENV]\n"
     "  /mcp remove <name>           删除 MCP 服务\n"
@@ -156,14 +162,15 @@ CommandResult ConsoleSession::status() const {
     <<"\napi_key:      "<<(has_credentials()?"已设置 (隐藏)":"未设置")
     <<"\nloop:         "<<loop_name(mode_)
     <<"\npermissions:  "<<permission_name(permissions_)
-    <<"\nmcp servers:  "<<endpoints_.size();
+    <<"\nmcp servers:  "<<endpoints_.size()
+    <<"\nnative tools: "<<(native_tools_enabled_?"enabled (23)":"disabled");
   if(agent_)ss<<"\nused tokens:  "<<agent_->total_usage().total_tokens;
   return {CommandKind::Info,ss.str()};
 }
 
 std::vector<std::string> ConsoleSession::suggestions(std::string_view prefix) const {
   static const std::vector<std::string> commands{
-    "/help","/status","/model","/baseurl","/apikey","/protocol","/mcp",
+    "/help","/status","/model","/baseurl","/apikey","/protocol","/mcp","/tools",
     "/permissions","/mode","/usage","/new","/clear","/exit"};
   std::vector<std::string> output;
   if(prefix.empty() || prefix.front()!='/')return output;
@@ -308,6 +315,27 @@ CommandResult ConsoleSession::handle(std::string_view input) {
                    "支持 react|plan|reflect|evaluate|rewoo；验证修复模式需要宿主真实验证器，不在控制台中伪造。"};
       return {CommandKind::Info,"Loop 模式已切换为 "+loop_name(mode_)};
     }
+    if(cmd=="/tools") {
+#ifdef MYAGENT_CONSOLE_DEVELOPER_TOOLS
+      if(w.size()==1) {
+        return {CommandKind::Info,
+          std::string("本地原生工具：")+(native_tools_enabled_?"已启用":"已禁用")+
+          "\n23 个工具来自独立 developer_tools 库，工作区为控制台启动目录。" +
+          "\n工具调用默认逐次询问；危险写入、编译、下载必须经批准。" +
+          "\n支持 /tools on 与 /tools off（修改后清除当前对话）。"};
+      }
+      if(w.size()==2 && (w[1]=="on" || w[1]=="off")) {
+        native_tools_enabled_=(w[1]=="on");
+        reset_agent();
+        return {CommandKind::Info,
+          native_tools_enabled_?"原生开发工具已开启（23 个）；会话已重置。":
+                                "原生开发工具已关闭；会话已重置。"};
+      }
+      return {CommandKind::Error,"用法：/tools [on|off]"};
+#else
+      return {CommandKind::Error,"当前构建未开启 DeveloperTools 扩展库。"};
+#endif
+    }
     if(cmd=="/mcp") {
       CommandKind kind=CommandKind::Info;
       auto answer=mcp_command(w,kind);
@@ -324,6 +352,14 @@ void ConsoleSession::ensure_agent() {
   if(config_.base_url=="https://api.openai.com" && !has_credentials() && !test_model_)
     throw std::runtime_error("缺少 API Key。输入 /apikey 或设置 MYAGENT_API_KEY。");
   auto created=std::make_unique<myagent::Agent>(config_,test_model_);
+#ifdef MYAGENT_CONSOLE_DEVELOPER_TOOLS
+  // 外部 MCP 与本地原生工具共用同一 MCP Schema/权限回路，但无需启动子进程。
+  // 所有工具约束在控制台的启动工作目录；修改权限后会重建 Agent。
+  if(native_tools_enabled_) {
+    developer_tools::RegisterToAgent(*created,
+      {std::filesystem::current_path()},developer_tools::ToolOptions::All());
+  }
+#endif
   for(const auto& endpoint:endpoints_) {
     if(endpoint.transport=="stdio") {
       created->add_mcp_stdio(endpoint.name,endpoint.target,endpoint.args);

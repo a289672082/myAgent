@@ -46,6 +46,9 @@ ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 /apikey                   使用遮挡输入框设置 Key
 /apikey env MY_API_KEY
 /apikey clear
+/tools                     原生 23 个工具状态
+/tools on                  开启 23 个原生工具（默认）
+/tools off                 关闭原生工具
 /mcp                       查看 MCP
 /mcp add local stdio "C:\Tools\mcp.exe" --stdio
 /mcp add remote http https://mcp.example.com/mcp MY_MCP_BEARER
@@ -65,3 +68,7 @@ Bearer Token 只从环境变量获取。默认每次 MCP 工具调用都需在�
 控制台目前只有 Slash 前缀候选，不支持 Tab 选择或候选列表方向键切换。
 修改模型、URL、协议、密钥或 MCP 服务将重建 Agent 并清空旧会话。
 Execute-Verify-Repair 需要真实验证器，控制台不伪造验证结果。
+
+默认控制台会向 Agent 注册原生 DeveloperTools 工具（`local__read_file` 等），
+无需 /mcp 连接。该工具库在 `tools/developer_tools/`，若已手动接入同名 MCP
+服务可能出现两套相似工具；可使用 `/tools off` 防止重复。

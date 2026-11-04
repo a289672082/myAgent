@@ -4,9 +4,21 @@
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
 **Visual Studio 2022：** 仓库根目录已包含 [myAgent.sln](myAgent.sln)。
-直接打开解决方案即可使用 Console、SDK、Examples、Tests 四个项目（x64 Debug/Release）；
+直接打开解决方案即可使用 Console、Agent SDK/Examples/Tests 和 MCP SDK/Examples/Tests 七个项目（x64 Debug/Release）；
 控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
 SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
+
+## 23 个 DeveloperTools：Agent / MCP 双重注册
+
+新增独立的 [DeveloperTools 使用指南](tools/developer_tools/README.md)。工具实现和 JSON Schema 只维护在
+`tools/developer_tools/`；可分别使用 `developer_tools::RegisterToAgent(agent, context, options)`
+以及 `developer_tools::RegisterToMcp(server, context, options)`，无需维护两套工具定义。
+七大类别共 23 个工具可独立开关，支持只读选项。
+
+控制台可通过 `/tools`、`/tools on`、`/tools off` 控制原生工具。独立 MCP stdio 服务端
+`myagent_developer_tools_mcp` 供其他 MCP 客户端使用。二者复用 `mcp/sdk/` 内置 SDK，
+不再依赖外部 myMcpTools 仓库；纯 Agent SDK (`cmake -S sdk`) 不包含这些应用级工具。
+文件写入与命令操作需要宿主明确授权，工具本身不是操作系统沙箱。
 
 ## 内置 MCP SDK 与文档索引
 
@@ -50,6 +62,8 @@ myAgent/
 ├── sdk/                     # Agent SDK：独立 CMake、include、src
 ├── examples/                # Agent Demo
 ├── tests/                   # Agent 回归测试
+├── tools/developer_tools/      # 23 个共享工具 + Agent/MCP 注册
+├── mcp_servers/developer_tools/ # 独立 MCP stdio 服务端
 ├── mcp/
 │   ├── README.md            # MCP SDK 使用说明
 │   ├── COMPATIBILITY.md     # MCP 协议兼容性

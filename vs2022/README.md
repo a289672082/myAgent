@@ -35,3 +35,23 @@ rem 打开 build-vs2022\native-sdk-demos\myAgentConsole.sln
 ```
 
 注意：`build-vs2022/` 是构建输出，不提交至 Git。实际源码、SDK API、CMake 选项和 SDK CI 不因这些 VS 文件而改变。
+
+## MCP 独立 Visual Studio 项目
+
+`myAgent.sln` 中新增 `myMcpSDK`、`myMcpExamples`、`myMcpTests` 三个可选工程。
+默认仍仅编译控制台。三项通过 CMake 构建仓库内置的 `mcp/` 代码，
+无需 `third_party/myMcpTools` 子模块。可在 VS2022 中右键单独生成，或：
+
+```bat
+vs2022\build.cmd mcp-sdk Debug
+vs2022\build.cmd mcp-examples Debug
+vs2022\build.cmd mcp-tests Debug
+```
+
+也可直接创建原生 VS2022 工程：
+
+```bat
+cmake -S mcp -B build-mcp-vs2022 -G "Visual Studio 17 2022" -A x64
+cmake --build build-mcp-vs2022 --config Debug
+ctest --test-dir build-mcp-vs2022 -C Debug --output-on-failure
+```

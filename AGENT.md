@@ -1,3 +1,5 @@
+# DeveloperTools 一份实现、多适配器；不允许把 23 个工具加入 SDK 公共头和链接接口。
+# 所有 Native/MCP Handler 应共享 tools/developer_tools/src 的定义和 Schema。
 # VS2022 规范：myAgent.sln 为版本化的 NMake 包装工程，vs2022/build.cmd 调用唯一 CMake；
 # CMakePresets.json 提供生成完整原生 VS2022 solution 的路径，不允许编辑 SDK 构建选项的复制配置。
 # 新目录规范：根目录是 Console CMake 入口；SDK 在 sdk/include、sdk/src。

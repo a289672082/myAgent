@@ -2,9 +2,9 @@ name: Console entry (pinned local FTXUI)
 on:
   push:
     branches: [main]
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   pull_request:
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   workflow_dispatch:
 concurrency:
   group: myagent-console-${{ github.event.pull_request.number || github.ref }}
@@ -21,7 +21,7 @@ jobs:
       - name: Configure root console using vendored FTXUI
         run: cmake -S . -B build-console -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMYAGENT_BUILD_EXAMPLES=OFF -DMYAGENT_BUILD_TESTS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build console and offline tests
-        run: cmake --build build-console --target myagent_console myagent_console_commands_tests myagent_console_chat_tests --parallel 2
+        run: cmake --build build-console --target myagent_console myagent_console_commands_tests myagent_console_chat_tests myagent_developer_tools_mcp developer_tools_tests --parallel 2
       - name: Run console CTests
         run: ctest --test-dir build-console --output-on-failure --timeout 30
   windows-console:
@@ -36,7 +36,9 @@ jobs:
         run: cmake --preset vs2022-console
       - name: Build checked-in myAgent.sln (Console default project)
         run: msbuild .\myAgent.sln /t:myAgentConsole /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
+      - name: Validate MCP SDK VS2022 wrapper project
+        run: msbuild .\vs2022\myMcpSDK.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:1 /nologo
       - name: Compile offline console regression targets in same solution build tree
-        run: cmake --build build-vs2022/console --config Debug --target myagent_console_commands_tests myagent_console_chat_tests --parallel 2
+        run: cmake --build build-vs2022/console --config Debug --target myagent_console_commands_tests myagent_console_chat_tests myagent_developer_tools_mcp developer_tools_tests --parallel 2
       - name: Run console CTests
         run: ctest --test-dir build-vs2022/console -C Debug --output-on-failure --timeout 30
