@@ -54,7 +54,7 @@ endif()
 add_library(myagent::mcp ALIAS myagent_mcp)
 
 add_library(myagent STATIC src/agent.cpp src/loop_engine.cpp src/plan_manager.cpp src/token_usage.cpp src/context_manager.cpp src/multi_agent.cpp src/tool_policy.cpp
-  src/chat_completions.cpp src/memory_store.cpp src/agent_team_config.cpp
+  src/chat_completions.cpp src/router.cpp src/memory_store.cpp src/agent_team_config.cpp
   src/team_checkpoint.cpp src/task_scheduler.cpp src/workspace_io.cpp src/file_io.cpp)
 add_library(myagent::agent ALIAS myagent)
 target_include_directories(myagent PUBLIC
@@ -79,7 +79,7 @@ if(MYAGENT_BUILD_EXAMPLES)
   target_compile_definitions(run_agent_delegation_demo PRIVATE
     MYAGENT_TEAM_DEMO_SKILLS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/agent_team_demo_skills")
 
-  # 高级功能六组独立离线 Demo：模型路由/重试/MCP Schema 缓存/
+  # 高级功能六组独立离线 Demo：阶段级模型 Provider 路由（不是 AgentRouter）/重试/MCP Schema 缓存/
   # 多层子 Agent/Trace/费用预算，无 API Key 或外网依赖。
   foreach(feature IN ITEMS model_routing model_retry mcp_catalog_cache
                            nested_agents agent_trace agent_cost)
@@ -104,6 +104,9 @@ if(MYAGENT_BUILD_EXAMPLES)
     add_executable(run_${feature}_demo examples/run_${feature}_demo.cpp)
     target_link_libraries(run_${feature}_demo PRIVATE myagent)
   endforeach()
+  # 智能 Agent 路由：独立的 Router API，完全离线的模型选人/执行/失败测试。
+  add_executable(run_agent_router_demo examples/run_agent_router_demo.cpp)
+  target_link_libraries(run_agent_router_demo PRIVATE myagent)
   # 统一对话生命周期回调：离线 Mock 覆盖 ask、ReAct 和失败事件。
   add_executable(run_agent_conversation_callbacks_demo
     examples/run_agent_conversation_callbacks_demo.cpp)
@@ -144,6 +147,11 @@ if(MYAGENT_BUILD_TESTS)
   target_compile_definitions(myagent_tests PRIVATE
     MYAGENT_TEST_STDIO_SERVER="$<TARGET_FILE:myagent_test_stdio_server>")
   # 子 Agent MCP 硬截止时间/限额的真实子进程回归，不依赖外网。
+  # Router 逻辑单独测试（无需启用 Examples）；验证非法决策不能调用 Worker。
+  add_executable(myagent_router_tests tests/test_router.cpp)
+  target_link_libraries(myagent_router_tests PRIVATE myagent)
+  add_test(NAME myagent_router COMMAND myagent_router_tests)
+  set_tests_properties(myagent_router PROPERTIES TIMEOUT 30)
   # 两种内置模型的真实本机 HTTP SSE 测试；验证逐段回调与最终响应。
   add_executable(myagent_streaming_tests tests/test_streaming.cpp)
   target_link_libraries(myagent_streaming_tests PRIVATE myagent)
@@ -182,6 +190,8 @@ if(MYAGENT_BUILD_TESTS)
       add_test(NAME myagent_${feature}_demo COMMAND run_${feature}_demo)
       set_tests_properties(myagent_${feature}_demo PROPERTIES TIMEOUT 30)
     endforeach()
+    add_test(NAME myagent_router_demo COMMAND run_agent_router_demo)
+    set_tests_properties(myagent_router_demo PROPERTIES TIMEOUT 30)
     add_test(NAME myagent_agents_md_demo COMMAND run_agents_md_demo)
     set_tests_properties(myagent_agents_md_demo PROPERTIES TIMEOUT 30)
     add_test(NAME myagent_skill_yaml_demo COMMAND run_skill_yaml_demo)
