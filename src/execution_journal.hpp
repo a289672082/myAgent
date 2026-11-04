@@ -22,7 +22,9 @@ public:
        !doc.contains("mode") || !doc.at("mode").is_int64())
       throw std::runtime_error("Invalid Agent checkpoint header");
     const auto mode=doc.at("mode").as<int>();
-    if(mode<0 || mode>3)throw std::runtime_error("Invalid checkpoint LoopMode");
+    // 保留旧四种枚举的 0..3 编号，新模式追加 4/5，保证旧快照可恢复。
+    if(mode<0 || mode>static_cast<int>(LoopMode::ExecuteVerifyRepair))
+      throw std::runtime_error("Invalid checkpoint LoopMode");
     return {std::string(doc.at("task").as_string()),static_cast<LoopMode>(mode)};
   }
   ExecutionJournal(const std::filesystem::path& path,bool resume,
