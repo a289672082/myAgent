@@ -1791,12 +1791,38 @@ Json Client::request(const std::string& method, Json params,
     if (!state.is_null() && !state.is_string())
       throw Error(-32603,"Invalid requestState");
     if (input_requests.is_object() && !input_requests.empty()) {
-      if (!input_handler_) throw Error(-32021,"MRTR input handler not configured");
-      Json answers = input_handler_(input_requests);
-      if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
-      for (const auto& item : answers.object_range())
-        if (!input_requests.contains(std::string(item.key())))
-          throw Error(-32602,"Unknown MRTR input response ID");
+      Json answers = json::object{};
+      // 为老版聚合回调保留兼容性；专用采样和根目录回调先于聚合回调。
+      bool needs_fallback=false;
+      for (const auto& entry : input_requests.object_range()) {
+        const auto& input=entry.value();
+        const auto kind=string_of(input,"method");
+        const auto& input_params=find(input,"params");
+        if (!input.is_object() || !input_params.is_object())
+          throw Error(-32603,"Invalid MRTR input request");
+        std::function<Json(const Json&)>* handler=nullptr;
+        if (kind=="sampling/createMessage") handler=&sampling_handler_;
+        else if (kind=="roots/list") handler=&roots_handler_;
+        else if (kind!="elicitation/create")
+          throw Error(-32603,"Unsupported MRTR input request");
+        if (handler && *handler) {
+          answers[std::string(entry.key())]=(*handler)(input_params);
+        } else needs_fallback=true;
+      }
+      if (needs_fallback) {
+        if (!input_handler_) throw Error(-32021,"MRTR input handler not configured");
+        const Json fallback=input_handler_(input_requests);
+        if (!fallback.is_object()) throw Error(-32602,"Input callback must return an object");
+        for (const auto& answer : fallback.object_range()) {
+          const auto key=std::string(answer.key());
+          if (!input_requests.contains(key))
+            throw Error(-32602,"Unknown MRTR input response ID");
+          if (!answers.contains(key)) answers[key]=answer.value();
+        }
+      }
+      for (const auto& input : input_requests.object_range())
+        if (!answers.contains(std::string(input.key())))
+          throw Error(-32602,"Missing MRTR input response");
       params["inputResponses"] = std::move(answers);
     } else params.erase("inputResponses");
     if (state.is_string()) params["requestState"] = state;
