@@ -3,6 +3,7 @@
 #endif
 #include "mymcp/mcp.hpp"
 #include "mymcp/schema.hpp"
+#include "mymcp/uri_template.hpp"
 #include "mymcp/oauth_client.hpp"
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -191,32 +192,10 @@ void paginate_list(Json& values, const Json& params, Json& result,
   values = std::move(page);
   if (end < total) result["nextCursor"] = method + ":" + std::to_string(end);
 }
-// Simple RFC6570 level-1 URI templates: {variable}. No unsafe partial match.
-std::optional<json::object> template_match(std::string_view pattern, std::string_view uri) {
-  std::string rx = "^";
-  std::vector<std::string> names;
-  for (size_t i = 0; i < pattern.size(); ++i) {
-    if (pattern[i] == '{') {
-      const auto end = pattern.find('}', i + 1);
-      if (end == std::string_view::npos || end == i+1) return std::nullopt;
-      std::string n(pattern.substr(i+1, end-i-1));
-      if (!std::all_of(n.begin(), n.end(), [](unsigned char c){return std::isalnum(c)||c=='_';})) return std::nullopt;
-      names.push_back(std::move(n)); rx += "([^?#]*)"; i = end;
-    } else {
-      unsigned char c = pattern[i];
-      if (std::string(R"(\.[]{}()+*?^$|)").find(static_cast<char>(c)) != std::string::npos) rx += '\\';
-      rx += static_cast<char>(c);
-    }
-  }
-  rx += '$';
-  try {
-    std::smatch m;
-    std::string input(uri);
-    if (!std::regex_match(input, m, std::regex(rx))) return std::nullopt;
-    json::object arguments;
-    for (size_t j = 0; j < names.size(); ++j) arguments[names[j]] = m[j+1].str();
-    return arguments;
-  } catch (const std::regex_error&) { return std::nullopt; }
+// RFC6570 字符串、路径、查询参数匹配由独立 URI 模板模块负责。
+// 列表/映射等非可逆展开只用于构造 URI；资源读取拒绝模糊匹配。
+std::optional<Json> template_match(std::string_view pattern, std::string_view uri) {
+  return match_uri_template(pattern,uri);
 }
 
 } // anonymous namespace
