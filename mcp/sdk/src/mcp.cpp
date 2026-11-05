@@ -1842,6 +1842,35 @@ Json Client::request(const std::string& method, Json params,
     }
     if (answers.size() != input_requests.size())
       throw Error(-32602, "MRTR callback must answer every request");
+    for (const auto& item : input_requests.object_range()) {
+      const auto& answer=answers.at(item.key());
+      const auto method=string_of(item.value(),"method");
+      if (method=="elicitation/create") {
+        const auto action=string_of(answer,"action");
+        if (action!="accept" && action!="decline" && action!="cancel")
+          throw Error(-32602,"Invalid elicitation answer action");
+        if (action=="accept") {
+          const auto& request_parameters=find(item.value(),"params");
+          if (string_of(request_parameters,"mode","form")=="form") {
+            const auto& value=find(answer,"content");
+            if (!value.is_object())throw Error(-32602,"Missing accepted form content");
+            std::string error;
+            if (!validate_schema(find(request_parameters,"requestedSchema"),value,&error))
+              throw Error(-32602,"Elicitation content schema violation: "+error);
+          }
+        }
+      } else if (method=="sampling/createMessage") {
+        if (string_of(answer,"role")!="assistant" || !find(answer,"content").is_object())
+          throw Error(-32602,"Invalid sampling response");
+      } else if (method=="roots/list") {
+        const auto& roots=find(answer,"roots");
+        if (!roots.is_array() || roots.size()>1024)
+          throw Error(-32602,"Invalid roots response");
+        for (const auto& root:roots.array_range())
+          if (!root.is_object() || !find(root,"uri").is_string())
+            throw Error(-32602,"Invalid root URI");
+      }
+    }
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
     if (state.is_string()) params["requestState"] = state;
