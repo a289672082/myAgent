@@ -146,6 +146,10 @@ void Session::discover(){
     next.registration_endpoint=require_string(info,"registration_endpoint");
     safe_endpoint(next.registration_endpoint);
   }
+  if(info.contains("jwks_uri")){
+    next.jwks_uri=require_string(info,"jwks_uri");
+    safe_endpoint(next.jwks_uri);
+  }
   if(info.contains("authorization_response_iss_parameter_supported"))
     next.issuer_parameter_supported=info.at("authorization_response_iss_parameter_supported").as_bool();
   next.scopes_supported=strings(protected_resource,"scopes_supported");
