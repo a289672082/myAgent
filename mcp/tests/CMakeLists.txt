@@ -113,3 +113,10 @@ add_executable(mymcp_http_header_routing_tests test_http_header_routing.cpp)
 target_link_libraries(mymcp_http_header_routing_tests PRIVATE mymcp)
 add_test(NAME http_header_routing COMMAND mymcp_http_header_routing_tests)
 set_tests_properties(http_header_routing PROPERTIES TIMEOUT 20)
+
+# Five baseline MCP feature groups: binary resources, prompt/schema validation,
+# MRTR sampling/roots, OAuth JWT/JWKS and transport compatibility.
+add_executable(mymcp_baseline_features_tests test_baseline_features.cpp)
+target_link_libraries(mymcp_baseline_features_tests PRIVATE mymcp)
+add_test(NAME baseline_features COMMAND mymcp_baseline_features_tests)
+set_tests_properties(baseline_features PROPERTIES TIMEOUT 20)
