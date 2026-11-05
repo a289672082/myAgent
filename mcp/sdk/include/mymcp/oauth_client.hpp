@@ -1,6 +1,7 @@
 #pragma once
 #include "mymcp/oauth.hpp"
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -56,6 +57,11 @@ public:
   // validates state+issuer before exchanging the code.
   Token exchange_callback_url(const Authorization& flow, const std::string& callback_url,
                               const std::string& redirect_uri);
+  // 安全本机浏览器授权回调：绑定随机临时回环端口，不开启公网监听；
+  // 宿主提供打开系统浏览器的 navigate 回调。
+  Token authorize_loopback(std::function<void(const std::string&)> navigate,
+                           const std::vector<std::string>& scopes = {},
+                           std::chrono::seconds timeout = std::chrono::seconds(120));
   Token refresh();
   std::string bearer_token(); // refresh if nearing expiry, else return current token
   bool has_token() const;
