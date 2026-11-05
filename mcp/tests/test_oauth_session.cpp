@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <thread>
 #include <string>
+#include <chrono>
+#include <thread>
 
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("assertion failed: " #x); } while (0)
 
@@ -72,7 +74,49 @@ int main() {
     CHECK(callback_token.access_token=="token-1");
     CHECK(session.bearer_token()=="token-2");
     CHECK(session.bearer_token()=="token-2");
-    CHECK(exchanges==2 && refreshes==1);
+    // 新增：模拟浏览器访问本机临时回调端口，实际走 state/issuer/PKCE 验证与 token 交换。
+    auto query_value=[](const std::string& url, const std::string& name) {
+      auto from=url.find(name+"=");
+      CHECK(from!=std::string::npos);
+      from+=name.size()+1;
+      auto end=url.find('&',from);
+      auto value=url.substr(from,end==std::string::npos?end:end-from);
+      std::string decoded;
+      auto hex=[](char c) {
+        if(c>='0'&&c<='9')return int(c-'0');
+        if(c>='A'&&c<='F')return int(c-'A'+10);
+        if(c>='a'&&c<='f')return int(c-'a'+10);
+        return -1;
+      };
+      for(std::size_t i=0;i<value.size();++i) {
+        if(value[i]=='%' && i+2<value.size()) {
+          int a=hex(value[i+1]),d=hex(value[i+2]);CHECK(a>=0&&d>=0);
+          decoded+=char(a*16+d);i+=2;
+        } else decoded+=value[i]=='+'?' ':value[i];
+      }
+      return decoded;
+    };
+    auto local_token=session.authorize_loopback([&](const std::string& auth_url) {
+      const auto callback_uri=query_value(auth_url,"redirect_uri");
+      const auto state=query_value(auth_url,"state");
+      const std::string prefix="http://127.0.0.1:";
+      CHECK(callback_uri.starts_with(prefix));
+      const auto slash=callback_uri.find('/',prefix.size());
+      CHECK(slash!=std::string::npos);
+      const auto port=callback_uri.substr(prefix.size(),slash-prefix.size());
+      httplib::Client browser(prefix+port);
+      auto path=callback_uri.substr(slash)+"?code=sample-code&state="+
+        mymcp::oauth::url_encode(state)+"&iss="+mymcp::oauth::url_encode(origin);
+      bool received=false;
+      for(int i=0;i<20;++i) {
+        auto reply=browser.Get(path);
+        if(reply&&reply->status==200) {received=true;break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      CHECK(received);
+    },{},std::chrono::seconds(8));
+    CHECK(local_token.access_token=="token-1");
+    CHECK(exchanges==3 && refreshes==1);
   } catch (...) { server.stop(); listener.join(); throw; }
   server.stop(); listener.join();
   std::cout << "OAuth session end-to-end test passed\n";
