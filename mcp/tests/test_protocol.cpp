@@ -63,6 +63,44 @@ int main() {
     return json::object{{"answer", json::object{{"action", "accept"}, {"content", json::object{}}}}};
   });
   REQUIRE(mrtr_client.call("ask").at("content")[0].at("text") == "accepted");
+  // MRTR：表单 JSON Schema 不能由客户端随意绕过。
+  Server forms("forms");
+  forms.add_tool_context("ask", "form validation", json::object{{"type", "object"}},
+    [](const Json& params) -> Json {
+      if (params.contains("inputResponses")) return detail::make_tool_result("ok");
+      return json::object{{"resultType", "input_required"}, {"inputRequests", json::object{
+        {"form", json::object{{"method", "elicitation/create"}, {"params", json::object{
+          {"mode", "form"}, {"message", "Confirm"}, {"requestedSchema", json::object{
+            {"type", "object"}, {"properties", json::object{{"ok", json::object{{"type", "boolean"}}}}},
+            {"required", json::array{"ok"}}, {"additionalProperties", false}}}}}}}}}};
+    });
+  Client invalid_form([&](const Json& request) { return forms.handle(request); });
+  invalid_form.on_input_required([](const Json&) -> Json {
+    return json::object{{"form", json::object{{"action", "accept"},
+      {"content", json::object{{"ok", "not-a-bool"}}}}}};
+  });
+  try { invalid_form.call("ask"); REQUIRE(false); }
+  catch (const Error& e) { REQUIRE(e.code == -32602); }
+
+  // MRTR：采样和 Roots 的响应必须先声明相应客户端能力。
+  Server sampling("sampling");
+  sampling.add_tool_context("sample", "sampling", json::object{{"type", "object"}},
+    [](const Json& params)->Json {
+      if (params.contains("inputResponses")) return detail::make_tool_result("sampled");
+      return json::object{{"resultType", "input_required"}, {"inputRequests", json::object{
+        {"sample", json::object{{"method", "sampling/createMessage"}, {"params", json::object{
+          {"messages", json::array{json::object{{"role", "user"}, {"content",
+            json::object{{"type", "text"}, {"text", "Hi"}}}}}}}}}}}}}};
+    });
+  Client sampler([&](const Json& request) { return sampling.handle(request); });
+  sampler.on_input_required([](const Json&) -> Json {
+    return json::object{{"sample", json::object{{"role", "assistant"},
+      {"content", json::object{{"type", "text"}, {"text", "Hello"}}}}}};
+  });
+  try { sampler.call("sample"); REQUIRE(false); }
+  catch (const Error& e) { REQUIRE(e.code == -32602); }
+  sampler.enable_sampling();
+  REQUIRE(sampler.call("sample").at("content")[0].at("text") == "sampled");
   std::cout << "Protocol tests passed\n";
   return 0;
 }
