@@ -140,11 +140,20 @@ public:
   void resource_template(std::string uri_template, std::string name,
                          std::function<Json(const std::string&, const Json&)> reader,
                          std::string mime_type = "text/plain", std::string description = "");
+  // 可在 resources/read 的多轮 MRTR 中读取 inputResponses/requestState。
+  void resource_template_context(std::string uri_template, std::string name,
+      std::function<Json(const std::string&, const Json&, const Json&)> reader,
+      std::string mime_type = "text/plain", std::string description = "");
   // arguments 为 MCP PromptArgument 列表（name/description/required）。
   // 若给出 type/schema 字段，则为扩展的可选参数校验，不会修改线上的参数名。
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{});
+  // 传入完整 prompts/get params，让 Prompt 能在 MRTR 重试时访问
+  // inputResponses/requestState；原有 prompt_full 仍只收到 arguments。
+  void prompt_context(std::string name, std::string description,
+                      std::function<Json(const Json&)> handler,
+                      Json arguments = json::array{});
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -194,10 +203,12 @@ private:
     std::function<std::vector<std::uint8_t>()> binary_reader;
   };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
-                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
+                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{};
+                  bool with_context = false; };
   struct ResourceTemplate {
     std::string name, mime, description;
     std::function<Json(const std::string&, const Json&)> reader;
+    std::function<Json(const std::string&, const Json&, const Json&)> context_reader;
   };
   std::string name_, version_, instructions_;
   std::map<std::string, Tool> tools_;
