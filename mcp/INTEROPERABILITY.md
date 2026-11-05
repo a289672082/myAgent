@@ -1,23 +1,23 @@
-# Codex, Claude Code, and MCP client interoperability
+# Codex、Claude Code 与 MCP 客户端互操作指南
 
-Use **Streamable HTTP** (`POST /mcp`) for remote clients and **stdio** for locally launched servers. The SDK does **not** create a separate legacy HTTP+SSE endpoint. New MCP `2026-07-28` requests are stateless: one HTTP POST, per-request `_meta`, `MCP-Protocol-Version` / `Mcp-Method` / named request headers. Fast calls return JSON; calls carrying a `progressToken` stream SSE progress notifications and end with the matching JSON-RPC response. The `subscriptions/listen` request creates a long-lived SSE stream.
+远程客户端推荐使用 **Streamable HTTP**（`POST /mcp`），本地启动的服务端推荐 **stdio**。SDK **不会**创建独立的旧版 HTTP+SSE 端点。MCP `2026-07-28` 采用无状态请求：每次 HTTP POST 携带 `_meta`、`MCP-Protocol-Version`、`Mcp-Method` 及其他命名请求头。快速调用返回 JSON；带 `progressToken` 的调用会通过 SSE 传输进度通知，最后发送匹配的 JSON-RPC 响应。`subscriptions/listen` 则建立长时间运行的 SSE 连接。
 
-## Codex CLI
+## Codex 命令行工具
 
-Start `run_http_server_demo` (loopback-only by default), then in another terminal:
+先启动 `run_http_server_demo`（默认仅监听回环地址），再打开另一个终端：
 
 ```sh
 codex mcp add myMcpTools --url http://127.0.0.1:33867/mcp
 codex mcp list
 ```
 
-Or register a local **stdio** executable:
+或者注册本地 **stdio** 可执行程序：
 
 ```sh
 codex mcp add myMcpTools-local -- /absolute/path/to/run_stdio_server_demo
 ```
 
-For HTTPS deployments, use your real endpoint URL and properly configured OAuth 2.1 protected resource metadata; never expose a loopback-only plain HTTP demo to the Internet.
+使用 HTTPS 部署时，请替换为真实服务端地址，并正确配置 OAuth 2.1 受保护资源元数据；**绝不可**把仅用于本地回环的明文 HTTP 演示服务直接暴露到互联网。
 
 ## Claude Code
 
@@ -26,31 +26,31 @@ claude mcp add --transport http myMcpTools http://127.0.0.1:33867/mcp
 claude mcp list
 ```
 
-To install for all projects (if permitted), use `--scope user`. For a local server:
+如果需要在所有项目中安装（且有权限），可添加 `--scope user`。本地服务端则使用：
 
 ```sh
 claude mcp add --transport stdio myMcpTools-local /absolute/path/to/run_stdio_server_demo
 ```
 
-For HTTP clients on a different machine, `127.0.0.1` refers to that machine, not the MCP host. Deploy behind an HTTPS reverse proxy with a trusted access-control layer; the library intentionally rejects public-facing plaintext HTTP bindings.
+从另一台计算机连接 HTTP 服务时，`127.0.0.1` 指向**客户端自身**，并不是 MCP 服务主机。远程部署应使用带可信访问控制的 HTTPS 反向代理；本库会有意拒绝面向公网的明文 HTTP 监听。
 
-## Protocol compatibility
+## 协议兼容性
 
-| Feature | Behavior |
+| 功能 | 行为 |
 | --- | --- |
-| MCP `2026-07-28` | Native stateless requests, request-scoped SSE, subscriptions/listen |
-| MCP `2025-11-25` / `2025-06-18` / `2025-03-26` | Compatibility adapter for `initialize`, `notifications/initialized`, basic Tools/Resources/Prompts over Streamable HTTP; no protocol-level session is created |
-| Old GET `/mcp` SSE stream | Returns **405**, a valid response when the server does not offer the legacy notification stream |
-| Legacy HTTP+SSE (2024-11-05) | Not implemented; not a Streamable HTTP client |
-| OAuth | See `SECURITY.md`; demo tokens are never production credentials |
+| MCP `2026-07-28` | 原生无状态请求、单请求 SSE、`subscriptions/listen` 订阅 |
+| MCP `2025-11-25` / `2025-06-18` / `2025-03-26` | 对 Streamable HTTP 的 `initialize`、`notifications/initialized` 和基础工具/资源/提示词提供兼容适配；不创建协议级会话 |
+| 旧版 GET `/mcp` SSE 流 | 返回 **405**；服务端不提供旧式通知流时，这是合法响应 |
+| 旧版 HTTP+SSE（2024-11-05） | 未实现；它与 Streamable HTTP 不是同一传输协议 |
+| OAuth | 参见 `SECURITY.md`；演示用令牌绝不能作为生产凭据 |
 
-## Tests
+## 测试
 
-- `http_streamable_compat.py`: 2026 JSON and request-scoped SSE, legacy HTTP handshakes and tools calls, GET 405.
-- `legacy_http_client.py`: C++ `Client::http` automatically falls back when `server/discover` is unsupported.
-- `run_http_progress_demo`: no-argument C++ client displays live HTTP SSE progress and final tool result.
-- Existing stdio, pagination, MRTR, subscription, OAuth and security tests remain enabled.
+- `http_streamable_compat.py`：验证 2026 JSON 与单请求 SSE、旧版 HTTP 握手与工具调用、GET 405。
+- `legacy_http_client.py`：验证服务器不支持 `server/discover` 时，C++ `Client::http` 的自动回退行为。
+- `run_http_progress_demo`：无命令行参数的 C++ 客户端，演示实时 HTTP SSE 进度和最终工具结果。
+- 既有的 stdio、分页、MRTR、订阅、OAuth 和安全测试仍保持启用。
 
-The legacy tests *simulate protocol behavior*, not real Codex/Claude process launches. This repository does **not** claim verified compatibility with every released Codex or Claude version or full official MCP conformance. In particular, rich legacy server-to-client requests, resume/Last-Event-ID, OAuth issuer-specific provider differences, and disconnect cancellation of blocked tool handlers remain outside this test suite.
+旧版测试仅**模拟协议行为**，并不真正启动 Codex/Claude 进程。本仓库**不承诺**与每一版 Codex/Claude 完全兼容，也不表示通过了官方 MCP 符合性认证。复杂的旧版服务端主动请求、恢复与 `Last-Event-ID`、不同 OAuth 签发者的兼容差异，以及阻塞工具断线取消，均不在当前测试范围内。
 
-Reference: [MCP 2026-07-28 HTTP transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+参考资料：[MCP 2026-07-28 HTTP 传输规范](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)。
