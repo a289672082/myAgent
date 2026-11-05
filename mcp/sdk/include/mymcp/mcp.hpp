@@ -254,6 +254,11 @@ public:
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
   static void listen_http(const std::string& url, Json notifications,
                           std::function<bool(const Json&)> on_event);
+  // SSE 断线后的有限次数重连；重新建立订阅，不保证离线期间事件回放。
+  // 若 on_event 返回 false，则主动关闭且不重连。
+  static void listen_http_resilient(const std::string& url, Json notifications,
+                                    std::function<bool(const Json&)> on_event,
+                                    std::size_t max_reconnects = 3);
   // true 仅对 SDK 自带的 stdio/HTTP 传输成立；自定义进程内 lambda
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
