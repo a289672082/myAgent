@@ -130,6 +130,9 @@ public:
       });
   }
   void resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime_type = "text/plain");
+  // 二进制资源：reader 返回原始字节，SDK 按 MCP 规范进行 Base64 编码并填充 blob。
+  void resource_binary(std::string uri, std::string name, std::function<std::string()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
@@ -138,6 +141,8 @@ public:
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{});
+  // 使用 MCP 标准参数描述（name、description、required）校验请求与结果。
+  // 所有 prompt_full 的参数描述和消息结果都经过运行时结构校验。
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -173,6 +178,11 @@ public:
                                           const std::string& method,
                                           const std::string& name)>;
   void protect_http(Json protected_resource_metadata, TokenVerifier verifier);
+  // 使用可信 JWKS 验证 RS256 Bearer JWT。每个操作可使用自定义 TokenVerifier
+  // 实现不同 scope；此便利接口统一要求 required_scopes。
+  void protect_http_jwks(Json protected_resource_metadata, Json jwks,
+                         std::string expected_issuer, std::string expected_audience,
+                         std::vector<std::string> required_scopes = {});
   bool verify_http(const std::string& token, const std::string& method,
                    const std::string& name) const;
   Json protected_resource_metadata() const { return protected_resource_metadata_; }
@@ -181,7 +191,7 @@ public:
   const Json* tool_schema(const std::string& name) const;
 private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
-  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; };
+  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; bool binary = false; };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
                   std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
   struct ResourceTemplate {
@@ -244,6 +254,11 @@ public:
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
   static void listen_http(const std::string& url, Json notifications,
                           std::function<bool(const Json&)> on_event);
+  // SSE 断线后的有限次数重连；重新建立订阅，不保证离线期间事件回放。
+  // 若 on_event 返回 false，则主动关闭且不重连。
+  static void listen_http_resilient(const std::string& url, Json notifications,
+                                    std::function<bool(const Json&)> on_event,
+                                    std::size_t max_reconnects = 3);
   // true 仅对 SDK 自带的 stdio/HTTP 传输成立；自定义进程内 lambda
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
@@ -281,6 +296,9 @@ public:
     input_handler_ = std::move(handler);
     capabilities_["elicitation"] = json::object{{"form", json::object{}}};
   }
+  // 显式公布旧版 Sampling/Roots 能力（现代协议通过 MRTR 请求响应）。
+  void enable_sampling() { capabilities_["sampling"] = json::object{}; }
+  void enable_roots() { capabilities_["roots"] = json::object{}; }
 private:
   std::function<Json(const Json&)> send_;
   std::function<Json(const Json&, const RequestOptions&)> send_bounded_;

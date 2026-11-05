@@ -191,31 +191,74 @@ void paginate_list(Json& values, const Json& params, Json& result,
   values = std::move(page);
   if (end < total) result["nextCursor"] = method + ":" + std::to_string(end);
 }
-// Simple RFC6570 level-1 URI templates: {variable}. No unsafe partial match.
+// RFC6570 常用运算符的 URI 模板匹配（单变量表达式，安全全串匹配）。
+// 支持 {id}、{+path}、{/id}、{.ext}、{;id}、{?q}、{&page}、{#anchor}。
+// 复杂的多变量、数组展开和前缀修饰符尚需专门的 RFC6570 实现。
 std::optional<json::object> template_match(std::string_view pattern, std::string_view uri) {
+  auto decode = [](std::string_view value) -> std::optional<std::string> {
+    std::string output;
+    for (size_t i = 0; i < value.size(); ++i) {
+      if (value[i] != '%') { output += value[i]; continue; }
+      if (i + 2 >= value.size()) return std::nullopt;
+      auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+      };
+      int high = hex(value[i + 1]), low = hex(value[i + 2]);
+      if (high < 0 || low < 0 || (high == 0 && low == 0)) return std::nullopt;
+      output += static_cast<char>(high * 16 + low);
+      i += 2;
+    }
+    return output;
+  };
   std::string rx = "^";
   std::vector<std::string> names;
   for (size_t i = 0; i < pattern.size(); ++i) {
     if (pattern[i] == '{') {
-      const auto end = pattern.find('}', i + 1);
-      if (end == std::string_view::npos || end == i+1) return std::nullopt;
-      std::string n(pattern.substr(i+1, end-i-1));
-      if (!std::all_of(n.begin(), n.end(), [](unsigned char c){return std::isalnum(c)||c=='_';})) return std::nullopt;
-      names.push_back(std::move(n)); rx += "([^?#]*)"; i = end;
+      auto last = pattern.find('}', i + 1);
+      if (last == std::string_view::npos || last == i + 1) return std::nullopt;
+      auto expression = pattern.substr(i + 1, last - i - 1);
+      char op = 0;
+      if (std::string_view("+#./;?&").find(expression.front()) != std::string_view::npos) {
+        op = expression.front(); expression.remove_prefix(1);
+      }
+      if (expression.empty() ||
+          !std::all_of(expression.begin(), expression.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '_' || c == '.' || c == '-';
+          })) return std::nullopt;
+      std::string name(expression);
+      names.push_back(name);
+      switch (op) {
+        case '+': rx += "([^?#]+)"; break;
+        case '#': rx += "#([^#]+)"; break;
+        case '/': rx += "/([^/?#]+)"; break;
+        case '.': rx += R"(\.([^/?#]+))"; break;
+        case ';': rx += ";" + name + "=([^;/?#]+)"; break;
+        case '?': rx += R"(\?)" + name + "=([^&#]*)"; break;
+        case '&': rx += "&" + name + "=([^&#]*)"; break;
+        default: rx += "([^/?#]+)"; break;
+      }
+      i = last;
     } else {
-      unsigned char c = pattern[i];
+      const unsigned char c = static_cast<unsigned char>(pattern[i]);
       if (std::string(R"(\.[]{}()+*?^$|)").find(static_cast<char>(c)) != std::string::npos) rx += '\\';
       rx += static_cast<char>(c);
     }
   }
   rx += '$';
   try {
-    std::smatch m;
-    std::string input(uri);
-    if (!std::regex_match(input, m, std::regex(rx))) return std::nullopt;
-    json::object arguments;
-    for (size_t j = 0; j < names.size(); ++j) arguments[names[j]] = m[j+1].str();
-    return arguments;
+    std::smatch match;
+    const std::string input(uri);
+    if (!std::regex_match(input, match, std::regex(rx))) return std::nullopt;
+    json::object vars;
+    for (size_t j = 0; j < names.size(); ++j) {
+      auto decoded = decode(match[j + 1].str());
+      if (!decoded) return std::nullopt;
+      vars[names[j]] = *decoded;
+    }
+    return vars;
   } catch (const std::regex_error&) { return std::nullopt; }
 }
 
@@ -262,6 +305,13 @@ void Server::resource(std::string uri, std::string name, std::function<std::stri
   if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), std::move(reader)}).second)
     throw std::invalid_argument("Duplicate resource: " + uri);
 }
+void Server::resource_binary(std::string uri, std::string name,
+                             std::function<std::string()> reader, std::string mime) {
+  if (!reader || uri.empty() || mime.empty())
+    throw std::invalid_argument("Invalid binary resource");
+  if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), std::move(reader), true}).second)
+    throw std::invalid_argument("Duplicate resource: " + uri);
+}
 void Server::prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader) {
   if (!prompts_.emplace(name, Prompt{std::move(description), std::move(reader), {}, json::array{}}).second)
     throw std::invalid_argument("Duplicate prompt: " + name);
@@ -277,6 +327,15 @@ void Server::resource_template(std::string uri_template, std::string name,
 void Server::prompt_full(std::string name, std::string description,
                          std::function<Json(const Json&)> handler, Json arguments) {
   if (!handler || !arguments.is_array()) throw std::invalid_argument("Invalid prompt");
+  std::set<std::string> names;
+  for (const auto& item : arguments.array_range()) {
+    if (!item.is_object() || !find(item, "name").is_string() ||
+        string_of(item, "name").empty() ||
+        (!find(item, "description").is_null() && !find(item, "description").is_string()) ||
+        (!find(item, "required").is_null() && !find(item, "required").is_bool()) ||
+        !names.insert(string_of(item, "name")).second)
+      throw std::invalid_argument("Invalid prompt argument descriptor");
+  }
   if (!prompts_.emplace(name, Prompt{std::move(description), {}, std::move(handler),
                                      std::move(arguments)}).second)
     throw std::invalid_argument("Duplicate prompt");
@@ -301,6 +360,19 @@ void Server::protect_http(Json metadata, TokenVerifier verifier) {
   token_verifier_ = std::move(verifier);
   protected_resource_metadata_ = std::move(metadata);
   cache_scope_ = "private"; // authenticated responses must not be shared between callers
+}
+void Server::protect_http_jwks(Json metadata, Json jwks,
+                              std::string issuer, std::string audience,
+                              std::vector<std::string> scopes) {
+  if (issuer.empty() || audience.empty() || !jwks.is_object())
+    throw std::invalid_argument("JWKS, issuer and audience are required");
+  // JWKS 由宿主通过可信 HTTPS 获取；客户端 Token 自带的 jku 不会被访问。
+  protect_http(std::move(metadata),
+    [keys = std::move(jwks), issuer = std::move(issuer),
+     audience = std::move(audience), scopes = std::move(scopes)]
+    (const std::string& token, const std::string&, const std::string&) {
+      return oauth::verify_jwt_rs256(token, keys, issuer, audience, scopes);
+    });
 }
 bool Server::verify_http(const std::string& token, const std::string& method,
                          const std::string& name) const {
@@ -658,7 +730,11 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       const auto uri = string_of(params, "uri");
       const auto it = resources_.find(uri);
       if (it != resources_.end()) {
-        result = json::object{{"contents", json::array{json::object{{"uri", uri}, {"mimeType", it->second.mime}, {"text", it->second.reader()}}}}};
+        Json content = json::object{{"uri", uri}, {"mimeType", it->second.mime}};
+        const auto bytes = it->second.reader();
+        if (it->second.binary) content["blob"] = encode_b64(bytes);
+        else content["text"] = bytes;
+        result = json::object{{"contents", json::array{std::move(content)}}};
       } else {
         bool matched = false;
         for (const auto& [pattern, entry] : templates_) {
@@ -693,9 +769,54 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       const auto it = prompts_.find(name);
       if (it == prompts_.end()) throw Error(-32602, "Unknown prompt: " + name);
       const Json& args = find(params, "arguments");
+      if (!args.is_null() && !args.is_object())
+        throw Error(-32602, "Prompt arguments must be an object");
       const json::object values = args.is_object() ? args : json::object{};
-      if (it->second.full_reader) result = it->second.full_reader(values);
-      else result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
+      if (it->second.full_reader) {
+        std::set<std::string> declared;
+        for (const auto& descriptor : it->second.arguments.array_range()) {
+          const auto key = string_of(descriptor, "name");
+          declared.insert(key);
+          const auto& value = find(values, key);
+          if (find(descriptor, "required") == true && !value.is_string())
+            throw Error(-32602, "Missing required prompt string argument: " + key);
+          if (!value.is_null() && !value.is_string())
+            throw Error(-32602, "Prompt arguments must be strings: " + key);
+        }
+        for (const auto& entry : values.object_range())
+          if (!declared.contains(std::string(entry.key())))
+            throw Error(-32602, "Unknown prompt argument: " + std::string(entry.key()));
+        result = it->second.full_reader(values);
+      } else {
+        result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
+      }
+      if (find(result, "resultType") != "input_required") {
+        const auto& messages = find(result, "messages");
+        if (!messages.is_array()) throw Error(-32603, "Prompt result requires messages array");
+        for (const auto& message : messages.array_range()) {
+          const auto role = string_of(message, "role");
+          if (role != "user" && role != "assistant")
+            throw Error(-32603, "Invalid prompt message role");
+          const auto& content = find(message, "content");
+          const auto check_block = [](const Json& block) {
+            if (!block.is_object()) return false;
+            const auto type = string_of(block, "type");
+            if (type == "text") return find(block, "text").is_string();
+            if (type == "image" || type == "audio")
+              return find(block, "data").is_string() && find(block, "mimeType").is_string();
+            if (type == "resource") return find(block, "resource").is_object();
+            if (type == "resource_link") return find(block, "uri").is_string();
+            return false;
+          };
+          if (content.is_array()) {
+            if (content.empty()) throw Error(-32603, "Empty prompt content array");
+            for (const auto& part : content.array_range())
+              if (!check_block(part)) throw Error(-32603, "Invalid prompt content block");
+          } else if (!check_block(content)) {
+            throw Error(-32603, "Invalid prompt content block");
+          }
+        }
+      }
     } else if (method == "completion/complete" && completion_) {
       if (!params.is_object() || !find(params, "ref").is_object() || !find(params, "argument").is_object())
         throw Error(-32602, "Invalid completion request");
@@ -723,11 +844,26 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (method != "tools/call" && method != "prompts/get" && method != "resources/read")
         throw Error(-32603, "input_required is not allowed for this method");
       const auto& requests = find(result, "inputRequests");
-      if (!requests.is_null() && !requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-      if (requests.is_object()) for (auto& entry : requests.object_range()) { const auto key = entry.key(); auto& item = entry.value();
-        const auto method_name = string_of(item, "method");
-        if (method_name != "elicitation/create" && method_name != "sampling/createMessage" && method_name != "roots/list")
-          throw Error(-32603, "Invalid input request type");
+      if (!requests.is_object() || requests.empty() || requests.size() > 32)
+        throw Error(-32603, "input_required requires 1..32 requests");
+      if (!find(result, "requestState").is_null() && !find(result, "requestState").is_string())
+        throw Error(-32603, "requestState must be an opaque string");
+      for (const auto& item : requests.object_range()) {
+        const auto& request = item.value();
+        const auto method = string_of(request, "method");
+        const auto& p = find(request, "params");
+        if (!p.is_object()) throw Error(-32603, "Invalid MRTR request params");
+        if (method == "elicitation/create") {
+          const auto mode = string_of(p, "mode", "form");
+          if (!find(p, "message").is_string() || (mode != "form" && mode != "url") ||
+              (mode == "form" && !find(p, "requestedSchema").is_object()) ||
+              (mode == "url" && !find(p, "url").is_string()))
+            throw Error(-32603, "Invalid elicitation request");
+        } else if (method == "sampling/createMessage") {
+          if (!find(p, "messages").is_array()) throw Error(-32603, "Invalid sampling request");
+        } else if (method != "roots/list") {
+          throw Error(-32603, "Unknown MRTR method");
+        }
       }
     }
     result = complete(std::move(result), modern);
@@ -1571,8 +1707,15 @@ void Client::listen_http(const std::string& url, Json notifications,
   auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
     [&](const char* data,std::size_t len){
       pending.append(data,len);
-      for(;;){auto sep=pending.find("\n\n");if(sep==std::string::npos)break;
-        auto frame=pending.substr(0,sep);pending.erase(0,sep+2);
+      for(;;){
+        auto sep=pending.find("\n\n");
+        auto crlf=pending.find("\r\n\r\n");
+        std::size_t delimiter=2;
+        if(crlf!=std::string::npos && (sep==std::string::npos || crlf<sep)) {
+          sep=crlf;delimiter=4;
+        }
+        if(sep==std::string::npos)break;
+        auto frame=pending.substr(0,sep);pending.erase(0,sep+delimiter);
         std::string event;std::istringstream lines(frame);std::string line;
         while(std::getline(lines,line)){
           if(!line.empty()&&line.back()=='\r')line.pop_back();
@@ -1585,6 +1728,30 @@ void Client::listen_http(const std::string& url, Json notifications,
     });
   if(!res&&continue_reading)throw std::runtime_error("HTTP SSE connection failed");
   if(res&&res->status!=200)throw std::runtime_error("HTTP SSE subscription rejected");
+}
+
+void Client::listen_http_resilient(const std::string& url, Json notifications,
+                                   std::function<bool(const Json&)> on_event,
+                                   std::size_t max_reconnects) {
+  if (!on_event || max_reconnects > 32)
+    throw std::invalid_argument("Invalid SSE listener or reconnect budget");
+  bool closed_by_user = false;
+  std::size_t attempts = 0;
+  for (;;) {
+    try {
+      listen_http(url, notifications, [&](const Json& message) {
+        if (!on_event(message)) { closed_by_user = true; return false; }
+        return true;
+      });
+      return; // 收到正常终止信号，不能自动重放已处理事件。
+    } catch (const std::exception&) {
+      if (closed_by_user || attempts >= max_reconnects) throw;
+    }
+    ++attempts;
+    // 有限指数退避，避免断线后重试风暴；不自动重新执行工具调用。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+      (std::min)(std::size_t(2000), std::size_t(125) << (std::min)(attempts, std::size_t(4)))));
+  }
 }
 
 Client::Client(std::function<Json(const Json&)> send, std::string name)
@@ -1646,6 +1813,46 @@ Client Client::http_oauth(const std::string& url, std::shared_ptr<oauth::Session
   client.has_untrusted_callback_=callback_present;
   return client;
 }
+namespace {
+// 校验客户端多轮交互答复，防止错误 ID 和无效表单值进入后续请求。
+void validate_mrtr_answers(const Json& requests, const Json& answers, const Json& caps) {
+  if (!requests.is_object() || requests.empty() || !answers.is_object() ||
+      requests.size() != answers.size()) throw Error(-32602, "MRTR answer count mismatch");
+  for (const auto& entry : requests.object_range()) {
+    const std::string id(entry.key());
+    const auto& response = find(answers, id);
+    if (!response.is_object()) throw Error(-32602, "Missing MRTR answer: " + id);
+    const auto& req = entry.value();
+    const auto& p = find(req, "params");
+    const auto method = string_of(req, "method");
+    if (method == "elicitation/create") {
+      if (!find(caps, "elicitation").is_object()) throw Error(-32602, "Elicitation not enabled");
+      const auto action = string_of(response, "action");
+      if (action != "accept" && action != "decline" && action != "cancel")
+        throw Error(-32602, "Invalid elicitation action");
+      if (action == "accept" && string_of(p, "mode", "form") == "form") {
+        const auto& content = find(response, "content");
+        const auto& schema = find(p, "requestedSchema");
+        std::string error;
+        if (!content.is_object() || !schema.is_object() || !validate_schema(schema, content, &error))
+          throw Error(-32602, "Elicitation response schema violation: " + error);
+      }
+    } else if (method == "sampling/createMessage") {
+      if (!find(caps, "sampling").is_object()) throw Error(-32602, "Sampling not enabled");
+      if (!find(response, "role").is_string() || find(response, "content").is_null())
+        throw Error(-32602, "Invalid sampling response");
+    } else if (method == "roots/list") {
+      if (!find(caps, "roots").is_object()) throw Error(-32602, "Roots not enabled");
+      const auto& roots = find(response, "roots");
+      if (!roots.is_array()) throw Error(-32602, "Invalid roots response");
+      for (const auto& root : roots.array_range())
+        if (!find(root, "uri").is_string()) throw Error(-32602, "Invalid root URI");
+    } else throw Error(-32602, "Unsupported MRTR input request");
+  }
+  for (const auto& entry : answers.object_range())
+    if (!requests.contains(entry.key())) throw Error(-32602, "Unknown MRTR answer ID");
+}
+}
 Json Client::request(const std::string& method, Json params,
                      const RequestOptions& options) {
   if (!params.is_object()) throw std::invalid_argument("Request params must be an object");
@@ -1696,7 +1903,7 @@ Json Client::request(const std::string& method, Json params,
     const Json& input_requests = find(result, "inputRequests");
     if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
     Json answers = input_handler_(input_requests);
-    if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
+    validate_mrtr_answers(input_requests, answers, capabilities_);
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
     if (state.is_string()) params["requestState"] = state;

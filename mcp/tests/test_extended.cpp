@@ -9,6 +9,20 @@ int main() {
   srv.page_size(2);
   for (int i = 0; i < 5; ++i)
     srv.tool("tool" + std::to_string(i), "test", [i] {return i;});
+  // 二进制资源不允许泄露原始非 UTF-8 字节；应放在 Base64 blob 字段。
+  srv.resource_binary("test://binary", "PNG", [] {
+    return std::string("\x89PNG\x00\xff", 6);
+  }, "image/png");
+  srv.resource_template("test://folders/{+path}", "Folder path",
+    [](const std::string& uri, const Json& vars) -> Json {
+      return json::object{{"contents", json::array{json::object{{"uri", uri},
+        {"text", vars.at("path")}}}}};
+    });
+  srv.resource_template("test://query{?id}", "Query ID",
+    [](const std::string& uri, const Json& vars) -> Json {
+      return json::object{{"contents", json::array{json::object{{"uri", uri},
+        {"text", vars.at("id")}}}}};
+    });
   srv.resource_template("test://books/{id}", "Book", [](const std::string& uri, const Json& variables) -> Json {
       return json::object{{"contents", json::array{json::object{{"uri", uri}, {"text", std::string(variables.at("id").as_string())}}}}};
     }, "text/plain");
@@ -32,10 +46,30 @@ int main() {
   VERIFY(tools.at("tools").size() == 2);
   VERIFY(tools.at("nextCursor").is_string());
   VERIFY(client.list_all("tools/list", "tools").size() == 5);
-  VERIFY(client.resource_templates().at("resourceTemplates").size() == 1);
+  // Server 分页大小设置为 2，必须通过 list_all 读取三个模板。
+  VERIFY(client.resource_templates().at("resourceTemplates").size() == 2);
+  VERIFY(client.list_all("resources/templates/list", "resourceTemplates").size() == 3);
+  auto binary = client.read("test://binary").at("contents")[0];
+  VERIFY(binary.at("mimeType") == "image/png");
+  VERIFY(binary.at("blob") == "iVBORwD/");
+  VERIFY(!binary.contains("text"));
+  VERIFY(client.read("test://folders/src/main.cpp").at("contents")[0].at("text") == "src/main.cpp");
+  VERIFY(client.read("test://query?id=hello%20world").at("contents")[0].at("text") == "hello world");
   VERIFY(client.read("test://books/12").at("contents")[0].at("text") == "12");
   VERIFY(client.prompts().at("prompts")[0].at("arguments").size() == 1);
   VERIFY(client.get_prompt("review", json::object{{"topic", "cpp"}}).at("messages")[0].at("content").at("text") == "cpp");
+  // 校验必填参数、未知参数及内容格式；错误应为 JSON-RPC -32602。
+  try { client.get_prompt("review"); VERIFY(false); }
+  catch (const Error& e) { VERIFY(e.code == -32602); }
+  try { client.get_prompt("review", json::object{{"topic", "cpp"}, {"extra", "x"}}); VERIFY(false); }
+  catch (const Error& e) { VERIFY(e.code == -32602); }
+  srv.prompt_full("broken", "invalid response", [](const Json&) -> Json {
+    return json::object{{"messages", json::array{json::object{{"role", "system"},
+      {"content", json::object{{"type", "text"}, {"text", "bad"}}}}}}};
+  });
+  try { client.get_prompt("broken"); VERIFY(false); }
+  catch (const Error& e) { VERIFY(e.code == -32603); }
+
   VERIFY(client.complete(json::object{{"type", "ref/prompt"}, {"name", "review"}}, "topic", "c++")
     .at("completion").at("values")[0] == "c++");
   VERIFY(client.request("example.org/echo", json::object{{"text", "hello"}}).at("echo") == "hello");

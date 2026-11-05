@@ -8,16 +8,16 @@
 | 现代无状态生命周期 | `server/discover`、请求 `_meta` 中要求的协议版本、客户端身份与能力，以及服务端响应元数据、`resultType` | 官方符合性测试及与 TS v2/Kotlin/C# SDK 的互操作验证 |
 | 旧版 2025-11-25 | stdio 与基础 Streamable HTTP `initialize` 回退、无状态工具调用 | 基于 GET 的通知、会话恢复及完整旧版行为兼容 |
 | 工具 | 强类型注册、jsoncons JSON Schema 验证、上下文工具、异步任务工具、HTTP 请求头注解 | 远程 Schema 引用、结构化输出及 `outputSchema` 验证、图标和注解 |
-| 资源 | 纯文本资源、简单 URI 模板变量、更新通知 | 二进制资源及完整 RFC6570 URI 模板 |
-| 提示词与补全 | 丰富的提示词回调、参数、补全回调 | Schema 校验及全面字段覆盖 |
+| 资源 | 文本及 Base64 二进制 `blob` 资源、URI 模板单变量常用运算符、更新通知 | 完整 RFC6570 多变量/列表/修饰符及严格资源结果校验 |
+| 提示词与补全 | 参数描述去重、必填与字符串参数校验、消息角色与文本/图像/音频/资源内容结构校验、补全 | 更完整的协议字段、嵌入资源与边界 Schema 验证 |
 | 列表分页与缓存 | 确定性内存分页、`ttlMs`、`cacheScope`；已认证 HTTP 强制使用私有缓存范围 | 快照游标和缓存重新验证 |
-| MRTR | 基础 `input_required` 与携带 `requestState` 的重试 | 采样与用户信息征询的完整校验、状态安全和全部交互行为 |
+| MRTR | `input_required` 请求结构、表单 Schema、响应 ID 与动作校验；显式 Sampling/Roots 能力声明；`requestState` 往返 | 宿主认证的 `requestState`、全部 Sampling/URL 征询边界校验及更多互操作测试 |
 | Tasks 扩展 | 显式能力开关、加密随机任务 ID、轮询、请求输入及更新、协作式取消、TTL 过期、HTTP 路由头 | 重启后持久化、`taskIds` 订阅和 `notifications/tasks`、外部任务后端及互操作符合性 |
 | 请求进度与取消 | 并发 stdio、`notifications/progress`、协作式取消，以及 HTTP 单请求 SSE 进度和增量客户端回调 | HTTP 阻塞工具断线时及时取消、重试与超时完善、健壮的 stdio 流式 API |
-| 订阅 | 显式 `subscriptions/listen`、确认、过滤、HTTP SSE 和 stdio 取消 | 任务状态订阅、重连及恢复、优雅关闭接口集成 |
-| HTTP 传输 | 2026 请求头校验、4 MiB 请求限制、回环地址监听、元数据及 Bearer 验证回调 | 可对公网监听的原生 HTTPS 服务、认证反向代理部署指南、负载及拒绝服务防护调优、旧版 HTTP 会话 |
+| 订阅 | 显式 `subscriptions/listen`、确认、过滤、HTTP SSE/stdio 取消、有限次自动重新订阅 | SSE `Last-Event-ID` 事件回放、任务状态订阅、零丢失恢复及优雅关闭 |
+| HTTP 传输 | 2026 请求头校验、4 MiB 限额、回环地址监听、Bearer 验证、CRLF SSE 解析、有限退避重连 | 阻塞工具断线强制取消、事件回放及公网 HTTPS 生产部署支持 |
 | HTTPS 客户端 | OpenSSL TLS 证书与主机名验证、可配置 Bearer 令牌 | HTTPS SSE 订阅路径、超时/重试/证书固定选项 |
-| OAuth 资源服务端 | 类 RFC9728 元数据端点及 Bearer 认证质询；由调用者提供令牌验证回调（**必须**校验令牌、权限范围、受众及签发者） | 内置 JWT 校验与 JWKS 发现、OAuth 增量提权、与授权服务器互操作 |
+| OAuth 资源服务端 | 受保护资源元数据及 Bearer 质询；新增可信 JWKS 输入的 RSA RS256 JWT 签名、iss/aud/exp/nbf/scope 验证 | 安全 JWKS 发现与轮换、其他 JWT 签名算法、每操作权限映射及 OAuth 互操作 |
 | OAuth 客户端 | 受保护资源及授权服务器发现、PKCE S256、状态和签发者校验、DCR 注册、授权码交换、刷新与 Bearer 令牌附加 | CIMD 内容验证、浏览器交互及重定向监听、安全持久化凭据、权限提升与重新授权 |
 | 扩展 | 命名空间能力声明、自定义方法注册表、部分 Tasks 实现 | Apps、其他非核心扩展、完整协商及独立扩展符合性测试 |
 | 官方符合性 | Linux 与 Windows 上的 CTest 测试集 | 官方符合性测试集、TS v2/Kotlin 集成、更多操作系统 CI 验证 |

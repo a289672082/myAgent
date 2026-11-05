@@ -29,6 +29,23 @@ int main(){
         return sink.write(frame,sizeof(frame)-1);
       });
   });
+  // 第一次返回 503；第二次返回 CRLF 分隔的 SSE 帧，验证有限重连。
+  std::atomic_int sse_attempts{0};
+  server.Post("/reconnect",[&](const httplib::Request&,httplib::Response& response){
+    if (++sse_attempts == 1) {
+      response.status=503;
+      response.set_content("temporary unavailable","text/plain");
+      return;
+    }
+    response.set_chunked_content_provider("text/event-stream",
+      [](std::size_t,httplib::DataSink& sink) {
+        static constexpr char frame[]=
+          "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\r\n\r\n";
+        sink.write(frame,sizeof(frame)-1);
+        sink.done();
+        return false;
+      });
+  });
   const int port=server.bind_to_any_port("127.0.0.1");
   assert(port>0);
   std::thread runner([&]{server.listen_after_bind();});
@@ -79,6 +96,17 @@ int main(){
   signal.join();
   assert(failed);
   assert(std::chrono::steady_clock::now()-canceled_start<1s);
+
+  std::atomic_int observed{0};
+  mymcp::Client::listen_http_resilient(origin+"/reconnect",
+    mymcp::json::object{{"toolsListChanged", true}},
+    [&](const mymcp::Json& event) {
+      assert(event.at("method") == "notifications/tools/list_changed");
+      ++observed;
+      return false; // 用户主动关闭，后续不得重新订阅
+    }, 2);
+  assert(observed == 1);
+  assert(sse_attempts == 2);
 
   server.stop();runner.join();
   std::cout<<"HTTP MCP frame limits and total deadline OK\n";
