@@ -16,6 +16,7 @@ struct Metadata {
   std::string authorization_endpoint;
   std::string token_endpoint;
   std::string registration_endpoint;
+  std::string jwks_uri; // 来自已验证授权服务器元数据，取钥匙时仍强制 TLS。
   bool issuer_parameter_supported = false;
   std::vector<std::string> scopes_supported;
 };
