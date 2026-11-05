@@ -723,7 +723,19 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       json::array list;
       for (const auto& [name, prompt] : prompts_) {
         Json desc = json::object{{"name", name}, {"description", prompt.description}};
-        if (!prompt.arguments.empty()) desc["arguments"] = prompt.arguments;
+        // Schema 为服务端私有的参数验证配置；公开描述只输出 MCP 标准字段。
+        if (!prompt.arguments.empty()) {
+          json::array declared;
+          for (const auto& spec : prompt.arguments.array_range()) {
+            Json arg=json::object{{"name",string_of(spec,"name")}};
+            if (find(spec,"description").is_string())
+              arg["description"]=find(spec,"description");
+            if (find(spec,"required").is_bool())
+              arg["required"]=find(spec,"required");
+            declared.push_back(std::move(arg));
+          }
+          desc["arguments"]=std::move(declared);
+        }
         list.push_back(std::move(desc));
       }
       result = json::object{{"prompts", std::move(list)}};
