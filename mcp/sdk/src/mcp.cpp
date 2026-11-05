@@ -788,11 +788,26 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (method != "tools/call" && method != "prompts/get" && method != "resources/read")
         throw Error(-32603, "input_required is not allowed for this method");
       const auto& requests = find(result, "inputRequests");
-      if (!requests.is_null() && !requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-      if (requests.is_object()) for (auto& entry : requests.object_range()) { const auto key = entry.key(); auto& item = entry.value();
-        const auto method_name = string_of(item, "method");
-        if (method_name != "elicitation/create" && method_name != "sampling/createMessage" && method_name != "roots/list")
-          throw Error(-32603, "Invalid input request type");
+      if (!requests.is_object() || requests.empty() || requests.size() > 32)
+        throw Error(-32603, "input_required requires 1..32 requests");
+      if (!find(result, "requestState").is_null() && !find(result, "requestState").is_string())
+        throw Error(-32603, "requestState must be an opaque string");
+      for (const auto& item : requests.object_range()) {
+        const auto& request = item.value();
+        const auto method = string_of(request, "method");
+        const auto& p = find(request, "params");
+        if (!p.is_object()) throw Error(-32603, "Invalid MRTR request params");
+        if (method == "elicitation/create") {
+          const auto mode = string_of(p, "mode", "form");
+          if (!find(p, "message").is_string() || (mode != "form" && mode != "url") ||
+              (mode == "form" && !find(p, "requestedSchema").is_object()) ||
+              (mode == "url" && !find(p, "url").is_string()))
+            throw Error(-32603, "Invalid elicitation request");
+        } else if (method == "sampling/createMessage") {
+          if (!find(p, "messages").is_array()) throw Error(-32603, "Invalid sampling request");
+        } else if (method != "roots/list") {
+          throw Error(-32603, "Unknown MRTR method");
+        }
       }
     }
     result = complete(std::move(result), modern);
@@ -1711,6 +1726,46 @@ Client Client::http_oauth(const std::string& url, std::shared_ptr<oauth::Session
   client.has_untrusted_callback_=callback_present;
   return client;
 }
+namespace {
+// 校验客户端多轮交互答复，防止错误 ID 和无效表单值进入后续请求。
+void validate_mrtr_answers(const Json& requests, const Json& answers, const Json& caps) {
+  if (!requests.is_object() || requests.empty() || !answers.is_object() ||
+      requests.size() != answers.size()) throw Error(-32602, "MRTR answer count mismatch");
+  for (const auto& entry : requests.object_range()) {
+    const std::string id(entry.key());
+    const auto& response = find(answers, id);
+    if (!response.is_object()) throw Error(-32602, "Missing MRTR answer: " + id);
+    const auto& req = entry.value();
+    const auto& p = find(req, "params");
+    const auto method = string_of(req, "method");
+    if (method == "elicitation/create") {
+      if (!find(caps, "elicitation").is_object()) throw Error(-32602, "Elicitation not enabled");
+      const auto action = string_of(response, "action");
+      if (action != "accept" && action != "decline" && action != "cancel")
+        throw Error(-32602, "Invalid elicitation action");
+      if (action == "accept" && string_of(p, "mode", "form") == "form") {
+        const auto& content = find(response, "content");
+        const auto& schema = find(p, "requestedSchema");
+        std::string error;
+        if (!content.is_object() || !schema.is_object() || !validate_schema(schema, content, &error))
+          throw Error(-32602, "Elicitation response schema violation: " + error);
+      }
+    } else if (method == "sampling/createMessage") {
+      if (!find(caps, "sampling").is_object()) throw Error(-32602, "Sampling not enabled");
+      if (!find(response, "role").is_string() || find(response, "content").is_null())
+        throw Error(-32602, "Invalid sampling response");
+    } else if (method == "roots/list") {
+      if (!find(caps, "roots").is_object()) throw Error(-32602, "Roots not enabled");
+      const auto& roots = find(response, "roots");
+      if (!roots.is_array()) throw Error(-32602, "Invalid roots response");
+      for (const auto& root : roots.array_range())
+        if (!find(root, "uri").is_string()) throw Error(-32602, "Invalid root URI");
+    } else throw Error(-32602, "Unsupported MRTR input request");
+  }
+  for (const auto& entry : answers.object_range())
+    if (!requests.contains(entry.key())) throw Error(-32602, "Unknown MRTR answer ID");
+}
+}
 Json Client::request(const std::string& method, Json params,
                      const RequestOptions& options) {
   if (!params.is_object()) throw std::invalid_argument("Request params must be an object");
@@ -1761,7 +1816,7 @@ Json Client::request(const std::string& method, Json params,
     const Json& input_requests = find(result, "inputRequests");
     if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
     Json answers = input_handler_(input_requests);
-    if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
+    validate_mrtr_answers(input_requests, answers, capabilities_);
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
     if (state.is_string()) params["requestState"] = state;
