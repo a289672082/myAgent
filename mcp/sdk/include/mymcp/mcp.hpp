@@ -20,7 +20,7 @@
 #include <vector>
 
 namespace mymcp {
-namespace oauth {class Session;}
+namespace oauth {class Session; struct JwtPolicy;}
 using Json = json::value;
 inline constexpr const char* ProtocolVersion = "2026-07-28";
 inline constexpr const char* LegacyProtocolVersion = "2025-11-25";
@@ -178,6 +178,8 @@ public:
                                           const std::string& method,
                                           const std::string& name)>;
   void protect_http(Json protected_resource_metadata, TokenVerifier verifier);
+  // 用可信 JWKS 验证 JWT；不依赖调用方手动解码未签名的 JWT claims。
+  void protect_http_jwt(Json protected_resource_metadata, oauth::JwtPolicy policy);
   bool verify_http(const std::string& token, const std::string& method,
                    const std::string& name) const;
   Json protected_resource_metadata() const { return protected_resource_metadata_; }
