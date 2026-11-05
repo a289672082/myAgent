@@ -727,7 +727,7 @@ Json Server::handle(const Json& req, bool allow_legacy) {
           if (!value.is_null() && !value.is_string())
             throw Error(-32602, "Prompt arguments must be strings: " + key);
         }
-        for (const auto& entry : values)
+        for (const auto& entry : values.object_range())
           if (!declared.contains(std::string(entry.key())))
             throw Error(-32602, "Unknown prompt argument: " + std::string(entry.key()));
         result = it->second.full_reader(values);
