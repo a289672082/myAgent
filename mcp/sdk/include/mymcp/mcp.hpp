@@ -130,11 +130,18 @@ public:
       });
   }
   void resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime_type = "text/plain");
+  // 基础二进制资源：读取原始字节，并在 resources/read 中返回 base64 blob。
+  // reader 不能返回文件路径；必须返回实际的二进制字节。
+  void resource_binary(std::string uri, std::string name,
+                       std::function<std::vector<std::uint8_t>()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
                          std::function<Json(const std::string&, const Json&)> reader,
                          std::string mime_type = "text/plain", std::string description = "");
+  // arguments 为 MCP PromptArgument 列表（name/description/required）。
+  // 若给出 type/schema 字段，则为扩展的可选参数校验，不会修改线上的参数名。
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{});
@@ -181,7 +188,11 @@ public:
   const Json* tool_schema(const std::string& name) const;
 private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
-  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; };
+  struct Resource {
+    std::string name, mime;
+    std::function<std::string()> reader;
+    std::function<std::vector<std::uint8_t>()> binary_reader;
+  };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
                   std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
   struct ResourceTemplate {
