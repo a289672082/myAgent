@@ -113,3 +113,11 @@ add_executable(mymcp_http_header_routing_tests test_http_header_routing.cpp)
 target_link_libraries(mymcp_http_header_routing_tests PRIVATE mymcp)
 add_test(NAME http_header_routing COMMAND mymcp_http_header_routing_tests)
 set_tests_properties(http_header_routing PROPERTIES TIMEOUT 20)
+
+# Resources / RFC6570 / Prompts / MRTR + OAuth/JWKS 验证回归。
+foreach(test IN ITEMS baseline_features jwt_jwks)
+  add_executable(mymcp_${test}_tests test_${test}.cpp)
+  target_link_libraries(mymcp_${test}_tests PRIVATE mymcp)
+  add_test(NAME ${test} COMMAND mymcp_${test}_tests)
+  set_tests_properties(${test} PROPERTIES TIMEOUT 25)
+endforeach()
