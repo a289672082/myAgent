@@ -191,31 +191,74 @@ void paginate_list(Json& values, const Json& params, Json& result,
   values = std::move(page);
   if (end < total) result["nextCursor"] = method + ":" + std::to_string(end);
 }
-// Simple RFC6570 level-1 URI templates: {variable}. No unsafe partial match.
+// RFC6570 常用运算符的 URI 模板匹配（单变量表达式，安全全串匹配）。
+// 支持 {id}、{+path}、{/id}、{.ext}、{;id}、{?q}、{&page}、{#anchor}。
+// 复杂的多变量、数组展开和前缀修饰符尚需专门的 RFC6570 实现。
 std::optional<json::object> template_match(std::string_view pattern, std::string_view uri) {
+  auto decode = [](std::string_view value) -> std::optional<std::string> {
+    std::string output;
+    for (size_t i = 0; i < value.size(); ++i) {
+      if (value[i] != '%') { output += value[i]; continue; }
+      if (i + 2 >= value.size()) return std::nullopt;
+      auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+      };
+      int high = hex(value[i + 1]), low = hex(value[i + 2]);
+      if (high < 0 || low < 0 || (high == 0 && low == 0)) return std::nullopt;
+      output += static_cast<char>(high * 16 + low);
+      i += 2;
+    }
+    return output;
+  };
   std::string rx = "^";
   std::vector<std::string> names;
   for (size_t i = 0; i < pattern.size(); ++i) {
     if (pattern[i] == '{') {
-      const auto end = pattern.find('}', i + 1);
-      if (end == std::string_view::npos || end == i+1) return std::nullopt;
-      std::string n(pattern.substr(i+1, end-i-1));
-      if (!std::all_of(n.begin(), n.end(), [](unsigned char c){return std::isalnum(c)||c=='_';})) return std::nullopt;
-      names.push_back(std::move(n)); rx += "([^?#]*)"; i = end;
+      auto last = pattern.find('}', i + 1);
+      if (last == std::string_view::npos || last == i + 1) return std::nullopt;
+      auto expression = pattern.substr(i + 1, last - i - 1);
+      char op = 0;
+      if (std::string_view("+#./;?&").find(expression.front()) != std::string_view::npos) {
+        op = expression.front(); expression.remove_prefix(1);
+      }
+      if (expression.empty() ||
+          !std::all_of(expression.begin(), expression.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '_' || c == '.' || c == '-';
+          })) return std::nullopt;
+      std::string name(expression);
+      names.push_back(name);
+      switch (op) {
+        case '+': rx += "([^?#]+)"; break;
+        case '#': rx += "#([^#]+)"; break;
+        case '/': rx += "/([^/?#]+)"; break;
+        case '.': rx += R"(\.([^/?#]+))"; break;
+        case ';': rx += ";" + name + "=([^;/?#]+)"; break;
+        case '?': rx += R"(\?)" + name + "=([^&#]*)"; break;
+        case '&': rx += "&" + name + "=([^&#]*)"; break;
+        default: rx += "([^/?#]+)"; break;
+      }
+      i = last;
     } else {
-      unsigned char c = pattern[i];
+      const unsigned char c = static_cast<unsigned char>(pattern[i]);
       if (std::string(R"(\.[]{}()+*?^$|)").find(static_cast<char>(c)) != std::string::npos) rx += '\\';
       rx += static_cast<char>(c);
     }
   }
   rx += '$';
   try {
-    std::smatch m;
-    std::string input(uri);
-    if (!std::regex_match(input, m, std::regex(rx))) return std::nullopt;
-    json::object arguments;
-    for (size_t j = 0; j < names.size(); ++j) arguments[names[j]] = m[j+1].str();
-    return arguments;
+    std::smatch match;
+    const std::string input(uri);
+    if (!std::regex_match(input, match, std::regex(rx))) return std::nullopt;
+    json::object vars;
+    for (size_t j = 0; j < names.size(); ++j) {
+      auto decoded = decode(match[j + 1].str());
+      if (!decoded) return std::nullopt;
+      vars[names[j]] = *decoded;
+    }
+    return vars;
   } catch (const std::regex_error&) { return std::nullopt; }
 }
 
