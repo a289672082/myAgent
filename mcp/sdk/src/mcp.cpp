@@ -1611,10 +1611,18 @@ struct HttpState {
         received_total+=length;
         pending.append(data,length);
         for (;;) {
+          // 兼容 LF、CRLF 以及分块边界恰好切开的 SSE 事件分隔符。
           auto end = pending.find("\n\n");
+          auto crlf = pending.find("\r\n\r\n");
+          std::size_t sep_len = 2;
+          if (crlf != std::string::npos &&
+              (end == std::string::npos || crlf < end)) {
+            end = crlf;
+            sep_len = 4;
+          }
           if (end == std::string::npos) break;
           std::string frame = pending.substr(0, end);
-          pending.erase(0, end + 2);
+          pending.erase(0, end + sep_len);
           std::istringstream lines(frame);
           std::string line, event_data;
           while (std::getline(lines, line)) {
