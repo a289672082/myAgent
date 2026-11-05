@@ -1,28 +1,28 @@
-# MCP 2026-07-28 compatibility matrix
+# MCP 2026-07-28 协议兼容性矩阵
 
-Updated October 31, 2026. **An actively developed subset implementation, not a fully conformant SDK.** A green CTest result only certifies the tested local behavior, not official protocol conformance.
+更新于 2026 年 10 月 31 日。**本 SDK 正在开发中，只实现规范的部分功能，尚未达到完整符合性要求。** CTest 通过仅代表当前本地测试覆盖的行为正常，不代表取得官方协议符合性认证。
 
-| Protocol area | Current implementation | Remaining work |
+| 协议领域 | 当前实现 | 待完成工作 |
 |---|---|---|
-| Core JSON-RPC | Request IDs, errors, typed tools, basic notifications | Strict wire-schema testing and malformed packet fuzzing |
-| Stateless modern lifecycle | `server/discover`, required version + client identity/capabilities in request `_meta`, server response metadata, `resultType` | Official conformance tests and interoperability with TS v2/Kotlin/C# |
-| Legacy 2025-11-25 | stdio and basic Streamable HTTP `initialize` fallback, stateless tool calls | GET-based notifications, session resume, complete historical feature parity |
-| Tools | Typed registration, jsoncons JSON Schema validation, context tools, async task tools, HTTP header annotations | Remote schema references, structured outputs/outputSchema validation; icons and annotations |
-| Resources | Plain text resources, basic URI template variables, update notification | Binary resources and full RFC6570 URI templates |
-| Prompts/completions | Rich prompt callback, arguments, completion callback | Schema validation and comprehensive field coverage |
-| List pagination/cache | Deterministic in-memory pagination, `ttlMs`, `cacheScope`; authenticated HTTP forces private scope | Snapshot cursors and cache revalidation |
-| MRTR | Basic `input_required` and retry with requestState | Full validation of sampling/elicitation, state security, all behaviors |
-| Tasks extension | Opt-in capability gate, cryptographic task IDs, poll, input-required/update, cooperative cancel, TTL expiry, HTTP routing headers | Durable persistence across restart; `taskIds` subscriptions/`notifications/tasks`; external task backend; interoperable conformance |
-| Request progress/cancellation | Concurrent stdio work, `notifications/progress`, cooperative cancellation; HTTP request-scoped progress SSE and incremental client callback | Prompt cancellation when a blocked HTTP handler receives disconnects, retries/timeouts, robust stdio streaming API |
-| Subscriptions | Explicit `subscriptions/listen`, acknowledge, filters, HTTP SSE, stdio cancellation | Task status subscriptions, reconnect/resume, graceful close API integration |
-| HTTP transport | 2026 header validation, 4MiB request limit, loopback listener, metadata and bearer verification callback | Network-facing native HTTPS server, authenticated reverse proxy deployment guides, load/DoS tuning, legacy HTTP sessions |
-| HTTPS client | TLS with peer/hostname verification (OpenSSL), configurable Bearer token | HTTPS SSE subscription path, timeouts/retries/cert pinning options |
-| OAuth resource server | RFC9728-style metadata endpoint + bearer challenge; caller-supplied callback for token validation (MUST validate token/scope/audience/issuer) | Built-in JWT validation/JWKS discovery, OAuth scope step-up, authorization server interoperability |
-| OAuth client | PRM/AS discovery, PKCE S256, state+issuer verification, DCR registration, code exchange, refresh, Bearer attachment | CIMD content validation, interactive browser redirect receiver, durable secret storage, scope escalation/re-authorization |
-| Extensions | Namespaced capability advertising + custom method registry; Tasks subset | Apps, non-core extensions, full negotiation and independent extension conformance |
-| Official conformance | Linux and Windows CTest suite | Official conformance suite, TS v2/Kotlin integration, CI across OSes |
+| 核心 JSON-RPC | 请求 ID、错误、强类型工具及基础通知 | 严格的线上消息 Schema 测试与畸形数据模糊测试 |
+| 现代无状态生命周期 | `server/discover`、请求 `_meta` 中要求的协议版本、客户端身份与能力，以及服务端响应元数据、`resultType` | 官方符合性测试及与 TS v2/Kotlin/C# SDK 的互操作验证 |
+| 旧版 2025-11-25 | stdio 与基础 Streamable HTTP `initialize` 回退、无状态工具调用 | 基于 GET 的通知、会话恢复及完整旧版行为兼容 |
+| 工具 | 强类型注册、jsoncons JSON Schema 验证、上下文工具、异步任务工具、HTTP 请求头注解 | 远程 Schema 引用、结构化输出及 `outputSchema` 验证、图标和注解 |
+| 资源 | 纯文本资源、简单 URI 模板变量、更新通知 | 二进制资源及完整 RFC6570 URI 模板 |
+| 提示词与补全 | 丰富的提示词回调、参数、补全回调 | Schema 校验及全面字段覆盖 |
+| 列表分页与缓存 | 确定性内存分页、`ttlMs`、`cacheScope`；已认证 HTTP 强制使用私有缓存范围 | 快照游标和缓存重新验证 |
+| MRTR | 基础 `input_required` 与携带 `requestState` 的重试 | 采样与用户信息征询的完整校验、状态安全和全部交互行为 |
+| Tasks 扩展 | 显式能力开关、加密随机任务 ID、轮询、请求输入及更新、协作式取消、TTL 过期、HTTP 路由头 | 重启后持久化、`taskIds` 订阅和 `notifications/tasks`、外部任务后端及互操作符合性 |
+| 请求进度与取消 | 并发 stdio、`notifications/progress`、协作式取消，以及 HTTP 单请求 SSE 进度和增量客户端回调 | HTTP 阻塞工具断线时及时取消、重试与超时完善、健壮的 stdio 流式 API |
+| 订阅 | 显式 `subscriptions/listen`、确认、过滤、HTTP SSE 和 stdio 取消 | 任务状态订阅、重连及恢复、优雅关闭接口集成 |
+| HTTP 传输 | 2026 请求头校验、4 MiB 请求限制、回环地址监听、元数据及 Bearer 验证回调 | 可对公网监听的原生 HTTPS 服务、认证反向代理部署指南、负载及拒绝服务防护调优、旧版 HTTP 会话 |
+| HTTPS 客户端 | OpenSSL TLS 证书与主机名验证、可配置 Bearer 令牌 | HTTPS SSE 订阅路径、超时/重试/证书固定选项 |
+| OAuth 资源服务端 | 类 RFC9728 元数据端点及 Bearer 认证质询；由调用者提供令牌验证回调（**必须**校验令牌、权限范围、受众及签发者） | 内置 JWT 校验与 JWKS 发现、OAuth 增量提权、与授权服务器互操作 |
+| OAuth 客户端 | 受保护资源及授权服务器发现、PKCE S256、状态和签发者校验、DCR 注册、授权码交换、刷新与 Bearer 令牌附加 | CIMD 内容验证、浏览器交互及重定向监听、安全持久化凭据、权限提升与重新授权 |
+| 扩展 | 命名空间能力声明、自定义方法注册表、部分 Tasks 实现 | Apps、其他非核心扩展、完整协商及独立扩展符合性测试 |
+| 官方符合性 | Linux 与 Windows 上的 CTest 测试集 | 官方符合性测试集、TS v2/Kotlin 集成、更多操作系统 CI 验证 |
 
-## Build and test
+## 构建与测试
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -30,27 +30,27 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Dependencies: C++20, cpp-httplib, jsoncons, OpenSSL (SSL and Crypto), Threads. CMake FetchContent uses pinned upstream commits.
+依赖：C++20、仓库内置的 cpp-httplib 与 jsoncons、OpenSSL（SSL 和 Crypto）及线程库。CMake 直接使用固定提交对应的内置源码，不依赖配置时联网下载。
 
-## Security and scope notes
+## 安全与适用范围
 
-This repository must not be advertised as full MCP 2026-07-28 compatible. OAuth has **partial** implementation: a token verification callback is an integration hook, not a substitute for a trusted JWT/introspection verifier. The built-in HTTP listener binds only to loopback; a production resource server needs an authenticated TLS gateway and a security review. Long-running tasks are in-memory only, with finite retention and no cross-process durability.
+不得宣传本仓库完全兼容 MCP 2026-07-28。OAuth **仅部分实现**：令牌验证回调是宿主集成接口，不能替代可信的 JWT 或内省验证器。内置 HTTP 监听器只绑定回环地址；生产环境资源服务端必须部署在带身份认证的 TLS 网关后并接受安全审查。长时间运行的任务仅存于内存，保留时间有限，不能跨进程持久化。
 
-## cpp-httplib / jsoncons migration workstream
+## cpp-httplib / jsoncons 迁移说明
 
-- Replaces Boost.Asio/Beast with cpp-httplib and Boost.Process with Windows/POSIX native process APIs.
-- Replaces Boost.JSON with jsoncons and compiles JSON Schema validation with jsoncons 2020-12.
-- Adds OAuth Session: protected-resource discovery, AS metadata discovery (RFC 8414 and OIDC),
-  authorization code + PKCE S256, callback state/issuer validation, token exchange, dynamic client
-  registration (when advertised), and refresh; clients can attach a Session using `Client::http_oauth`.
-- The OAuth server is a protected resource, not an authorization server; host apps supply a token
-  validator and the AS endpoints separately.
-- No official MCP conformance, native TLS hosting, durable Tasks, SSE replay/resumption, or secure
-  automatic browser redirect receiver claims are made at this stage.
+- 使用 cpp-httplib 替换 Boost.Asio/Beast，使用 Windows/POSIX 原生进程 API 替换 Boost.Process。
+- 使用 jsoncons 替换 Boost.JSON，并基于 jsoncons 2020-12 实现 JSON Schema 校验。
+- 新增 OAuth Session：受保护资源发现、授权服务器（AS）元数据发现（RFC 8414 和 OIDC）、
+  授权码与 PKCE S256、回调 state/issuer 校验、令牌交换、在授权服务器声明支持时进行
+  动态客户端注册以及令牌刷新；客户端可通过 `Client::http_oauth` 绑定 Session。
+- OAuth 资源服务端不等于 OAuth 授权服务器；宿主应用需要分别提供令牌
+  验证器和授权服务器端点。
+- 当前不声明已通过官方 MCP 符合性认证，也不宣称支持原生 TLS 托管、持久化 Tasks、
+  SSE 重放及恢复或安全的浏览器自动回调接收器。
 
 
-## Streamable HTTP compatibility addition
+## Streamable HTTP 兼容性补充
 
-- **New:** HTTP `tools/call` with `progressToken` returns request-scoped `text/event-stream` containing progress notifications followed by the final JSON-RPC result; `Client::http` accepts an event callback and parses events incrementally.
-- **New:** Basic legacy HTTP initialize, list/call/read support (`2025-03-26`, `2025-06-18`, `2025-11-25`) with no server-issued session ID. Legacy GET `/mcp` explicitly returns 405 (no GET SSE notification stream).
-- **Remaining limitations:** Some legacy clients need server-to-client sampling/elicitation, GET-based resource change streams, session resumption, or complete 2025 feature parity; those are not provided. A dropped HTTP connection only marks a cooperative tool cancelled once an SSE write fails. Actual Codex and Claude Code application-level integration is not part of CI.
+- **新增：** HTTP `tools/call` 带 `progressToken` 时，会以请求级 `text/event-stream` 返回进度通知和最终 JSON-RPC 结果；`Client::http` 可设置事件回调并增量解析。
+- **新增：** 基础旧版 HTTP 初始化、列表/调用/读取兼容（`2025-03-26`、`2025-06-18`、`2025-11-25`），不会由服务端签发会话 ID。旧版 GET `/mcp` 明确返回 405（不提供 GET SSE 通知流）。
+- **剩余限制：** 部分旧版客户端需要服务端主动采样/征询、GET 资源变更流、会话恢复或完整 2025 协议功能，本 SDK 尚未提供。HTTP 断线后，协作式工具只有在 SSE 写入失败时才会收到取消标记。CI 没有真实启动 Codex/Claude Code 进程进行应用层集成测试。
