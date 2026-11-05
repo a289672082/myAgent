@@ -46,7 +46,9 @@ int main() {
   VERIFY(tools.at("tools").size() == 2);
   VERIFY(tools.at("nextCursor").is_string());
   VERIFY(client.list_all("tools/list", "tools").size() == 5);
-  VERIFY(client.resource_templates().at("resourceTemplates").size() == 3);
+  // Server 分页大小设置为 2，必须通过 list_all 读取三个模板。
+  VERIFY(client.resource_templates().at("resourceTemplates").size() == 2);
+  VERIFY(client.list_all("resources/templates/list", "resourceTemplates").size() == 3);
   auto binary = client.read("test://binary").at("contents")[0];
   VERIFY(binary.at("mimeType") == "image/png");
   VERIFY(binary.at("blob") == "iVBORwD/");
