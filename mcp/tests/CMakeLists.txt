@@ -121,3 +121,9 @@ foreach(test IN ITEMS baseline_features jwt_jwks)
   add_test(NAME ${test} COMMAND mymcp_${test}_tests)
   set_tests_properties(${test} PROPERTIES TIMEOUT 25)
 endforeach()
+
+# 测试 HTTP SSE 增量、CRLF 帧、只读重试与新请求 ID。
+add_executable(mymcp_http_resilience_tests test_http_resilience.cpp)
+target_link_libraries(mymcp_http_resilience_tests PRIVATE mymcp)
+add_test(NAME http_resilience COMMAND mymcp_http_resilience_tests)
+set_tests_properties(http_resilience PROPERTIES TIMEOUT 20)
