@@ -106,7 +106,7 @@ int main() {
       {"content", json::object{{"type", "text"}, {"text", "Hello"}}}}}};
   });
   try { sampler.call("sample"); REQUIRE(false); }
-  catch (const Error& e) { REQUIRE(e.code == -32602); }
+  catch (const Error& e) { REQUIRE(e.code == -32021); } // 未声明 Sampling 能力
   sampler.enable_sampling();
   REQUIRE(sampler.call("sample").at("content")[0].at("text") == "sampled");
   std::cout << "Protocol tests passed\n";

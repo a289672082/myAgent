@@ -8,6 +8,8 @@
 #include <limits>
 #include <map>
 #include <string_view>
+#include <condition_variable>
+#include <thread>
 
 namespace mymcp::oauth {
 namespace {
@@ -146,6 +148,10 @@ void Session::discover(){
     next.registration_endpoint=require_string(info,"registration_endpoint");
     safe_endpoint(next.registration_endpoint);
   }
+  if(info.contains("jwks_uri")) {
+    next.jwks_uri=require_string(info,"jwks_uri");
+    safe_endpoint(next.jwks_uri);
+  }
   if(info.contains("authorization_response_iss_parameter_supported"))
     next.issuer_parameter_supported=info.at("authorization_response_iss_parameter_supported").as_bool();
   next.scopes_supported=strings(protected_resource,"scopes_supported");
@@ -257,6 +263,58 @@ Token Session::exchange_callback_url(const Authorization& flow,
                        issuer == values.end() ? std::string{} : issuer->second,
                        redirect_uri);
 }
+Token Session::authorize_loopback(
+    std::function<void(const std::string&)> navigate,
+    const std::vector<std::string>& scopes, std::chrono::seconds timeout) {
+  if (!navigate || timeout.count() <= 0 || timeout > std::chrono::minutes(10))
+    throw std::invalid_argument("Invalid OAuth browser callback/timeout");
+  if (metadata_.issuer.empty()) discover();
+  if (client_id_.empty())
+    throw std::logic_error("Register OAuth client before interactive authorization");
+  httplib::Server server;
+  const int port = server.bind_to_any_port("127.0.0.1");
+  if (port <= 0) throw std::runtime_error("Cannot bind OAuth loopback listener");
+  const std::string origin = "http://127.0.0.1:" + std::to_string(port);
+  const std::string redirect = origin + "/callback";
+  auto flow = begin_authorization(redirect, scopes);
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::string received_callback;
+  bool received = false;
+  server.Get("/callback", [&](const httplib::Request& req, httplib::Response& response) {
+    response.set_header("Cache-Control","no-store");
+    response.set_header("Content-Security-Policy","default-src 'none'");
+    if (req.target.size() > 16384 || !req.target.starts_with("/callback?")) {
+      response.status=400;
+      response.set_content("Invalid OAuth callback","text/plain");
+      return;
+    }
+    {
+      std::lock_guard lock(mutex);
+      if (received) {response.status=409;return;}
+      received_callback=origin+req.target;
+      received=true;
+    }
+    ready.notify_one();
+    response.set_content("Authorization received. You may close this window.","text/plain");
+  });
+  std::thread listener([&] {server.listen_after_bind();});
+  try {
+    navigate(flow.url); // 宿主负责打开系统浏览器，不在 SDK 中调用 shell。
+    std::unique_lock lock(mutex);
+    const bool completed=ready.wait_for(lock,timeout,[&]{return received;});
+    lock.unlock();
+    server.stop();
+    listener.join();
+    if (!completed) throw std::runtime_error("OAuth browser callback timed out");
+    return exchange_callback_url(flow,received_callback,redirect);
+  } catch (...) {
+    server.stop();
+    if(listener.joinable())listener.join();
+    throw;
+  }
+}
+
 Token Session::refresh(){
   std::lock_guard lock(mutex_);
   if(!token_available_||token_.refresh_token.empty())throw std::runtime_error("No OAuth refresh token available");

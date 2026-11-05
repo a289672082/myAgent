@@ -113,3 +113,11 @@ add_executable(mymcp_http_header_routing_tests test_http_header_routing.cpp)
 target_link_libraries(mymcp_http_header_routing_tests PRIVATE mymcp)
 add_test(NAME http_header_routing COMMAND mymcp_http_header_routing_tests)
 set_tests_properties(http_header_routing PROPERTIES TIMEOUT 20)
+
+# 综合 PR #35/#36/#37：独立 RFC6570、受信任 JWKS、Streamable HTTP 恢复回归。
+foreach(name IN ITEMS jwt_jwks baseline_features http_resilience mrtr_context)
+  add_executable(mymcp_${name}_tests test_${name}.cpp)
+  target_link_libraries(mymcp_${name}_tests PRIVATE mymcp)
+  add_test(NAME ${name} COMMAND mymcp_${name}_tests)
+  set_tests_properties(${name} PROPERTIES TIMEOUT 25)
+endforeach()
