@@ -273,6 +273,14 @@ void Server::resource_template(std::string uri_template, std::string name,
            std::move(description), std::move(reader)}).second)
     throw std::invalid_argument("Duplicate resource template");
 }
+void Server::resource_template_context(std::string uri_template, std::string name,
+    std::function<Json(const std::string&, const Json&, const Json&)> reader,
+    std::string mime, std::string description) {
+  if (!reader || uri_template.empty()) throw std::invalid_argument("Invalid resource template");
+  if (!templates_.emplace(uri_template, ResourceTemplate{std::move(name), std::move(mime),
+          std::move(description), {}, std::move(reader)}).second)
+    throw std::invalid_argument("Duplicate resource template");
+}
 void Server::prompt_full(std::string name, std::string description,
                          std::function<Json(const Json&)> handler, Json arguments, Json result_schema) {
   if (!handler || !arguments.is_array() || !result_schema.is_object()) throw std::invalid_argument("Invalid prompt");
@@ -288,6 +296,14 @@ void Server::prompt_full(std::string name, std::string description,
   if (!prompts_.emplace(name, Prompt{std::move(description), {}, std::move(handler),
                                      std::move(arguments), std::move(result_schema)}).second)
     throw std::invalid_argument("Duplicate prompt");
+}
+void Server::prompt_context(std::string name, std::string description,
+                            std::function<Json(const Json&)> handler,
+                            Json arguments, Json result_schema) {
+  const auto key = name;
+  prompt_full(std::move(name), std::move(description),
+              std::move(handler), std::move(arguments), std::move(result_schema));
+  prompts_.at(key).with_context = true;
 }
 void Server::completion(std::function<Json(const Json&)> handler) {
   if (!handler) throw std::invalid_argument("Invalid completion handler");
@@ -689,7 +705,8 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         for (const auto& [pattern, entry] : templates_) {
           auto bindings = template_match(pattern, uri);
           if (!bindings) continue;
-          result = entry.reader(uri, *bindings);
+          result = entry.context_reader ? entry.context_reader(uri, *bindings, params)
+                                        : entry.reader(uri, *bindings);
           matched = true;
           break;
         }
@@ -735,7 +752,7 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         for (const auto& entry : values.object_range())
           if (!declared.contains(std::string(entry.key())))
             throw Error(-32602, "Unknown prompt argument: " + std::string(entry.key()));
-        result = it->second.full_reader(values);
+        result = it->second.full_reader(it->second.with_context ? params : Json(values));
       } else {
         result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
       }
@@ -1881,14 +1898,47 @@ Json Client::request(const std::string& method, Json params,
     const Json& result = find(response, "result");
     if (!result.is_object()) throw std::runtime_error("Invalid MCP result");
     if (method == "tools/list") tools_known_ = true;
-    if (string_of(result, "resultType") != "input_required" || !input_handler_) return result;
+    if (string_of(result, "resultType") != "input_required" ||
+        (!input_handler_ && !sampling_handler_ && !roots_handler_ &&
+         !elicitation_url_handler_)) return result;
     if (round == 8) throw Error(-32603, "Input-required rounds exceeded");
     const Json& input_requests = find(result, "inputRequests");
-    if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-    Json answers = input_handler_(input_requests);
+    if (!input_requests.is_object() || input_requests.empty() || input_requests.size() > 32)
+      throw Error(-32603, "Invalid inputRequests");
+    Json answers = json::object{};
+    bool use_fallback = false;
+    for (const auto& entry : input_requests.object_range()) {
+      const auto& input = entry.value();
+      const auto& input_params = find(input, "params");
+      const auto kind = string_of(input, "method");
+      if (!input_params.is_object()) throw Error(-32603, "Invalid MRTR input params");
+      std::function<Json(const Json&)>* handler = nullptr;
+      if (kind == "sampling/createMessage") handler = &sampling_handler_;
+      else if (kind == "roots/list") handler = &roots_handler_;
+      else if (kind == "elicitation/create" &&
+               string_of(input_params, "mode", "form") == "url")
+        handler = &elicitation_url_handler_;
+      else if (kind != "elicitation/create")
+        throw Error(-32603, "Unsupported MRTR input type");
+      if (handler && *handler) answers[std::string(entry.key())] = (*handler)(input_params);
+      else use_fallback = true;
+    }
+    if (use_fallback) {
+      if (!input_handler_) throw Error(-32021, "MRTR input handler not configured");
+      const Json fallback = input_handler_(input_requests);
+      if (!fallback.is_object()) throw Error(-32602, "Input handler must return object");
+      for (const auto& entry : fallback.object_range()) {
+        if (!input_requests.contains(entry.key()))
+          throw Error(-32602, "Unknown MRTR input response ID");
+        // 显式处理器优先；聚合回调只能补充缺失的答案。
+        if (!answers.contains(entry.key())) answers[std::string(entry.key())] = entry.value();
+      }
+    }
     validate_mrtr_answers(input_requests, answers, capabilities_);
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
+    if (!state.is_null() && !state.is_string())
+      throw Error(-32603, "Invalid opaque MRTR requestState");
     if (state.is_string()) params["requestState"] = state;
     else params.erase("requestState");
   }
