@@ -1,13 +1,13 @@
-# DeveloperTools 一份实现、多适配器；不允许把 23 个工具加入 SDK 公共头和链接接口。
-# 所有 Native/MCP Handler 应共享 tools/developer_tools/src 的定义和 Schema。
+# 开发工具采用单一实现、多适配器结构；不允许把 23 个工具加入 SDK 公共头文件或链接接口。
+# 原生工具与 MCP 工具处理函数必须复用 tools/developer_tools/src 中的定义和 Schema。
 # VS2022 规范：myAgent.sln 为版本化的 NMake 包装工程，vs2022/build.cmd 调用唯一 CMake；
-# CMakePresets.json 提供生成完整原生 VS2022 solution 的路径，不允许编辑 SDK 构建选项的复制配置。
-# 新目录规范：根目录是 Console CMake 入口；SDK 在 sdk/include、sdk/src。
-# SDK 不得包含 FTXUI 或 console 依赖；SDK/示例/测试各自 CMake。
+# CMakePresets.json 提供生成完整原生 VS2022 解决方案的方法，不允许复制并单独维护 SDK 构建选项。
+# 目录规范：根目录是控制台 CMake 入口；SDK 在 sdk/include、sdk/src。
+# SDK 不得依赖 FTXUI 或控制台；SDK、示例及测试使用各自独立的 CMake 配置。
 # FTXUI 固定在 third_party/FTXUI，必须允许 CMake 离线配置。
-# myAgent API / 设计文档
+# myAgent 接口与设计文档
 
-## API
+## 公开接口
 
 - myagent::Config：model、api_key、base_url、instructions、max_tool_rounds、max_history_items
 - myagent::Model：模型抽象接口，可注入 Mock，避免测试时调用付费 API
@@ -126,7 +126,7 @@ myMcpTools SDK、测试和 Demo 已内置在 mcp/ 目录，不依赖外部 myMcp
 
 底层通过 mymcp::Client::http、Client::process、Client::http_oauth 接入外部 MCP；
 Agent 自定义 tool 注册到底层 mymcp::Server 并通过内部 Client 调用，沿用相同 JSON Schema 参数校验。
-OpenAI function names 是 prefix__native_name，并通过路由表映射回原 MCP 工具名。
+OpenAI 工具函数名采用 prefix__native_name 形式，并通过路由表映射回原始 MCP 工具名。
 
 ## 会话语义
 
