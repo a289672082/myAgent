@@ -1,8 +1,8 @@
-# Standalone C++20 MCP demos (no command-line arguments)
+# 独立 C++20 MCP 演示程序（不需要命令行参数）
 
-Every file `run_xxxx_demo.cpp` defines `int run_xxxx_demo()` plus a zero-argument `int main()` that calls it. The corresponding CMake executable is **`run_xxxx_demo`** (Windows: `.exe`). Each demo focuses on one feature; no `--http`, `--stdio`, URL, port or credential command-line options are used.
+每个 `run_xxxx_demo.cpp` 文件均定义 `int run_xxxx_demo()` 和调用它的无参数 `int main()`。对应的 CMake 可执行文件名为 **`run_xxxx_demo`**（Windows 下添加 `.exe`）。每个示例聚焦一项功能，不接受 `--http`、`--stdio`、URL、端口或凭据等命令行参数。
 
-Build once:
+在仓库的 MCP 工程目录完成一次构建：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -10,51 +10,51 @@ cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
 
-For Visual Studio multi-config builds, add `--config Debug` to the build command, and `-C Debug` to `ctest`. Run demo executables from your build output directory. Most demos complete on their own; the three servers are designed to keep listening until terminated.
+使用 Visual Studio 等多配置生成器时，构建命令需添加 `--config Debug`，`ctest` 需添加 `-C Debug`。请从构建输出目录运行演示程序。大多数示例会自行结束；三个服务端示例将持续监听，直到手动终止。
 
-## One executable = one feature
+## 每个可执行程序展示一项功能
 
-| Run directly | What it demonstrates | Prerequisite |
+| 直接运行的程序 | 演示内容 | 前置条件 |
 | --- | --- | --- |
-| `run_tools_demo` | Typed tools, auto JSON Schema, validation errors, pagination, discovery | None |
-| `run_resources_demo` | Static resources, templates, cached resource lists | None |
-| `run_prompts_demo` | Prompt arguments and completion | None |
-| `run_mrtr_demo` | Multi round-trip user elicitation on a harmless mock approval | None |
-| `run_tasks_demo` | Task creation, async execution and status polling | None |
-| `run_extensions_demo` | Extension capability and custom method | None |
-| `run_stdio_client_demo` | Launch `run_stdio_server_demo`, discover and call a tool over stdio | Automatically finds its companion executable |
-| `run_stdio_server_demo` | Stdio MCP server reading JSON-RPC from stdin | Started by stdio client (or host application) |
-| `run_progress_demo` | Report progress notifications from a stdio tool | Automatically starts stdio server |
-| `run_http_server_demo` | Loopback HTTP server, tools, resources and publishing | Leave running in terminal 1 |
-| `run_http_client_demo` | HTTP MCP client requests | Run HTTP server first |
-| `run_subscriptions_demo` | SSE subscription, acknowledgement and resource-update event | Run HTTP server first |
-| `run_oauth_demo` | **No-credential mock OAuth**: discovery, native registration, PKCE S256, callback, token exchange | None |
-| `run_oauth_login_demo` | Real OAuth server with browser callback and bearer-protected MCP calls | Edit config in source, use a real OAuth provider |
-| `run_oauth_resource_demo` | Protected Resource Metadata, 401 challenge, local-only fixed demo Bearer verifier | Leave running in terminal; **development only** |
-| `run_oauth_resource_client_demo` | Send a mock Bearer token to the local protected resource server | Run `run_oauth_resource_demo` first |
+| `run_tools_demo` | 强类型工具、自动 JSON Schema、校验错误、分页及服务发现 | 无 |
+| `run_resources_demo` | 静态资源、资源模板、带缓存的资源列表 | 无 |
+| `run_prompts_demo` | 提示词参数与自动补全 | 无 |
+| `run_mrtr_demo` | 使用无害的模拟审批演示多轮用户信息征询 | 无 |
+| `run_tasks_demo` | 任务创建、异步执行和状态轮询 | 无 |
+| `run_extensions_demo` | 扩展能力声明与自定义方法 | 无 |
+| `run_stdio_client_demo` | 启动 `run_stdio_server_demo`，通过 stdio 发现并调用工具 | 自动寻找配套可执行程序 |
+| `run_stdio_server_demo` | 从标准输入读取 JSON-RPC 的 stdio MCP 服务端 | 由 stdio 客户端或宿主应用启动 |
+| `run_progress_demo` | 接收 stdio 工具的进度通知 | 自动启动 stdio 服务端 |
+| `run_http_server_demo` | 回环 HTTP 服务端、工具、资源及事件发布 | 在第一个终端保持运行 |
+| `run_http_client_demo` | HTTP MCP 客户端请求 | 先启动 HTTP 服务端 |
+| `run_subscriptions_demo` | SSE 订阅、确认与资源更新事件 | 先启动 HTTP 服务端 |
+| `run_oauth_demo` | **不需要凭据的模拟 OAuth**：发现、原生客户端注册、PKCE S256、回调与令牌交换 | 无 |
+| `run_oauth_login_demo` | 使用真实 OAuth 服务提供方的浏览器回调和 Bearer 保护 MCP 调用 | 编辑源码配置，并使用真实 OAuth 提供方 |
+| `run_oauth_resource_demo` | 受保护资源元数据、401 认证质询和仅用于本机的固定 Bearer 令牌验证 | 在终端持续运行；**仅限开发** |
+| `run_oauth_resource_client_demo` | 向本地受保护资源服务端发送模拟 Bearer 令牌 | 先启动 `run_oauth_resource_demo` |
 
-### Start two HTTP examples with no arguments
+### 无参数运行一组 HTTP 示例
 
-Terminal 1:
+终端一：
 
 ```bash
 ./run_http_server_demo
 ```
 
-Terminal 2:
+终端二：
 
 ```bash
 ./run_http_client_demo
 ./run_subscriptions_demo
 ```
 
-The fixed local address/port is defined in `demo_common.hpp` (`http://127.0.0.1:33867/mcp`). Change that header to use another port; both server and clients will share it.
+固定本地地址与端口定义在 `demo_common.hpp` 中（`http://127.0.0.1:33867/mcp`）。如需更换端口，请修改这个头文件，服务端和客户端将共用新的配置。
 
-### OAuth walkthrough
+### OAuth 使用流程
 
-Try `./run_oauth_demo` **first**. It starts an in-memory mock authorization server on a random loopback port, then runs protected resource metadata discovery, native dynamic registration, PKCE S256 construction, validates a simulated OAuth callback and exchanges the code. It needs **no real credentials** and does not present a real authorization UI.
+建议先运行 `./run_oauth_demo`。它会在随机回环端口上启动内存模拟授权服务器，随后完成受保护资源元数据发现、原生动态注册、PKCE S256 初始化、模拟 OAuth 回调校验及授权码交换。整个过程**无需真实凭据**，也不会打开真正的授权页面。
 
-For a **real** provider, edit the `configuration` constants at the top of `run_oauth_login_demo.cpp`:
+如需连接**真实**提供方，请修改 `run_oauth_login_demo.cpp` 开头的 `configuration` 常量：
 
 ```cpp
 constexpr const char* mcp_resource = "https://your-mcp-host.example/mcp";
@@ -63,22 +63,22 @@ constexpr bool use_dynamic_registration = false;
 constexpr const char* requested_scope = "tools:read";
 ```
 
-Then rebuild and run `./run_oauth_login_demo`. It opens a local callback listener on an OS-selected port, prints an authorization URL for you to open, waits up to 180 seconds, validates callback state and issuer, exchanges the code and calls MCP with the OAuth session. No tokens are printed or saved; do not commit actual private credentials. The OAuth provider must allow the selected loopback redirect URI or support native dynamic registration.
+重新编译并执行 `./run_oauth_login_demo`。程序会在系统分配的端口上启动本地回调监听器，输出需要手动打开的授权 URL，最多等待 180 秒，验证回调的 state 与 issuer，然后交换授权码并使用 OAuth 会话调用 MCP。程序不会打印或保存令牌；切勿提交真实私密凭据。OAuth 提供方必须允许所选择的回环重定向 URI，或支持原生动态注册。
 
-`run_oauth_resource_demo` is **not an OAuth authorization server** and cannot be used to log in with `run_oauth_login_demo`. It demonstrates only the SDK's protected-resource metadata and Bearer validation hook. Its fixed token is for local security-shape testing, **not a production token verifier**. In real services, verify token signature/introspection, issuer, audience, expiry and scopes; deploy with HTTPS.
+`run_oauth_resource_demo` **不是 OAuth 授权服务器**，不能用于 `run_oauth_login_demo` 的登录。它只演示 SDK 的受保护资源元数据和 Bearer 验证接口。固定令牌仅用于本地安全形态测试，**不能用作生产令牌验证器**。真实服务必须验证令牌签名或可信内省结果、签发者、受众、有效期和权限范围，并使用 HTTPS 部署。
 
-## Legacy integration test fixtures
+## 旧版集成测试辅助程序
 
-The previous command-line-driven `showcase_*`, `oauth_login.cpp` and `oauth_resource_server.cpp` files have moved to `tests/fixtures/` to keep existing integration tests without exposing old parameter-driven examples. They are compiled only as test fixtures. All files in `examples/` now use the independent `run_xxxx_demo` entrypoint convention.
+旧版通过命令行参数驱动的 `showcase_*`、`oauth_login.cpp` 与 `oauth_resource_server.cpp` 已移至 `tests/fixtures/`，仅作为集成测试辅助程序进行编译，避免继续公开旧版参数式示例。`examples/` 下所有程序目前均采用独立 `run_xxxx_demo` 入口函数约定。
 
-The SDK is still experimental; these demos do **not** establish full MCP 2026-07-28 conformance. See [`COMPATIBILITY.md`](../COMPATIBILITY.md).
+SDK 仍是实验性实现；这些示例**不能证明**其完全符合 MCP 2026-07-28 规范。请参见 [兼容性矩阵](../COMPATIBILITY.md)。
 
 
-### Streamable HTTP + request-scoped SSE
+### Streamable HTTP 与单请求 SSE
 
-Start `run_http_server_demo`, then run `run_http_progress_demo` (no flags). The tool sends five real-time `notifications/progress` SSE events and a final JSON-RPC response; ordinary fast tools still return `application/json`. For Codex and Claude Code configuration see [`../INTEROPERABILITY.md`](../INTEROPERABILITY.md).
+先启动 `run_http_server_demo`，再运行无参数的 `run_http_progress_demo`。工具会实时发送五条 `notifications/progress` SSE 事件和最终 JSON-RPC 响应；普通快速工具仍返回 `application/json`。Codex 与 Claude Code 的配置方法见 [互操作指南](../INTEROPERABILITY.md)。
 
-## 一个 Demo：10 组智能体必备工具（中文注释）
+## 一个示例包含十组智能体常用工具（中文注释）
 
 新增 **`run_agent_tools_demo.cpp`**：单个 C++20 stdio MCP Server 提供 10 组共 23 个真实工具，直接运行 `run_agent_tools_demo`，不接受任何命令行参数。
 
