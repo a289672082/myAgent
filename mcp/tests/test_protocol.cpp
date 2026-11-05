@@ -85,12 +85,20 @@ int main() {
   // MRTR：采样和 Roots 的响应必须先声明相应客户端能力。
   Server sampling("sampling");
   sampling.add_tool_context("sample", "sampling", json::object{{"type", "object"}},
-    [](const Json& params)->Json {
+    [](const Json& params) -> Json {
       if (params.contains("inputResponses")) return detail::make_tool_result("sampled");
-      return json::object{{"resultType", "input_required"}, {"inputRequests", json::object{
-        {"sample", json::object{{"method", "sampling/createMessage"}, {"params", json::object{
-          {"messages", json::array{json::object{{"role", "user"}, {"content",
-            json::object{{"type", "text"}, {"text", "Hi"}}}}}}}}}}}}}};
+      Json message = json::object{
+        {"role", "user"},
+        {"content", json::object{{"type", "text"}, {"text", "Hi"}}}
+      };
+      Json request = json::object{
+        {"method", "sampling/createMessage"},
+        {"params", json::object{{"messages", json::array{std::move(message)}}}}
+      };
+      return json::object{
+        {"resultType", "input_required"},
+        {"inputRequests", json::object{{"sample", std::move(request)}}}
+      };
     });
   Client sampler([&](const Json& request) { return sampling.handle(request); });
   sampler.on_input_required([](const Json&) -> Json {
