@@ -1593,10 +1593,14 @@ struct HttpState {
         received_total+=length;
         pending.append(data,length);
         for (;;) {
-          auto end = pending.find("\n\n");
+          const auto lf=pending.find("\n\n");
+          const auto crlf=pending.find("\r\n\r\n");
+          const bool use_crlf=crlf!=std::string::npos &&
+              (lf==std::string::npos || crlf<lf);
+          const auto end=use_crlf?crlf:lf;
           if (end == std::string::npos) break;
           std::string frame = pending.substr(0, end);
-          pending.erase(0, end + 2);
+          pending.erase(0, end + (use_crlf?4:2));
           std::istringstream lines(frame);
           std::string line, event_data;
           while (std::getline(lines, line)) {
@@ -1644,36 +1648,71 @@ struct HttpState {
 } // namespace
 
 void Client::listen_http(const std::string& url, Json notifications,
-                         std::function<bool(const Json&)> on_event) {
+                         std::function<bool(const Json&)> on_event,
+                         unsigned max_reconnects) {
+  if (!notifications.is_object() || !on_event)
+    throw std::invalid_argument("Invalid MCP subscription");
+  // 2026-07-28 明确取消 Last-Event-ID 恢复：只允许重建无副作用的 listen 请求。
+  // 不会尝试重放工具调用，也不会声称能重放断线期间丢失的通知。
   const auto target=parse_url(url);
-  const Json request=json::object{{"jsonrpc","2.0"},{"id",1},{"method","subscriptions/listen"},
-    {"params",json::object{{"notifications",std::move(notifications)},
+  const httplib::Headers headers{{"Accept","application/json, text/event-stream"},
+    {"MCP-Protocol-Version",ProtocolVersion},{"Mcp-Method","subscriptions/listen"}};
+  for (unsigned attempt=0;;++attempt) {
+    const Json request=json::object{{"jsonrpc","2.0"},{"id",static_cast<std::uint64_t>(attempt)+1},
+      {"method","subscriptions/listen"},
+      {"params",json::object{{"notifications",notifications},
       {"_meta",json::object{{"io.modelcontextprotocol/protocolVersion",ProtocolVersion},
          {"io.modelcontextprotocol/clientCapabilities",json::object{}},
          {"io.modelcontextprotocol/clientInfo",json::object{{"name","mymcp-listener"},{"version","1.0"}}}}}}}};
-  auto c=new_http_client(target);
-  c->set_read_timeout(3600,0);
-  httplib::Headers headers{{"Accept","application/json, text/event-stream"},
-    {"MCP-Protocol-Version",ProtocolVersion},{"Mcp-Method","subscriptions/listen"}};
-  std::string pending;
-  bool continue_reading=true;
-  auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
-    [&](const char* data,std::size_t len){
-      pending.append(data,len);
-      for(;;){auto sep=pending.find("\n\n");if(sep==std::string::npos)break;
-        auto frame=pending.substr(0,sep);pending.erase(0,sep+2);
-        std::string event;std::istringstream lines(frame);std::string line;
-        while(std::getline(lines,line)){
-          if(!line.empty()&&line.back()=='\r')line.pop_back();
-          if(line.starts_with("data:")){if(!event.empty())event+='\n';auto part=line.substr(5);if(!part.empty()&&part[0]==' ')part.erase(0,1);event+=part;}
+    auto c=new_http_client(target);
+    c->set_read_timeout(45,0);  // 服务端每隔 15 秒发送保活注释。
+    std::string pending;
+    bool deliberate_stop=false, completed=false;
+    auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
+      [&](const char* data,std::size_t len) {
+        constexpr std::size_t max_frame=1024*1024;
+        if (len>max_frame || pending.size()>max_frame-len)
+          throw std::runtime_error("MCP SSE subscription frame too large");
+        pending.append(data,len);
+        for (;;) {
+          const auto lf=pending.find("\n\n");
+          const auto crlf=pending.find("\r\n\r\n");
+          const bool use_crlf=crlf!=std::string::npos &&
+              (lf==std::string::npos || crlf<lf);
+          const auto pos=use_crlf?crlf:lf;
+          if(pos==std::string::npos)break;
+          auto frame=pending.substr(0,pos);
+          pending.erase(0,pos+(use_crlf?4:2));
+          std::string event;
+          std::istringstream lines(frame);
+          std::string line;
+          while(std::getline(lines,line)) {
+            if(!line.empty()&&line.back()=='\r')line.pop_back();
+            if(line.starts_with("data:")) {
+              if(!event.empty())event+='\n';
+              auto part=line.substr(5);
+              if(!part.empty()&&part.front()==' ')part.erase(0,1);
+              event+=part;
+            }
+          }
+          if(event.empty())continue; // 心跳注释和空帧
+          const Json value=json::parse(event);
+          const bool final_message=value.is_object() && value.contains("id") &&
+            find(value,"id")==find(request,"id") &&
+            string_of(find(value,"result"),"resultType")=="complete";
+          if(!on_event(value)) {deliberate_stop=true;return false;}
+          if(final_message) {completed=true;return false;}
         }
-        if(!event.empty()&&!on_event(json::parse(event))){continue_reading=false;return false;}
-      }
-      if(pending.size()>4*1024*1024)throw std::runtime_error("SSE frame too large");
-      return true;
-    });
-  if(!res&&continue_reading)throw std::runtime_error("HTTP SSE connection failed");
-  if(res&&res->status!=200)throw std::runtime_error("HTTP SSE subscription rejected");
+        return true;
+      });
+    if(deliberate_stop || completed)return;
+    if(res && res->status!=200)
+      throw std::runtime_error("HTTP SSE subscription rejected (HTTP "+std::to_string(res->status)+")");
+    if(attempt>=max_reconnects)
+      throw std::runtime_error("HTTP SSE subscription disconnected; retry budget exhausted");
+    // 有界退避：重新订阅不等于恢复 SSE 历史事件。
+    std::this_thread::sleep_for(std::chrono::milliseconds(250u * (1u<<std::min(attempt,4u))));
+  }
 }
 
 Client::Client(std::function<Json(const Json&)> send, std::string name)
