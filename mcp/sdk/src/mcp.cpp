@@ -727,11 +727,13 @@ Json Server::handle(const Json& req, bool allow_legacy) {
           throw Error(-32602, "Prompt argument must be a string: " + key);
         }
       }
-      if (!it->second.arguments.empty())
-        for (const auto& arg : values) {
+      if (!it->second.arguments.empty()) {
+        const Json provided(values);
+        for (const auto& arg : provided.object_range()) {
           if (!allowed.contains(std::string(arg.key())))
             throw Error(-32602, "Unknown prompt argument: " + std::string(arg.key()));
         }
+      }
       if (it->second.full_reader) result = it->second.full_reader(values);
       else result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
       if (!result.is_object() || !find(result, "messages").is_array())
