@@ -1,10 +1,10 @@
-# DeveloperTools — 一份实现，Agent 与 MCP 双注册
+# 开发工具——单一实现，支持 Agent 与 MCP 双注册
 
 来自仓库内置的 `mcp/examples/run_agent_tools_demo.cpp` 的 10 组、23 个工具，
-已提取至 `tools/developer_tools/src/developer_tools.cpp`，仅此一处维护 Handler 和 Schema。
+代码已提取至 `tools/developer_tools/src/developer_tools.cpp`，处理函数与 Schema 只在此处维护。
 最后一个工具的标准名称改为 `find_symbol`（原教学 Demo 使用 `find_symbols`）。
 
-## C++ Agent 原生注册
+## C++ Agent 原生工具注册
 
 ~~~cpp
 #include "myagent/agent.hpp"
@@ -21,7 +21,7 @@ developer_tools::RegisterToAgent(agent,
 **重要**：此注册通过 `Agent::tool()` 复用 SDK 内部 MCP Server
 和 Loopback Client，但不启动外部进程，也不会自动发布公共 MCP 端点。
 
-## 独立 MCP Server 注册
+## 独立 MCP 服务端注册
 
 ~~~cpp
 #include "developer_tools/developer_tools.hpp"
@@ -48,7 +48,7 @@ Console 默认通过 `RegisterToAgent()` 注册原生工具，默认工具审批
 不需要重复配置 MCP。若外部再接入同类 MCP，名称会分别带上
 `local__` 和对应 MCP 前缀，请避免重复暴露造成模型困惑。
 
-## ToolOptions
+## 工具选项（ToolOptions）
 
 你可以按类别选择要注册哪些工具，**同一个 options 对象可以传给 Agent 或 MCP**：
 
