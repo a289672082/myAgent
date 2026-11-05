@@ -786,11 +786,37 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (method != "tools/call" && method != "prompts/get" && method != "resources/read")
         throw Error(-32603, "input_required is not allowed for this method");
       const auto& requests = find(result, "inputRequests");
-      if (!requests.is_null() && !requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-      if (requests.is_object()) for (auto& entry : requests.object_range()) { const auto key = entry.key(); auto& item = entry.value();
-        const auto method_name = string_of(item, "method");
-        if (method_name != "elicitation/create" && method_name != "sampling/createMessage" && method_name != "roots/list")
-          throw Error(-32603, "Invalid input request type");
+      if (!requests.is_null() && (!requests.is_object() || requests.empty()))
+        throw Error(-32603, "Invalid inputRequests");
+      if (requests.is_null() && !find(result,"requestState").is_string())
+        throw Error(-32603, "input_required must provide inputRequests or requestState");
+      if (!find(result,"requestState").is_null() && !find(result,"requestState").is_string())
+        throw Error(-32603, "Invalid requestState");
+      const auto& client_caps = find(meta,"io.modelcontextprotocol/clientCapabilities");
+      if (requests.is_object()) for (const auto& entry : requests.object_range()) {
+        const auto& item = entry.value();
+        const auto method_name = string_of(item,"method");
+        const auto& request_params = find(item,"params");
+        if (!item.is_object() || !request_params.is_object())
+          throw Error(-32603, "Invalid MRTR input request");
+        if (method_name=="elicitation/create") {
+          if (!find(client_caps,"elicitation").is_object())
+            throw Error(-32021, "Client does not support elicitation");
+          auto mode=string_of(request_params,"mode","form");
+          if (!find(request_params,"message").is_string() ||
+              (mode!="form" && mode!="url") ||
+              (mode=="form" && !find(request_params,"requestedSchema").is_object()) ||
+              (mode=="url" && !find(request_params,"url").is_string()))
+            throw Error(-32603,"Invalid elicitation request");
+        } else if (method_name=="sampling/createMessage") {
+          if (!find(client_caps,"sampling").is_object())
+            throw Error(-32021,"Client does not support sampling");
+          if (!find(request_params,"messages").is_array() || !find(request_params,"maxTokens").is_number())
+            throw Error(-32603,"Invalid sampling request");
+        } else if (method_name=="roots/list") {
+          if (!find(client_caps,"roots").is_object())
+            throw Error(-32021,"Client does not support roots");
+        } else throw Error(-32603, "Invalid input request type");
       }
     }
     result = complete(std::move(result), modern);
@@ -1754,14 +1780,25 @@ Json Client::request(const std::string& method, Json params,
     const Json& result = find(response, "result");
     if (!result.is_object()) throw std::runtime_error("Invalid MCP result");
     if (method == "tools/list") tools_known_ = true;
-    if (string_of(result, "resultType") != "input_required" || !input_handler_) return result;
+    if (string_of(result, "resultType") != "input_required") return result;
     if (round == 8) throw Error(-32603, "Input-required rounds exceeded");
     const Json& input_requests = find(result, "inputRequests");
-    if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-    Json answers = input_handler_(input_requests);
-    if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
-    params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
+    if ((!input_requests.is_object() || input_requests.empty()) && !state.is_string())
+      throw Error(-32603, "Invalid input_required result");
+    if (!input_requests.is_null() && !input_requests.is_object())
+      throw Error(-32603,"Invalid inputRequests");
+    if (!state.is_null() && !state.is_string())
+      throw Error(-32603,"Invalid requestState");
+    if (input_requests.is_object() && !input_requests.empty()) {
+      if (!input_handler_) throw Error(-32021,"MRTR input handler not configured");
+      Json answers = input_handler_(input_requests);
+      if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
+      for (const auto& item : answers.object_range())
+        if (!input_requests.contains(std::string(item.key())))
+          throw Error(-32602,"Unknown MRTR input response ID");
+      params["inputResponses"] = std::move(answers);
+    } else params.erase("inputResponses");
     if (state.is_string()) params["requestState"] = state;
     else params.erase("requestState");
   }
