@@ -318,6 +318,19 @@ void Server::protect_http(Json metadata, TokenVerifier verifier) {
   protected_resource_metadata_ = std::move(metadata);
   cache_scope_ = "private"; // authenticated responses must not be shared between callers
 }
+void Server::protect_http_jwks(Json metadata, Json jwks,
+                              std::string issuer, std::string audience,
+                              std::vector<std::string> scopes) {
+  if (issuer.empty() || audience.empty() || !jwks.is_object())
+    throw std::invalid_argument("JWKS, issuer and audience are required");
+  // JWKS 由宿主通过可信 HTTPS 获取；客户端 Token 自带的 jku 不会被访问。
+  protect_http(std::move(metadata),
+    [keys = std::move(jwks), issuer = std::move(issuer),
+     audience = std::move(audience), scopes = std::move(scopes)]
+    (const std::string& token, const std::string&, const std::string&) {
+      return oauth::verify_jwt_rs256(token, keys, issuer, audience, scopes);
+    });
+}
 bool Server::verify_http(const std::string& token, const std::string& method,
                          const std::string& name) const {
   try { return token_verifier_ && !token.empty() && token_verifier_(token, method, name); }
