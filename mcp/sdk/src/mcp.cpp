@@ -346,6 +346,74 @@ void validate_resource_output(const Json& result) {
       throw Error(-32603, "Invalid resource contents");
   }
 }
+// MRTR 中各轮输入必须是已声明的方法和符合规范的结构。
+void validate_mrtr_requests(const Json& requests) {
+  if (!requests.is_object() || requests.empty() || requests.size() > 32)
+    throw Error(-32603, "Invalid or excessive MRTR inputRequests");
+  for (const auto& item : requests.object_range()) {
+    const Json& req = item.value();
+    const auto method = string_of(req, "method");
+    const auto& params = find(req, "params");
+    if (!params.is_object()) throw Error(-32603, "MRTR request params must be object");
+    if (method == "elicitation/create") {
+      const auto mode = string_of(params, "mode", "form");
+      if (!find(params, "message").is_string() ||
+          (mode != "form" && mode != "url") ||
+          (mode == "form" && !find(params, "requestedSchema").is_object()) ||
+          (mode == "url" && !find(params, "url").is_string()))
+        throw Error(-32603, "Invalid MRTR elicitation request");
+    } else if (method == "sampling/createMessage") {
+      if (!find(params, "messages").is_array() ||
+          !find(params, "maxTokens").is_number() ||
+          find(params, "maxTokens").as_double() <= 0)
+        throw Error(-32603, "Invalid MRTR sampling request");
+      for (const auto& message : find(params, "messages").array_range()) {
+        if (!message.is_object() ||
+            (string_of(message, "role") != "user" &&
+             string_of(message, "role") != "assistant"))
+          throw Error(-32603, "Invalid MRTR sampling message");
+        validate_prompt_content(find(message, "content"));
+      }
+    } else if (method != "roots/list") {
+      throw Error(-32603, "Unsupported MRTR request method");
+    }
+  }
+}
+void validate_mrtr_answers(const Json& requests, const Json& answers) {
+  if (!answers.is_object() || answers.size() != requests.size())
+    throw Error(-32602, "MRTR inputResponses must answer each requested ID");
+  for (const auto& request : requests.object_range()) {
+    const auto& answer = find(answers, request.key());
+    if (!answer.is_object()) throw Error(-32602, "Invalid MRTR answer");
+    const auto method = string_of(request.value(), "method");
+    if (method == "elicitation/create") {
+      const auto action = string_of(answer, "action");
+      if (action != "accept" && action != "decline" && action != "cancel")
+        throw Error(-32602, "Invalid elicitation action");
+      if (action == "accept") {
+        const auto& content = find(answer, "content");
+        if (!content.is_object()) throw Error(-32602, "Missing elicitation content");
+        const auto& schema = find(find(request.value(), "params"), "requestedSchema");
+        if (schema.is_object()) {
+          std::string why;
+          if (!validate_schema(schema, content, &why))
+            throw Error(-32602, "Elicitation schema violation: " + why);
+        }
+      }
+    } else if (method == "sampling/createMessage") {
+      if (string_of(answer, "role") != "assistant")
+        throw Error(-32602, "Sampling answer must be assistant message");
+      validate_prompt_content(find(answer, "content"));
+    } else if (method == "roots/list") {
+      const auto& roots = find(answer, "roots");
+      if (!roots.is_array()) throw Error(-32602, "Invalid roots answer");
+      for (const auto& root : roots.array_range()) {
+        if (!find(root, "uri").is_string() || !find(root, "name").is_string())
+          throw Error(-32602, "Invalid roots entry");
+      }
+    }
+  }
+}
 } // anonymous namespace
 
 namespace detail {
@@ -879,11 +947,17 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (method != "tools/call" && method != "prompts/get" && method != "resources/read")
         throw Error(-32603, "input_required is not allowed for this method");
       const auto& requests = find(result, "inputRequests");
-      if (!requests.is_null() && !requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-      if (requests.is_object()) for (auto& entry : requests.object_range()) { const auto key = entry.key(); auto& item = entry.value();
-        const auto method_name = string_of(item, "method");
-        if (method_name != "elicitation/create" && method_name != "sampling/createMessage" && method_name != "roots/list")
-          throw Error(-32603, "Invalid input request type");
+      validate_mrtr_requests(requests);
+      const auto& state = find(result, "requestState");
+      if (!state.is_null() && (!state.is_string() || state.as_string().size() > 16384))
+        throw Error(-32603, "Invalid MRTR requestState");
+      for (const auto& item : requests.object_range()) {
+        const auto method_name = string_of(item.value(), "method");
+        const auto& caps = find(meta, "io.modelcontextprotocol/clientCapabilities");
+        if ((method_name == "sampling/createMessage" && !find(caps, "sampling").is_object()) ||
+            (method_name == "elicitation/create" && !find(caps, "elicitation").is_object()) ||
+            (method_name == "roots/list" && !find(caps, "roots").is_object()))
+          throw Error(-32021, "MRTR client capability missing: " + method_name);
       }
     }
     result = complete(std::move(result), modern);
@@ -1847,15 +1921,28 @@ Json Client::request(const std::string& method, Json params,
     const Json& result = find(response, "result");
     if (!result.is_object()) throw std::runtime_error("Invalid MCP result");
     if (method == "tools/list") tools_known_ = true;
-    if (string_of(result, "resultType") != "input_required" || !input_handler_) return result;
+    if (string_of(result, "resultType") != "input_required") return result;
+    if (!input_handler_ && !sampling_handler_ && !elicitation_handler_ && !roots_handler_)
+      return result;  // 允许没有交互处理器的宿主自行接管。
     if (round == 8) throw Error(-32603, "Input-required rounds exceeded");
     const Json& input_requests = find(result, "inputRequests");
-    if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-    Json answers = input_handler_(input_requests);
-    if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
+    validate_mrtr_requests(input_requests);
+    Json answers = json::object{};
+    if (input_handler_) {
+      answers = input_handler_(input_requests); // 保留兼容性：一次性处理所有请求。
+    } else {
+      for (const auto& item : input_requests.object_range()) {
+        const auto method_name = string_of(item.value(), "method");
+        const auto& handler = method_name == "sampling/createMessage" ? sampling_handler_ :
+                              method_name == "elicitation/create" ? elicitation_handler_ : roots_handler_;
+        if (!handler) throw Error(-32021, "MRTR handler not configured: " + method_name);
+        answers[std::string(item.key())] = handler(find(item.value(), "params"));
+      }
+    }
+    validate_mrtr_answers(input_requests, answers);
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
-    if (state.is_string()) params["requestState"] = state;
+    if (state.is_string() && state.as_string().size() <= 16384) params["requestState"] = state;
     else params.erase("requestState");
   }
   throw Error(-32603, "Input-required rounds exceeded");
