@@ -142,11 +142,19 @@ public:
   void resource_template(std::string uri_template, std::string name,
                          std::function<Json(const std::string&, const Json&)> reader,
                          std::string mime_type = "text/plain", std::string description = "");
+  // 供 MRTR 重试读取 inputResponses/requestState 的资源模板上下文处理器。
+  void resource_template_context(std::string uri_template, std::string name,
+      std::function<Json(const std::string&, const Json&, const Json&)> reader,
+      std::string mime_type = "text/plain", std::string description = "");
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{}, Json result_schema = json::object{});
   // 使用 MCP 标准参数描述（name、description、required）校验请求与结果。
   // 所有 prompt_full 的参数描述和消息结果都经过运行时结构校验。
+  // 与 prompt_full 的区别：接收完整 prompts/get params，便于处理 MRTR 输入往返。
+  void prompt_context(std::string name, std::string description,
+                      std::function<Json(const Json&)> handler,
+                      Json arguments = json::array{}, Json result_schema = json::object{});
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -198,10 +206,11 @@ private:
   struct Resource { std::string name; std::string mime; std::function<std::string()> reader; bool binary = false; };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
                   std::function<Json(const Json&)> full_reader; Json arguments = json::array{};
-                  Json result_schema = json::object{}; };
+                  Json result_schema = json::object{}; bool with_context = false; };
   struct ResourceTemplate {
     std::string name, mime, description;
     std::function<Json(const std::string&, const Json&)> reader;
+    std::function<Json(const std::string&, const Json&, const Json&)> context_reader;
   };
   std::string name_, version_, instructions_;
   std::map<std::string, Tool> tools_;
@@ -275,7 +284,8 @@ public:
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
     return static_cast<bool>(send_bounded_) && !requires_oauth_refresh_ &&
-           !has_untrusted_callback_ && !input_handler_;
+           !has_untrusted_callback_ && !input_handler_ && !sampling_handler_ &&
+           !roots_handler_ && !elicitation_url_handler_;
   }
   Json discover(const RequestOptions& options = {});
   Json request(const std::string& method, Json params = json::object{},
@@ -312,6 +322,26 @@ public:
     capabilities_["elicitation"] = json::object{{"form", json::object{}}};
   }
   // 显式公布旧版 Sampling/Roots 能力（现代协议通过 MRTR 请求响应）。
+  // 注册独立 MRTR 处理器后才向服务端宣告相应能力。
+  void on_sampling(std::function<Json(const Json&)> handler) {
+    sampling_handler_ = std::move(handler);
+    if (sampling_handler_) enable_sampling();
+    else capabilities_.erase("sampling");
+  }
+  void on_roots(std::function<Json(const Json&)> handler) {
+    roots_handler_ = std::move(handler);
+    if (roots_handler_) capabilities_["roots"] = json::object{{"listChanged", false}};
+    else capabilities_.erase("roots");
+  }
+  void on_elicitation_url(std::function<Json(const Json&)> handler) {
+    elicitation_url_handler_ = std::move(handler);
+    if (elicitation_url_handler_) {
+      if (!capabilities_.contains("elicitation")) capabilities_["elicitation"] = json::object{};
+      capabilities_["elicitation"]["url"] = json::object{};
+    } else if (capabilities_.contains("elicitation")) {
+      capabilities_["elicitation"].erase("url");
+    }
+  }
   void enable_sampling() { capabilities_["sampling"] = json::object{}; }
   void enable_roots() { capabilities_["roots"] = json::object{}; }
   // 仅在应用确实能够响应对应类型时才宣告能力。
@@ -341,6 +371,9 @@ private:
   bool requires_oauth_refresh_ = false; // OAuth token acquisition currently has separate I/O.
   bool has_untrusted_callback_ = false; // C++ notification callback may never return.
   std::function<Json(const Json&)> input_handler_;
+  std::function<Json(const Json&)> sampling_handler_;
+  std::function<Json(const Json&)> roots_handler_;
+  std::function<Json(const Json&)> elicitation_url_handler_;
 };
 
 } // namespace mymcp
