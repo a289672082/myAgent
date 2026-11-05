@@ -8,6 +8,8 @@
 #include <memory>
 #include <set>
 #include <cstdint>
+#include <optional>
+#include <cctype>
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
