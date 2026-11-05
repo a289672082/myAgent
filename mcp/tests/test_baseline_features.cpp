@@ -99,6 +99,32 @@ int main() {
   try {no_capabilities.call("ask");CHECK(false);}
   catch(const Error& error){CHECK(error.code==-32021);}
 
+  // URL 模式征询与普通表单分别声明能力；URL 授权由宿主决定。
+  mrtr.add_tool_context("url-approval","模拟外部 URL 授权",
+    json::object{{"type","object"}},
+    [](const Json& params)->Json {
+      if(params.contains("inputResponses")) {
+        if(params.at("requestState")!="url-state" ||
+           !params.at("inputResponses").contains("approval"))
+          throw std::runtime_error("URL elicitation state lost");
+        return json::object{{"content",json::array{
+          json::object{{"type","text"},{"text","url-approved"}}}}};
+      }
+      Json approval=json::object{{"method","elicitation/create"},
+        {"params",json::object{{"mode","url"},{"message","请在浏览器中完成授权"},
+          {"url","https://auth.example/approval"},{"elicitationId","approval-demo"}}}};
+      return json::object{{"resultType","input_required"},{"requestState","url-state"},
+        {"inputRequests",json::object{{"approval",approval}}}};
+    });
+  Client url_client([&](const Json& request){return mrtr.handle(request);});
+  url_client.on_elicitation_url([](const Json& input)->Json {
+    CHECK(input.at("mode")=="url");
+    CHECK(input.at("elicitationId")=="approval-demo");
+    return json::object{{"action","accept"}};
+  });
+  url_client.on_input_required([](const Json&)->Json {return json::object{};});
+  CHECK(url_client.call("url-approval").at("content")[0].at("text")=="url-approved");
+
   // JWT/JWKS：仅接受可信 JWKS 中的 RS256 公钥，核对 issuer/audience/scope/exp。
   using Key=std::unique_ptr<EVP_PKEY,decltype(&EVP_PKEY_free)>;
   using KeyCtx=std::unique_ptr<EVP_PKEY_CTX,decltype(&EVP_PKEY_CTX_free)>;
