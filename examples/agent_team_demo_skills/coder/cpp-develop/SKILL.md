@@ -1,6 +1,6 @@
 ---
 name: cpp-develop
-description: Apply safe modern C++20 coding and implementation practices.
+description: 编写现代 C++20 代码并遵循安全的实现规范。
 ---
 
 # C++ 开发 Skill

@@ -1,8 +1,8 @@
 ---
 name: brief-summary
-description: Write concise, grounded summaries when requested.
+description: 根据用户要求提供简洁、准确且有依据的摘要。
 ---
-# Summary guidelines
+# 摘要编写规范
 
-When asked to summarize, prioritize accurate key points and explicitly distinguish
-observed information from assumptions. Do not make up facts.
+总结内容时优先保证关键要点准确，并明确区分
+已确认的信息与推测；不得编造事实。

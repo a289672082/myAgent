@@ -1,10 +1,10 @@
 ---
 name: claude-manual
-description: A Claude-style Skill that can only be explicitly invoked.
+description: 仅允许显式调用的 Claude 风格 Skill。
 disable-model-invocation: true
 user-invocable: true
 ---
 
-# Manual Claude Skill
+# 需要手动启用的 Claude Skill
 
-CLAUDE_MANUAL_CHECK: activated only through agent.use_skill().
+CLAUDE_MANUAL_CHECK: 只能通过 agent.use_skill() 手动激活。

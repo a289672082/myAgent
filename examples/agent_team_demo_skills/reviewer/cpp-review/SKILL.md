@@ -1,6 +1,6 @@
 ---
 name: cpp-review
-description: Review C++ code for resource safety, API correctness and edge cases.
+description: 审查 C++ 代码的资源安全、API 正确性和边界情况。
 ---
 
 # C++ 审查 Skill

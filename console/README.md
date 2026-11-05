@@ -1,4 +1,4 @@
-# myAgent Console — 默认入口（FTXUI 7.0.3）
+# myAgent 控制台——默认入口（FTXUI 7.0.3）
 
 根 `CMakeLists.txt` 默认构建控制台；`sdk/` 是可独立编译和链接的通用库，
 `examples/` 和 `tests/` 是独立模块。界面只是 Codex 风格测试 TUI，不是 Codex 本体。
@@ -18,7 +18,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 构建过程不会调用 FetchContent、下载第三方依赖或访问网络；
 若子模块未初始化，CMake 会明确提示 `git submodule update --init --recursive`。
-默认 CMake 关闭 SDK Demo/测试，启用控制台和控制台离线回归。
+默认 CMake 关闭 SDK 演示程序与测试，启用控制台及其离线回归测试。
 
 仅需 SDK：
 
@@ -65,7 +65,7 @@ ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 默认使用 `MYAGENT_API_KEY` 或 `OPENAI_API_KEY` 环境变量（也支持 MYAGENT_BASE_URL、MYAGENT_MODEL）。
 API Key 在内存中暂存，不写文件，不允许明文 /apikey key。远端 MCP HTTP 只能用 HTTPS；
 Bearer Token 只从环境变量获取。默认每次 MCP 工具调用都需在界面确认。
-控制台目前只有 Slash 前缀候选，不支持 Tab 选择或候选列表方向键切换。
+控制台目前只提供斜杠命令前缀候选，不支持通过 Tab 或方向键选择候选项。
 修改模型、URL、协议、密钥或 MCP 服务将重建 Agent 并清空旧会话。
 Execute-Verify-Repair 需要真实验证器，控制台不伪造验证结果。
 

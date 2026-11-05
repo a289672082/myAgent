@@ -1,23 +1,23 @@
-# Security and production limits
+# 安全要求与生产环境限制
 
-**Do not expose the built-in HTTP listener to the public Internet.** It binds to loopback deliberately. This code is an experimental MCP SDK, not an audited security boundary and not a fully conformant MCP implementation.
+**禁止将内置 HTTP 监听器直接暴露到公共互联网。** 该监听器有意只绑定回环地址。本代码属于实验性 MCP SDK，并非经过全面安全审计的隔离边界，也没有完全实现 MCP 规范。
 
-- `Server::protect_http` adds protected-resource metadata, a Bearer challenge and a token validation callback. **Your verifier must authenticate tokens cryptographically or through trusted introspection and verify issuer, audience/resource, expiry and per-operation scopes.** A token string comparison is used solely in the demo/test mode and is not OAuth 2.1 validation.
-- For remote deployments place the service behind a correctly configured HTTPS authentication/authorization gateway. Check whether the gateway forwards authenticated identity securely and rejects unauthenticated traffic.
-- HTTPS client connections validate certificates and hostnames using the OS/OpenSSL trust store. Never bypass verification in production.
-- `oauth::begin` creates PKCE S256 and CSRF state. `oauth::validate_callback` checks state and issuer before token exchange. The application still must securely discover and validate AS metadata, manage registration, store tokens by issuer, exchange/refresh tokens and handle scope step-up.
-- In-memory Tasks IDs have CSPRNG entropy and expire by TTL, but no crash recovery, owner-specific isolation or persisted authorization. Do not use the task registry in a multi-tenant deployment without identity-based isolation and durable storage.
-- `validate_schema` is a **subset** of JSON Schema 2020-12. Unsupported assertions are not enforced. Always validate business rules within tools and do not rely on this validator as a security boundary.
-- stdio tools can check cooperative `Server::is_cancelled()` and report progress. Arbitrary blocking callbacks cannot be preempted safely.
-- Rate limiting, comprehensive request timeouts, server resource quotas, HTTP SSE disconnect cancellation, native TLS hosting and cross-SDK conformance are not implemented.
-- Tool prompts, URI templates, extensions, and tool annotations should be treated as untrusted application input. Limit filesystem and system privileges.
+- `Server::protect_http` 添加受保护资源元数据、Bearer 认证质询和令牌验证回调。**验证器必须使用密码学验证或可信令牌内省，并验证签发者、受众/资源、有效期和每项操作所需权限范围。** 演示及测试中的字符串比较不是 OAuth 2.1 验证。
+- 远程部署应放在正确配置的 HTTPS 身份认证与授权网关之后。须确认网关能够安全传递已认证身份，并拒绝未经认证的流量。
+- HTTPS 客户端通过系统/OpenSSL 信任库校验证书及主机名，生产环境中绝不可关闭此验证。
+- `oauth::begin` 创建 PKCE S256 与 CSRF 状态，`oauth::validate_callback` 在令牌交换前验证状态及签发者。宿主应用仍需安全地发现和验证授权服务器元数据、管理客户端注册、按签发者存储令牌、交换/刷新令牌及处理增量授权。
+- 内存任务 ID 由密码学安全随机数生成器产生，并按照 TTL 过期，但不支持崩溃恢复、按所有者隔离或持久化授权记录。缺乏基于身份的隔离和持久化存储时，不要在多租户环境使用任务注册表。
+- `validate_schema` 仅实现 JSON Schema 2020-12 的**部分能力**；不支持的断言不会被执行。工具仍须自行验证业务规则，不要把此校验器当作安全边界。
+- stdio 工具可以通过 `Server::is_cancelled()` 协作式响应取消并上报进度；无法安全地抢占任意阻塞中的 C++ 回调。
+- 尚未完整提供限流、覆盖所有阶段的请求超时、服务端资源配额、HTTP SSE 断线取消、原生 TLS 服务端托管及跨 SDK 符合性测试。
+- 工具提示词、URI 模板、扩展和工具注解都应被视为不可信的应用输入；应限制文件系统与系统权限。
 
-### Migration OAuth security constraints
+### OAuth 迁移安全约束
 
-The new `oauth::Session` uses HTTPS for external discovery and token endpoints; only
-explicit loopback is permitted for development. It disables cross-origin redirects for
-token exchanges and requires exact issuer, resource and state checks. Do not print
-`Authorization::code_verifier`, authorization codes, access tokens or refresh tokens.
-Browser-based authorization is interactive and application-managed. Do not reuse a
-session for a different resource/audience. Treat OAuth tokens as secrets, and implement
-revocation, secure OS storage and client registration policy in the host application.
+新的 `oauth::Session` 对外部发现及令牌端点强制使用 HTTPS，
+只有明确指定的本地回环地址允许开发阶段使用 HTTP。令牌交换禁止跨来源重定向，
+并要求精确检查签发者、资源及 state。不要输出
+`Authorization::code_verifier`、授权码、访问令牌或刷新令牌。
+浏览器授权必须由应用交互式管理。不要在不同资源或受众之间复用
+同一个会话。OAuth 令牌属于机密数据，宿主应用必须实现
+撤销、安全的操作系统凭据存储及客户端注册策略。
