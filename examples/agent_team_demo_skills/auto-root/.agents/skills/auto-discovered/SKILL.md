@@ -1,6 +1,6 @@
 ---
 name: auto-discovered
-description: Demonstrate automatic project Skill discovery in a child Agent.
+description: 演示子智能体自动发现项目级 Skill 的能力。
 ---
 
 # 自动发现 Skill
