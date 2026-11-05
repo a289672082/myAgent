@@ -27,3 +27,11 @@
 `Server::protect_http_jwks` 验证来自宿主的 RSA RS256 JWT 密钥、签发者、受众、过期时间、可选生效时间及权限范围。调用者必须通过认证的 HTTPS 来源获取 JWKS，并自行处理授权服务器关联、密钥轮换和访问控制；不得直接信任令牌自带的 `jku` 或 `jwk`。其他签名算法与不透明 Bearer 令牌应继续使用自定义验证回调。
 
 `Client::listen_http_resilient` 仅负责在网络错误后有限次重新订阅，不保证掉线期间的事件无损回放，也不替代应用级状态重同步。断线取消阻塞中的服务端 C++ 回调仍是协作式机制，不能视为安全强杀。
+
+## 从历史 PR 整合的安全保证与限制
+
+- `oauth::fetch_jwks_https` 仅使用宿主通过可信授权服务器元数据确认的 HTTPS JWKS URL，校验 TLS 证书与主机名，不跟随重定向，并限制正文大小。绝不读取不可信 JWT 头中的 `jku` / `x5u`。
+- `oauth::JwtVerifier` 仅接受 RS256 和符合强度的 RSA 公钥，验证 JWT 的签名、issuer、audience、时效与 scope；不透明 Token 应使用可信内省。凭据存储、密钥轮换和权限授予仍归宿主负责。
+- `oauth::Session::authorize_loopback` 只在 `127.0.0.1` 临时绑定 HTTP 回调端口，限制回调长度、重复回调与超时，并执行 state/issuer 验证。宿主负责用户授权展示；不要自动认可未经审查的第三方请求。
+- `Client::request_readonly_retry` 仅允许明确列出的只读请求，所有重试发送新的 JSON-RPC ID。不得用于 `tools/call` 或通过工具产生文件/系统副作用的方法。
+- `Client::listen_http_resilient` 与 `Client::listen_http` 的取消/重试不保证 SSE 无损恢复。断线后需要主动核对状态，不应假装实现了已经不适用的事件 ID 重放。
