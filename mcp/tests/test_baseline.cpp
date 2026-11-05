@@ -40,19 +40,22 @@ int main() {
         CHECK(params.at("requestState") == "test-state");
         return detail::make_tool_result("done");
       }
-      return json::object{{"resultType", "input_required"}, {"requestState", "test-state"},
-        {"inputRequests", json::object{
-          {"confirm", json::object{{"method","elicitation/create"},
-            {"params",json::object{{"mode","form"}, {"message","Continue?"},
-              {"requestedSchema", json::object{{"type","object"}, {"properties",
-                json::object{{"ok", json::object{{"type","boolean"}}}}},
-                {"required",json::array{"ok"}}}}}}}},
-          {"sample",json::object{{"method","sampling/createMessage"},
-            {"params",json::object{{"maxTokens",20}, {"messages",json::array{
-              json::object{{"role","user"}, {"content",json::object{
-                {"type","text"},{"text","Hello"}}}}}}}}}},
-          {"roots",json::object{{"method","roots/list"},{"params",json::object{}}}
-        }}};
+      Json schema=json::object{{"type","object"},
+        {"properties",json::object{{"ok",json::object{{"type","boolean"}}}}},
+        {"required",json::array{"ok"}}};
+      Json elicitation=json::object{{"method","elicitation/create"},
+        {"params",json::object{{"mode","form"},{"message","Continue?"},
+                               {"requestedSchema",std::move(schema)}}}};
+      Json sampling=json::object{{"method","sampling/createMessage"},
+        {"params",json::object{{"maxTokens",20},
+          {"messages",json::array{json::object{{"role","user"},
+             {"content",json::object{{"type","text"},{"text","Hello"}}}}}}}}};
+      Json roots=json::object{{"method","roots/list"},{"params",json::object{}}};
+      Json requests=json::object{{"confirm",std::move(elicitation)},
+                                 {"sample",std::move(sampling)},
+                                 {"roots",std::move(roots)}};
+      return json::object{{"resultType","input_required"},
+        {"requestState","test-state"},{"inputRequests",std::move(requests)}};
     });
   Client client([&](const Json& request) {return server.handle(request);});
   client.on_elicitation([](const Json&) {
