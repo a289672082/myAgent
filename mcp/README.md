@@ -288,3 +288,33 @@ auto response = client.request("tools/list", mymcp::json::object{}, limits);
 stdio 默认上限 8 MiB，HTTP SSE 帧默认上限 4 MiB。指定 max_response_bytes 时，也限制累计响应字节。显式 timeout=0 表示关闭截止时间，不建议用于不可信 MCP。
 
 注意：自定义 Client 回调、宿主 C++ 函数、OAuth 提供方的同步凭据处理及不合作的回调代码无法通过强杀线程安全中断。需要真正可终止的工具时，请使用独立 MCP stdio 子进程，并在 OS 层增加权限、资源和进程树隔离。
+
+## 五类 MCP 基础能力增强（2026-11-05）
+
+本节描述新增的基础 API 和明确限制。基础支持不等于完整官方符合性，仍需通过生产环境安全审查与跨 SDK 互操作测试。
+
+### Resources：二进制内容与 RFC 6570
+
+使用 Server::resource_binary(uri, name, reader, mime_type) 注册原始二进制字节，resources/read 将其编码为 Base64 blob，并保留 mimeType（单个资源最多 4 MiB）。
+包含 mymcp/uri_template.hpp 后，可使用 expand_uri_template(pattern, variables) 展开 URI。支持 RFC 6570 的 + # . / ; ? & 运算符、:prefix、* 以及数组和对象变量。读取模板资源时只安全地反向解析可明确匹配的标量变量，不猜测复杂对象的反向类型。
+
+### Prompts：参数与返回结果校验
+
+Server::prompt_full(name, description, handler, arguments, result_schema) 的第五个参数可选，默认为空 JSON Schema。注册时验证参数描述列表和重复名称，调用时验证必填字符串参数及未知参数；响应须包含 messages 数组，且角色及消息类型必须有效。非空 result_schema 用于校验完整返回结果。
+
+### Streamable HTTP：断线取消及安全重试
+
+Client::request_readonly_retry(method, params, max_attempts, options) 显式对 resources/read、列表、server/discover 等允许的只读方法重试（最多 4 次），每次使用新的 JSON-RPC ID；不重放 tools/call 或 prompts/get。
+Client::listen_http(url, filters, on_event, ListenOptions) 支持宿主取消、订阅超时和单帧大小限制；增量 SSE 解析支持 CRLF、LF、CR、心跳及重复响应拒绝。MCP 2026-07-28 已删除 Last-Event-ID 重放，因此不实现旧版会话恢复。进程内不合作的 C++ 回调仍无法强制抢占。
+
+### OAuth：JWT/JWKS 资源服务端验证
+
+包含 mymcp/jwt.hpp，调用 oauth::fetch_jwks_https(trusted_url) 获取可信 HTTPS 上的 JWKS（证书验证、无重定向、1 MiB 上限）；构造 oauth::JwtVerifier(jwks, policy) 并通过 Server::protect_http 的验证回调调用 verifier.verify(token, required_scopes)。
+目前只允许 RS256 签名和至少 2048 位的 RSA 公钥。校验 kid、签发者 iss、资源受众 aud、到期时间 exp、可选 nbf/iat 和 scope。JWKS URL 必须由宿主信任，宿主自行实现密钥轮换、令牌撤销、浏览器授权、OAuth 客户端注册策略及凭据安全存储。现有 OAuth Session 的发现、PKCE、授权码与刷新流程保持不变。
+
+### MRTR：Elicitation、Sampling 与 Roots
+
+Client::on_input_required(callback) 默认仅声明表单征询；宿主确实实现 URL 征询、模型采样或根目录读取后，可调用 enable_mrtr_capabilities(url, sampling, roots) 明确启用。Server 校验 inputRequests 的方法、参数与声明能力，Client 校验 inputResponses 的 ID 和类型，并原样携带不透明 requestState 重试原请求（上限 9 轮）。
+采样与 Roots 在 2026 规范中已弃用，但为互操作保留；切勿在未征得用户同意时自动同意征询。
+
+新增回归测试：baseline_features、jwt_jwks、http_resilience；具体实现边界见 COMPATIBILITY.md 与 SECURITY.md。
