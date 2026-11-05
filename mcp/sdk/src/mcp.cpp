@@ -771,21 +771,23 @@ Json Server::handle(const Json& req, bool allow_legacy) {
             throw Error(-32602,"Unknown prompt argument: "+std::string(member.key()));
         result = it->second.full_reader(values);
       } else result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
-      if (!result.is_object() || !find(result,"messages").is_array())
-        throw Error(-32603,"Invalid prompt result: missing messages array");
-      for (const auto& message : result.at("messages").array_range()) {
-        const auto role = string_of(message,"role");
-        const auto& content = find(message,"content");
-        if ((role!="user" && role!="assistant") || !content.is_object() ||
-            !find(content,"type").is_string())
-          throw Error(-32603,"Invalid prompt message role or content");
-        const auto type = string_of(content,"type");
-        if (type=="text" && !find(content,"text").is_string())
-          throw Error(-32603,"Invalid prompt text content");
-        if (type=="image" && (!find(content,"data").is_string() || !find(content,"mimeType").is_string()))
-          throw Error(-32603,"Invalid prompt image content");
-        if (type!="text" && type!="image" && type!="resource" && type!="resource_link" && type!="audio")
-          throw Error(-32603,"Unsupported prompt content type");
+      if (string_of(result,"resultType")!="input_required") {
+        if (!result.is_object() || !find(result,"messages").is_array())
+          throw Error(-32603,"Invalid prompt result: missing messages array");
+        for (const auto& message : result.at("messages").array_range()) {
+          const auto role = string_of(message,"role");
+          const auto& content = find(message,"content");
+          if ((role!="user" && role!="assistant") || !content.is_object() ||
+              !find(content,"type").is_string())
+            throw Error(-32603,"Invalid prompt message role or content");
+          const auto type = string_of(content,"type");
+          if (type=="text" && !find(content,"text").is_string())
+            throw Error(-32603,"Invalid prompt text content");
+          if (type=="image" && (!find(content,"data").is_string() || !find(content,"mimeType").is_string()))
+            throw Error(-32603,"Invalid prompt image content");
+          if (type!="text" && type!="image" && type!="resource" && type!="resource_link" && type!="audio")
+            throw Error(-32603,"Unsupported prompt content type");
+        }
       }
     } else if (method == "completion/complete" && completion_) {
       if (!params.is_object() || !find(params, "ref").is_object() || !find(params, "argument").is_object())
