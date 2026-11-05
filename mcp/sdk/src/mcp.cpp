@@ -259,11 +259,18 @@ void Server::add_task_tool(std::string name, std::string description, Json schem
   tools_.at(key).requires_tasks = true;
 }
 void Server::resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime) {
-  if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), std::move(reader)}).second)
+  if (!reader) throw std::invalid_argument("Resource reader cannot be empty");
+  if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), std::move(reader), {}}).second)
+    throw std::invalid_argument("Duplicate resource: " + uri);
+}
+void Server::resource_binary(std::string uri, std::string name,
+                             std::function<std::vector<std::uint8_t>()> reader, std::string mime) {
+  if (!reader) throw std::invalid_argument("Binary resource reader cannot be empty");
+  if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), {}, std::move(reader)}).second)
     throw std::invalid_argument("Duplicate resource: " + uri);
 }
 void Server::prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader) {
-  if (!prompts_.emplace(name, Prompt{std::move(description), std::move(reader), {}, json::array{}}).second)
+  if (!prompts_.emplace(name, Prompt{std::move(description), std::move(reader), {}, json::array{}, json::object{}}).second)
     throw std::invalid_argument("Duplicate prompt: " + name);
 }
 void Server::resource_template(std::string uri_template, std::string name,
@@ -275,10 +282,20 @@ void Server::resource_template(std::string uri_template, std::string name,
     throw std::invalid_argument("Duplicate resource template");
 }
 void Server::prompt_full(std::string name, std::string description,
-                         std::function<Json(const Json&)> handler, Json arguments) {
-  if (!handler || !arguments.is_array()) throw std::invalid_argument("Invalid prompt");
+                         std::function<Json(const Json&)> handler, Json arguments, Json result_schema) {
+  if (!handler || !arguments.is_array() || !result_schema.is_object())
+    throw std::invalid_argument("Invalid prompt arguments or result schema");
+  std::set<std::string> seen;
+  for (const auto& entry : arguments.array_range()) {
+    if (!entry.is_object() || !find(entry, "name").is_string() ||
+        string_of(entry, "name").empty() ||
+        (!find(entry, "required").is_null() && !find(entry, "required").is_bool()) ||
+        (!find(entry, "description").is_null() && !find(entry, "description").is_string()) ||
+        !seen.emplace(string_of(entry, "name")).second)
+      throw std::invalid_argument("Invalid or duplicate prompt argument descriptor");
+  }
   if (!prompts_.emplace(name, Prompt{std::move(description), {}, std::move(handler),
-                                     std::move(arguments)}).second)
+                                     std::move(arguments), std::move(result_schema)}).second)
     throw std::invalid_argument("Duplicate prompt");
 }
 void Server::completion(std::function<Json(const Json&)> handler) {
@@ -658,7 +675,17 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       const auto uri = string_of(params, "uri");
       const auto it = resources_.find(uri);
       if (it != resources_.end()) {
-        result = json::object{{"contents", json::array{json::object{{"uri", uri}, {"mimeType", it->second.mime}, {"text", it->second.reader()}}}}};
+        json::object content{{"uri", uri}, {"mimeType", it->second.mime}};
+        if (it->second.binary_reader) {
+          const auto bytes = it->second.binary_reader();
+          if (bytes.size() > 4 * 1024 * 1024)
+            throw Error(-32603, "Binary resource exceeds 4 MiB");
+          content["blob"] = encode_b64(std::string_view(
+              reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+        } else {
+          content["text"] = it->second.reader();
+        }
+        result = json::object{{"contents", json::array{std::move(content)}}};
       } else {
         bool matched = false;
         for (const auto& [pattern, entry] : templates_) {
@@ -693,9 +720,48 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       const auto it = prompts_.find(name);
       if (it == prompts_.end()) throw Error(-32602, "Unknown prompt: " + name);
       const Json& args = find(params, "arguments");
+      if (!args.is_null() && !args.is_object())
+        throw Error(-32602, "Prompt arguments must be an object");
       const json::object values = args.is_object() ? args : json::object{};
+      std::set<std::string> allowed;
+      for (const auto& spec : it->second.arguments.array_range()) {
+        const std::string key = string_of(spec, "name");
+        allowed.emplace(key);
+        const auto& value = find(values, key);
+        if (value.is_null()) {
+          if (find(spec, "required").is_bool() && find(spec, "required").as_bool())
+            throw Error(-32602, "Missing prompt argument: " + key);
+        } else if (!value.is_string()) {
+          throw Error(-32602, "Prompt argument must be a string: " + key);
+        }
+      }
+      if (!it->second.arguments.empty())
+        for (const auto& arg : values) {
+          if (!allowed.contains(std::string(arg.key())))
+            throw Error(-32602, "Unknown prompt argument: " + std::string(arg.key()));
+        }
       if (it->second.full_reader) result = it->second.full_reader(values);
       else result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
+      if (!result.is_object() || !find(result, "messages").is_array())
+        throw Error(-32603, "Prompt result must contain messages array");
+      for (const auto& message : result.at("messages").array_range()) {
+        if (!message.is_object() ||
+            (string_of(message, "role") != "user" && string_of(message, "role") != "assistant") ||
+            !find(message, "content").is_object())
+          throw Error(-32603, "Invalid prompt message role or content");
+        const auto& content = message.at("content");
+        const auto type = string_of(content, "type");
+        if ((type == "text" && !find(content, "text").is_string()) ||
+            (type == "image" && (!find(content, "data").is_string() || !find(content, "mimeType").is_string())) ||
+            (type == "resource" && !find(content, "resource").is_object()) ||
+            (type != "text" && type != "image" && type != "resource"))
+          throw Error(-32603, "Invalid prompt content type");
+      }
+      if (!it->second.result_schema.empty()) {
+        std::string schema_error;
+        if (!validate_schema(it->second.result_schema, result, &schema_error))
+          throw Error(-32603, "Prompt result schema violation: " + schema_error);
+      }
     } else if (method == "completion/complete" && completion_) {
       if (!params.is_object() || !find(params, "ref").is_object() || !find(params, "argument").is_object())
         throw Error(-32602, "Invalid completion request");
