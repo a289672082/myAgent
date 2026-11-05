@@ -51,7 +51,9 @@ int main() {
     CHECK(req.at("url") == "https://example.org/authorize");
     return json::parse(R"({"action":"accept"})");
   });
-  CHECK(client.call("typed").at("content")[0].at("text") == "success");
+  const auto typed_result = client.call("typed");
+  if (typed_result.at("content")[0].at("text") != "success")
+    throw std::runtime_error("MRTR typed response: " + json::serialize(typed_result));
   std::cout << "MRTR context and explicit callback tests passed\n";
   return 0;
 }
