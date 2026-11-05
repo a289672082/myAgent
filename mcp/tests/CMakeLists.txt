@@ -34,6 +34,12 @@ if(Python3_Interpreter_FOUND)
  endforeach()
 endif()
 
+# OAuth JWT/JWKS 实际签名验证回归（本地 HTTP，拒绝伪造/过期/越权令牌）。
+add_executable(mymcp_oauth_jwt_tests test_oauth_jwt.cpp)
+target_link_libraries(mymcp_oauth_jwt_tests PRIVATE mymcp)
+add_test(NAME oauth_jwt COMMAND mymcp_oauth_jwt_tests)
+set_tests_properties(oauth_jwt PROPERTIES TIMEOUT 30)
+
 # 二进制 Resources、RFC6570 模板、完整 Prompt 内容与 MRTR 模拟回归。
 add_executable(mymcp_baseline_tests test_baseline.cpp)
 target_link_libraries(mymcp_baseline_tests PRIVATE mymcp)
