@@ -7,6 +7,7 @@
 #include "mymcp/json.hpp"
 
 namespace mymcp::oauth {
+using Json = json::value;
 
 // JWT 验证策略由可信宿主提供。不要从 JWT header 的 jku/x5u 或未验证的
 // 令牌正文动态选择密钥服务器，防止 SSRF、密钥替换和跨资源令牌复用。
