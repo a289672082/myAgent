@@ -130,6 +130,10 @@ public:
       });
   }
   void resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime_type = "text/plain");
+  // 二进制资源：原始字节自动编码为 RFC 4648 Base64 blob。
+  void resource_binary(std::string uri, std::string name,
+                       std::function<std::vector<std::uint8_t>()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
@@ -137,7 +141,8 @@ public:
                          std::string mime_type = "text/plain", std::string description = "");
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
-                   Json arguments = json::array{});
+                   Json arguments = json::array{},
+                    Json result_schema = json::object{});
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -181,9 +186,15 @@ public:
   const Json* tool_schema(const std::string& name) const;
 private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
-  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; };
+  struct Resource {
+    std::string name, mime;
+    std::function<std::string()> reader;
+    std::function<std::vector<std::uint8_t>()> binary_reader;
+  };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
-                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
+                  std::function<Json(const Json&)> full_reader;
+                   Json arguments = json::array{};
+                   Json result_schema = json::object{}; };
   struct ResourceTemplate {
     std::string name, mime, description;
     std::function<Json(const std::string&, const Json&)> reader;
@@ -254,6 +265,10 @@ public:
   Json request(const std::string& method, Json params = json::object{},
                const RequestOptions& options = {});
   Json request_with_progress(const std::string& method, Json params, Json progress_token);
+  // 断线后使用新的 JSON-RPC ID 重试只读请求；不自动重放有副作用的工具。
+  Json request_readonly_retry(const std::string& method, Json params = json::object{},
+                              unsigned max_attempts = 2,
+                              const RequestOptions& options = {});
   Json tools();
   // HTTP tools/call：首次调用先完整读取 tools/list 全部分页，
   // 缓存 inputSchema 中 x-mcp-header 并映射到 Mcp-Param-* 请求头；
@@ -279,7 +294,9 @@ public:
   // The SDK retries the original request with inputResponses and the opaque requestState.
   void on_input_required(std::function<Json(const Json&)> handler) {
     input_handler_ = std::move(handler);
-    capabilities_["elicitation"] = json::object{{"form", json::object{}}};
+    capabilities_["elicitation"] = json::object{{"form", json::object{}}, {"url", json::object{}}};
+    capabilities_["sampling"] = json::object{};
+    capabilities_["roots"] = json::object{};
   }
 private:
   std::function<Json(const Json&)> send_;
