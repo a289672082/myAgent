@@ -6,6 +6,7 @@
 #include "mymcp/oauth_client.hpp"
 #include "mymcp/oauth_jwt.hpp"
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <ctime>
 #include <cmath>
@@ -1321,6 +1322,16 @@ HttpReply on_http(Server& server, const httplib::Request& req,
     return {404, response, {}};
   return {200, response, {}};
 }
+std::string http_identity_digest(const httplib::Request& request) {
+  const std::string authorization=request.get_header_value("Authorization");
+  unsigned char digest[SHA256_DIGEST_LENGTH]{};
+  SHA256(reinterpret_cast<const unsigned char*>(authorization.data()),authorization.size(),digest);
+  constexpr char hex[]="0123456789abcdef";
+  std::string result;
+  result.reserve(2*sizeof(digest));
+  for(unsigned char byte:digest){result+=hex[byte>>4];result+=hex[byte&15];}
+  return result;
+}
 void reply(httplib::Response& out, const HttpReply& result) {
   out.status = result.status;
   if (!result.challenge.empty()) out.set_header("WWW-Authenticate", result.challenge);
@@ -1360,15 +1371,31 @@ void Server::run_http(unsigned short port, std::string host) {
         [this, body, token, legacy](std::size_t, httplib::DataSink& sink) {
           ActiveRequest context;
           context.token = token;
-          context.emit = [&sink, &context](const Json& message) {
+          std::mutex sink_mutex;
+          context.emit = [&sink, &context, &sink_mutex](const Json& message) {
             const auto data = "data: " + json::serialize(message) + "\n\n";
+            std::lock_guard lock(sink_mutex);
             if (!sink.write(data.data(), data.size())) context.cancelled = true;
           };
+          // 每 2 秒写一次 SSE 心跳以检测断线，并通过 is_cancelled()
+          // 通知协作式工具；不强杀正在运行的宿主 C++ 回调。
+          std::jthread heartbeat([&](std::stop_token stop) {
+            while(!stop.stop_requested()&&!context.cancelled.load()) {
+              for(int i=0;i<20&&!stop.stop_requested();++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+              if(stop.stop_requested())break;
+              std::lock_guard lock(sink_mutex);
+              constexpr char ping[]=": keepalive\n\n";
+              if(!sink.write(ping,sizeof(ping)-1))context.cancelled=true;
+            }
+          });
           {
             RequestGuard guard(&context);
             Json response = handle(body, legacy);
             if (!context.cancelled.load() && !response.is_null()) context.emit(response);
           }
+          heartbeat.request_stop();
+          heartbeat.join();
           sink.done();
           return false;
         });
@@ -1379,13 +1406,26 @@ void Server::run_http(unsigned short port, std::string host) {
       reply(out, checked); return;
     }
     std::shared_ptr<Subscription> subscription;
-    try {subscription = subscribe(find(body, "id"), find(find(body, "params"), "notifications"));}
-    catch (const Error& e) { reply(out, {400, rpc_error(find(body,"id"),e.code,e.what()),{}}); return; }
+    const auto identity=http_identity_digest(req);
+    try {
+      const auto replay=req.get_header_value("Last-Event-ID");
+      const auto& notifications=find(find(body, "params"), "notifications");
+      if(!replay.empty())subscription=resume_subscription(replay,notifications,identity);
+      else {
+        subscription=subscribe(find(body, "id"),notifications);
+        std::lock_guard lock(subscription->mutex);
+        subscription->owner_digest=identity;
+      }
+    } catch (const Error& e) {
+      reply(out, {e.code==-32026 ? 409 : 400,
+                  rpc_error(find(body,"id"),e.code,e.what()),{}}); return;
+    }
     out.set_header("Cache-Control", "no-cache");
     out.set_header("X-Accel-Buffering", "no");
     out.set_chunked_content_provider("text/event-stream",
       [this, subscription](std::size_t, httplib::DataSink& sink) {
         Json next = nullptr;
+        std::string event_id;
         {
           std::unique_lock lock(subscription->mutex);
           if (!subscription->ready.wait_for(lock,std::chrono::seconds(15),[&]{
@@ -1397,9 +1437,15 @@ void Server::run_http(unsigned short port, std::string host) {
             const auto data = "data: " + json::serialize(finished) + "\n\n";
             sink.write(data.data(), data.size()); sink.done(); return false;
           }
-          next = std::move(subscription->messages.front()); subscription->messages.pop_front();
+          next = std::move(subscription->messages.front());
+          subscription->messages.pop_front();
+          if(!subscription->event_ids.empty()){
+            event_id=std::move(subscription->event_ids.front());
+            subscription->event_ids.pop_front();
+          }
         }
-        auto data = "data: " + json::serialize(next) + "\n\n";
+        auto data = (event_id.empty() ? std::string{} : "id: " + event_id + "\n")+
+                    "data: " + json::serialize(next) + "\n\n";
         if (!sink.write(data.data(), data.size())) {close_subscription(subscription); return false;}
         return true;
       }, [this, subscription](bool) { close_subscription(subscription); });
