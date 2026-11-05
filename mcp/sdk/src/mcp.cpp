@@ -672,8 +672,9 @@ Json Server::handle(const Json& req, bool allow_legacy) {
           const auto bytes = it->second.binary_reader();
           if (bytes.size() > 4 * 1024 * 1024)
             throw Error(-32603, "Binary resource exceeds 4 MiB");
-          content["blob"] = encode_b64(std::string_view(
-              reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+          const char* ptr = bytes.empty() ? "" :
+              reinterpret_cast<const char*>(bytes.data());
+          content["blob"] = encode_b64(std::string_view(ptr,bytes.size()));
         } else {
           content["text"] = it->second.reader();
         }
