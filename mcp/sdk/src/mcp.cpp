@@ -3,6 +3,7 @@
 #endif
 #include "mymcp/mcp.hpp"
 #include "mymcp/schema.hpp"
+#include "mymcp/uri_template.hpp"
 #include "mymcp/oauth_client.hpp"
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -191,75 +192,11 @@ void paginate_list(Json& values, const Json& params, Json& result,
   values = std::move(page);
   if (end < total) result["nextCursor"] = method + ":" + std::to_string(end);
 }
-// RFC6570 常用运算符的 URI 模板匹配（单变量表达式，安全全串匹配）。
-// 支持 {id}、{+path}、{/id}、{.ext}、{;id}、{?q}、{&page}、{#anchor}。
-// 复杂的多变量、数组展开和前缀修饰符尚需专门的 RFC6570 实现。
+// 使用独立 RFC6570 模块，规范展开数组/映射，标量 URI 采用无歧义匹配。
 std::optional<json::object> template_match(std::string_view pattern, std::string_view uri) {
-  auto decode = [](std::string_view value) -> std::optional<std::string> {
-    std::string output;
-    for (size_t i = 0; i < value.size(); ++i) {
-      if (value[i] != '%') { output += value[i]; continue; }
-      if (i + 2 >= value.size()) return std::nullopt;
-      auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-      };
-      int high = hex(value[i + 1]), low = hex(value[i + 2]);
-      if (high < 0 || low < 0 || (high == 0 && low == 0)) return std::nullopt;
-      output += static_cast<char>(high * 16 + low);
-      i += 2;
-    }
-    return output;
-  };
-  std::string rx = "^";
-  std::vector<std::string> names;
-  for (size_t i = 0; i < pattern.size(); ++i) {
-    if (pattern[i] == '{') {
-      auto last = pattern.find('}', i + 1);
-      if (last == std::string_view::npos || last == i + 1) return std::nullopt;
-      auto expression = pattern.substr(i + 1, last - i - 1);
-      char op = 0;
-      if (std::string_view("+#./;?&").find(expression.front()) != std::string_view::npos) {
-        op = expression.front(); expression.remove_prefix(1);
-      }
-      if (expression.empty() ||
-          !std::all_of(expression.begin(), expression.end(), [](unsigned char c) {
-            return std::isalnum(c) || c == '_' || c == '.' || c == '-';
-          })) return std::nullopt;
-      std::string name(expression);
-      names.push_back(name);
-      switch (op) {
-        case '+': rx += "([^?#]+)"; break;
-        case '#': rx += "#([^#]+)"; break;
-        case '/': rx += "/([^/?#]+)"; break;
-        case '.': rx += R"(\.([^/?#]+))"; break;
-        case ';': rx += ";" + name + "=([^;/?#]+)"; break;
-        case '?': rx += R"(\?)" + name + "=([^&#]*)"; break;
-        case '&': rx += "&" + name + "=([^&#]*)"; break;
-        default: rx += "([^/?#]+)"; break;
-      }
-      i = last;
-    } else {
-      const unsigned char c = static_cast<unsigned char>(pattern[i]);
-      if (std::string(R"(\.[]{}()+*?^$|)").find(static_cast<char>(c)) != std::string::npos) rx += '\\';
-      rx += static_cast<char>(c);
-    }
-  }
-  rx += '$';
-  try {
-    std::smatch match;
-    const std::string input(uri);
-    if (!std::regex_match(input, match, std::regex(rx))) return std::nullopt;
-    json::object vars;
-    for (size_t j = 0; j < names.size(); ++j) {
-      auto decoded = decode(match[j + 1].str());
-      if (!decoded) return std::nullopt;
-      vars[names[j]] = *decoded;
-    }
-    return vars;
-  } catch (const std::regex_error&) { return std::nullopt; }
+  auto value = match_uri_template(pattern, uri);
+  if (!value || !value->is_object()) return std::nullopt;
+  return json::object(std::move(*value));
 }
 
 } // anonymous namespace
@@ -312,6 +249,18 @@ void Server::resource_binary(std::string uri, std::string name,
   if (!resources_.emplace(uri, Resource{std::move(name), std::move(mime), std::move(reader), true}).second)
     throw std::invalid_argument("Duplicate resource: " + uri);
 }
+void Server::resource_binary(std::string uri, std::string name,
+                             std::function<std::vector<std::uint8_t>()> reader,
+                             std::string mime) {
+  if (!reader) throw std::invalid_argument("Missing binary resource reader");
+  resource_binary(std::move(uri), std::move(name),
+    [read = std::move(reader)]() -> std::string {
+      auto bytes = read();
+      if (bytes.size() > 4 * 1024 * 1024)
+        throw Error(-32603, "Binary resource exceeds the 4 MiB limit");
+      return std::string(bytes.begin(), bytes.end());
+    }, std::move(mime));
+}
 void Server::prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader) {
   if (!prompts_.emplace(name, Prompt{std::move(description), std::move(reader), {}, json::array{}}).second)
     throw std::invalid_argument("Duplicate prompt: " + name);
@@ -325,8 +274,8 @@ void Server::resource_template(std::string uri_template, std::string name,
     throw std::invalid_argument("Duplicate resource template");
 }
 void Server::prompt_full(std::string name, std::string description,
-                         std::function<Json(const Json&)> handler, Json arguments) {
-  if (!handler || !arguments.is_array()) throw std::invalid_argument("Invalid prompt");
+                         std::function<Json(const Json&)> handler, Json arguments, Json result_schema) {
+  if (!handler || !arguments.is_array() || !result_schema.is_object()) throw std::invalid_argument("Invalid prompt");
   std::set<std::string> names;
   for (const auto& item : arguments.array_range()) {
     if (!item.is_object() || !find(item, "name").is_string() ||
@@ -337,7 +286,7 @@ void Server::prompt_full(std::string name, std::string description,
       throw std::invalid_argument("Invalid prompt argument descriptor");
   }
   if (!prompts_.emplace(name, Prompt{std::move(description), {}, std::move(handler),
-                                     std::move(arguments)}).second)
+                                     std::move(arguments), std::move(result_schema)}).second)
     throw std::invalid_argument("Duplicate prompt");
 }
 void Server::completion(std::function<Json(const Json&)> handler) {
@@ -791,6 +740,11 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
       }
       if (find(result, "resultType") != "input_required") {
+        if (!it->second.result_schema.empty()) {
+          std::string why;
+          if (!validate_schema(it->second.result_schema, result, &why))
+            throw Error(-32603, "Prompt output Schema violation: " + why);
+        }
         const auto& messages = find(result, "messages");
         if (!messages.is_array()) throw Error(-32603, "Prompt result requires messages array");
         for (const auto& message : messages.array_range()) {
@@ -1691,7 +1645,11 @@ struct HttpState {
 } // namespace
 
 void Client::listen_http(const std::string& url, Json notifications,
-                         std::function<bool(const Json&)> on_event) {
+                         std::function<bool(const Json&)> on_event,
+                         const ListenOptions& options) {
+  if (!on_event || !notifications.is_object() || options.max_frame_bytes == 0 ||
+      options.max_frame_bytes > 4*1024*1024 || options.timeout.count() < 0)
+    throw std::invalid_argument("Invalid SSE listen options");
   const auto target=parse_url(url);
   const Json request=json::object{{"jsonrpc","2.0"},{"id",1},{"method","subscriptions/listen"},
     {"params",json::object{{"notifications",std::move(notifications)},
@@ -1700,12 +1658,35 @@ void Client::listen_http(const std::string& url, Json notifications,
          {"io.modelcontextprotocol/clientInfo",json::object{{"name","mymcp-listener"},{"version","1.0"}}}}}}}};
   auto c=new_http_client(target);
   c->set_read_timeout(3600,0);
+  if (options.timeout.count() > 0) c->set_max_timeout(options.timeout);
+  std::atomic_bool interrupted{false};
+  std::jthread watcher;
+  if (options.cancelled || options.timeout.count() > 0) {
+    const auto deadline = options.timeout.count() > 0
+        ? std::chrono::steady_clock::now() + options.timeout
+        : std::chrono::steady_clock::time_point::max();
+    watcher = std::jthread([&](std::stop_token stop) {
+      while (!stop.stop_requested()) {
+        if ((options.cancelled && options.cancelled()) ||
+            std::chrono::steady_clock::now() >= deadline) {
+          interrupted = true;
+          c->stop();
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+      }
+    });
+  }
   httplib::Headers headers{{"Accept","application/json, text/event-stream"},
     {"MCP-Protocol-Version",ProtocolVersion},{"Mcp-Method","subscriptions/listen"}};
   std::string pending;
   bool continue_reading=true;
   auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
     [&](const char* data,std::size_t len){
+      if (interrupted.load()) return false;
+      if (len > options.max_frame_bytes ||
+          pending.size() > options.max_frame_bytes - len)
+        throw std::runtime_error("SSE frame too large");
       pending.append(data,len);
       for(;;){
         auto sep=pending.find("\n\n");
@@ -1723,9 +1704,11 @@ void Client::listen_http(const std::string& url, Json notifications,
         }
         if(!event.empty()&&!on_event(json::parse(event))){continue_reading=false;return false;}
       }
-      if(pending.size()>4*1024*1024)throw std::runtime_error("SSE frame too large");
+      if (pending.size() > options.max_frame_bytes)
+        throw std::runtime_error("SSE frame too large");
       return true;
     });
+  if (interrupted.load()) throw std::runtime_error("HTTP SSE connection cancelled or timed out");
   if(!res&&continue_reading)throw std::runtime_error("HTTP SSE connection failed");
   if(res&&res->status!=200)throw std::runtime_error("HTTP SSE subscription rejected");
 }
@@ -1838,11 +1821,11 @@ void validate_mrtr_answers(const Json& requests, const Json& answers, const Json
           throw Error(-32602, "Elicitation response schema violation: " + error);
       }
     } else if (method == "sampling/createMessage") {
-      if (!find(caps, "sampling").is_object()) throw Error(-32602, "Sampling not enabled");
+      if (!find(caps, "sampling").is_object()) throw Error(-32021, "Sampling capability not declared");
       if (!find(response, "role").is_string() || find(response, "content").is_null())
         throw Error(-32602, "Invalid sampling response");
     } else if (method == "roots/list") {
-      if (!find(caps, "roots").is_object()) throw Error(-32602, "Roots not enabled");
+      if (!find(caps, "roots").is_object()) throw Error(-32021, "Roots capability not declared");
       const auto& roots = find(response, "roots");
       if (!roots.is_array()) throw Error(-32602, "Invalid roots response");
       for (const auto& root : roots.array_range())
@@ -1910,6 +1893,38 @@ Json Client::request(const std::string& method, Json params,
     else params.erase("requestState");
   }
   throw Error(-32603, "Input-required rounds exceeded");
+}
+Json Client::request_readonly_retry(const std::string& method, Json params,
+                                    unsigned max_attempts, const RequestOptions& options) {
+  // 只读操作允许传输失败后重新发起；业务工具和提示词生成不允许自动重放。
+  static const std::set<std::string> allowed{
+    "tools/list", "resources/list", "resources/templates/list",
+    "resources/read", "prompts/list", "server/discover"};
+  if (!http_ || !allowed.contains(method) || max_attempts == 0 || max_attempts > 4)
+    throw std::invalid_argument("Only allowlisted HTTP read methods support retry (1..4 attempts)");
+  if (options.cancelled && options.cancelled())
+    throw std::runtime_error("Read-only MCP request cancelled");
+  const auto deadline = options.timeout.count() > 0
+    ? std::chrono::steady_clock::now() + options.timeout
+    : std::chrono::steady_clock::time_point::max();
+  for (unsigned attempt = 0; attempt < max_attempts; ++attempt) {
+    RequestOptions budget = options;
+    if (deadline != std::chrono::steady_clock::time_point::max()) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds(0))
+        throw std::runtime_error("MCP read-only retry budget exhausted");
+      budget.timeout = remaining;
+    }
+    try { return request(method, params, budget); }
+    catch (const Error&) { throw; } // RPC/鉴权/Schema 错误必须原样返回，不可重试。
+    catch (const std::runtime_error&) {
+      if (attempt + 1 >= max_attempts || (options.cancelled && options.cancelled())) throw;
+      // request() 会分配新的 JSON-RPC ID；不会重放原有 HTTP 工具调用。
+      std::this_thread::sleep_for(std::chrono::milliseconds(30 * (attempt + 1)));
+    }
+  }
+  throw std::runtime_error("MCP retry exhausted");
 }
 Json Client::request_with_progress(const std::string& method, Json params, Json token) {
   if (!params.is_object() || !(token.is_string() || token.is_int64() || token.is_uint64()))
