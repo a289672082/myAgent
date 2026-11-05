@@ -82,11 +82,11 @@ ctest --test-dir build --output-on-failure
 
 尚未完整实现的功能（生产使用前务必了解）：
 
-- 远程 Schema 获取、根据 Schema 校验输出、全部结构化内容类型，以及超出简单变量替换范围的 URI 模板运算符。当前 JSON Schema 校验器使用 jsoncons，支持本地 2020-12 Schema。
-- OAuth 尚缺：应用内浏览器及回调监听的通用封装、安全持久化令牌、自动重新授权与渐进式权限提升、客户端 ID 元数据校验、内置 JWT/JWKS 校验。客户端已有发现、PKCE、令牌交换与刷新流程；服务端提供 Bearer 验证回调。HTTP 服务端仅绑定回环地址，远程部署应使用可信 HTTPS 代理。
+- 远程 Schema 获取、根据 Schema 校验全部输出、完整 RFC6570 URI 模板多变量与展开修饰符。现已支持二进制 `blob` 和常用单变量运算符；本地 JSON Schema 校验使用 jsoncons。
+- OAuth 尚缺：完整交互授权封装、安全持久化令牌、自动重新授权与增量提权、CIMD 内容校验、自动 JWKS 发现与轮换。现有客户端支持发现、PKCE、授权码交换和刷新；服务端新增基于宿主提供的可信 JWKS 的 **RS256** JWT 验签，尚不支持其他签名算法。HTTP 服务端仅绑定回环地址，远程部署应使用可信 HTTPS 代理。
 - 完整的旧版 HTTP 会话及 GET 通知通道、阻塞处理函数的断线可靠取消、日志通知，以及全方位自定义超时与重试。
 - 完整的 Tasks / Apps / EMA 扩展实现（虽然支持原始自定义方法分发和命名空间能力声明，但**不代表通过扩展规范验证**）。
-- SSE 重放与恢复、自动重新建立流、完整的 stdio 异步客户端订阅管理、跨平台并发压力测试，以及官方 SDK 符合性与互操作测试。
+- SSE 事件回放及断线期间零丢失恢复、完整的 stdio 异步客户端订阅管理、跨平台并发压力测试及官方 SDK 符合性测试尚未完成；新增的 `listen_http_resilient` 仅支持断线后有限次数重新订阅。
 
 详细功能矩阵请参见 [协议兼容性说明](COMPATIBILITY.md)。通过本地测试并不等同于通过官方规范认证。
 
@@ -288,3 +288,36 @@ auto response = client.request("tools/list", mymcp::json::object{}, limits);
 stdio 默认上限 8 MiB，HTTP SSE 帧默认上限 4 MiB。指定 max_response_bytes 时，也限制累计响应字节。显式 timeout=0 表示关闭截止时间，不建议用于不可信 MCP。
 
 注意：自定义 Client 回调、宿主 C++ 函数、OAuth 提供方的同步凭据处理及不合作的回调代码无法通过强杀线程安全中断。需要真正可终止的工具时，请使用独立 MCP stdio 子进程，并在 OS 层增加权限、资源和进程树隔离。
+
+## 五项基础能力扩展示例（2026 年 11 月）
+
+新增能力通过现有 SDK 接口直接使用，无需外部 myMcpTools 仓库：
+
+~~~cpp
+// Resources：原始二进制字节由 SDK 编码为 contents[].blob（Base64）。
+server.resource_binary("file:///logo.png", "图片", [] {
+  return read_png_bytes();  // 宿主提供的安全读取函数
+}, "image/png");
+
+// RFC6570 常用单变量表达式：{id}、{+path}、{/id}、{.ext}、{;id}、{?q}、{&page}、{#fragment}。
+server.resource_template("file:///{+path}", "路径资源",
+  [](const std::string& uri, const mymcp::Json& vars) -> mymcp::Json {
+    return mymcp::json::object{{"contents", mymcp::json::array{
+      mymcp::json::object{{"uri", uri}, {"text", vars.at("path")}}}}};
+  });
+
+// OAuth：宿主必须通过受信任的 TLS 渠道获取并维护 JWKS，
+// 不得使用 JWT 内的 jku 作为远程密钥地址。
+server.protect_http_jwks(protected_metadata, trusted_jwks,
+                         "https://issuer.example", "https://resource.example/mcp",
+                         {"tools:read"});
+
+// MRTR：为调用端明确启用对应能力，并由用户或宿主实际提供回调答复。
+// client.on_input_required(...);  // 需先绑定应用自己的安全交互流程
+client.enable_sampling();
+client.enable_roots();
+~~~
+
+HTTP 订阅可通过 `Client::listen_http_resilient(url, filter, callback, 3)` 使用有限次数重连。**重连不是事件回放**：断线期间可能丢失通知，应重新读取资源或工具目录来同步状态。不要自动重放会执行写入的工具。
+
+**安全约束**：JWT 验证器仅支持 RS256、公钥来自宿主可信 JWKS、固定预期签发者/资源受众、严格到期和权限校验。它不是完整 OAuth 授权服务器，也不会自动完成 JWKS 发现与轮换。MRTR 的不透明 `requestState` 需要应用自行加密或认证，避免状态被篡改；采样和 Roots 是兼容旧能力，最新协议已将其列为弃用功能。
