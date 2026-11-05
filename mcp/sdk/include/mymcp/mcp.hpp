@@ -130,6 +130,9 @@ public:
       });
   }
   void resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime_type = "text/plain");
+  // 二进制资源：reader 返回原始字节，SDK 按 MCP 规范进行 Base64 编码并填充 blob。
+  void resource_binary(std::string uri, std::string name, std::function<std::string()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
@@ -138,6 +141,8 @@ public:
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{});
+  // 使用 MCP 标准参数描述（name、description、required）校验请求与结果。
+  // 所有 prompt_full 的参数描述和消息结果都经过运行时结构校验。
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -181,7 +186,7 @@ public:
   const Json* tool_schema(const std::string& name) const;
 private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
-  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; };
+  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; bool binary = false; };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
                   std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
   struct ResourceTemplate {
@@ -281,6 +286,9 @@ public:
     input_handler_ = std::move(handler);
     capabilities_["elicitation"] = json::object{{"form", json::object{}}};
   }
+  // 显式公布旧版 Sampling/Roots 能力（现代协议通过 MRTR 请求响应）。
+  void enable_sampling() { capabilities_["sampling"] = json::object{}; }
+  void enable_roots() { capabilities_["roots"] = json::object{}; }
 private:
   std::function<Json(const Json&)> send_;
   std::function<Json(const Json&, const RequestOptions&)> send_bounded_;
