@@ -193,49 +193,63 @@ std::string expand_uri_template(std::string_view pattern, const Json& variables)
 }
 
 std::optional<Json> match_uri_template(std::string_view pattern, std::string_view uri) {
-  // RFC6570 对复杂列表/映射不可逆；资源读取只能安全提取无歧义的标量变量。
-  if (pattern.size() > 8192 || uri.size() > 8192) return std::nullopt;
-  std::string regex = "^";
-  std::vector<Spec> names;
+  // RFC6570 数组、映射和相邻表达式不能无歧义地反向恢复类型。
+  // 此处只按线性复杂度解析确定的标量 URI，避免 regex 回溯式拒绝服务。
+  if (pattern.size()>8192 || uri.size()>8192) return std::nullopt;
   try {
-    for (std::size_t pos = 0; pos < pattern.size();) {
-      if (pattern[pos] != '{') {
-        const auto end = pattern.find('{',pos);
-        append_regex_literal(regex,pattern.substr(pos,end == std::string_view::npos ? end : end-pos));
-        if (end == std::string_view::npos) break;
-        pos=end;continue;
+    json::object vars;
+    std::size_t p=0,u=0;
+    while (p<pattern.size()) {
+      if (pattern[p]!='{') {
+        const auto end=pattern.find('{',p);
+        const auto literal=pattern.substr(p,end==std::string_view::npos?end:end-p);
+        if (uri.substr(u,literal.size())!=literal) return std::nullopt;
+        u+=literal.size();p+=literal.size();continue;
       }
-      const auto end = pattern.find('}',pos+1);
-      if (end == std::string_view::npos) return std::nullopt;
-      auto exp = parse_expression(pattern.substr(pos+1,end-pos-1));
-      const auto op = operation(exp.op);
-      append_regex_literal(regex,op.first);
-      for (std::size_t i = 0; i < exp.vars.size(); ++i) {
-        const auto& spec = exp.vars[i];
-        if (spec.explode) return std::nullopt;
-        if (i) append_regex_literal(regex,op.separator);
+      const auto end=pattern.find('}',p+1);
+      if (end==std::string_view::npos) return std::nullopt;
+      const auto expression=parse_expression(pattern.substr(p+1,end-p-1));
+      const auto op=operation(expression.op);
+      const auto after=pattern.find('{',end+1);
+      const auto suffix=pattern.substr(end+1,
+          after==std::string_view::npos?after:after-end-1);
+      std::string_view captured;
+      if (suffix.empty()) {
+        if (after!=std::string_view::npos) return std::nullopt;
+        captured=uri.substr(u);u=uri.size();
+      } else {
+        // 取最后一处静态分隔，随后由重新展开验证完整的规范化 URI。
+        const auto boundary=uri.rfind(suffix);
+        if (boundary==std::string_view::npos || boundary<u) return std::nullopt;
+        captured=uri.substr(u,boundary-u);u=boundary;
+      }
+      if (!captured.starts_with(op.first)) return std::nullopt;
+      captured.remove_prefix(op.first.size());
+      for (std::size_t i=0;i<expression.vars.size();++i) {
+        const auto& spec=expression.vars[i];
+        if (spec.explode || vars.contains(spec.name)) return std::nullopt;
+        const auto cut=i+1==expression.vars.size()
+            ? captured.size():captured.find(op.separator);
+        if (cut==std::string_view::npos) return std::nullopt;
+        auto value=captured.substr(0,cut);
         if (op.named) {
-          append_regex_literal(regex,spec.name);
-          regex += "=?";
+          const auto key=encode(spec.name,false);
+          if (!value.starts_with(key)) return std::nullopt;
+          value.remove_prefix(key.size());
+          if (!value.empty() && value.front()=='=') value.remove_prefix(1);
+          else if (!value.empty() || op.empty!='\0') return std::nullopt;
         }
-        regex += "([^&#]*?)";
-        names.push_back(spec);
+        const auto decoded=decode(value);
+        if (!decoded) return std::nullopt;
+        vars[spec.name]=*decoded;
+        captured.remove_prefix(cut);
+        if (i+1<expression.vars.size())captured.remove_prefix(op.separator.size());
       }
-      pos=end+1;
+      p=end+1;
     }
-    regex += "$";
-    std::smatch m;
-    const std::string text(uri);
-    if (!std::regex_match(text,m,std::regex(regex))) return std::nullopt;
-    json::object variables;
-    for (std::size_t i = 0; i < names.size(); ++i) {
-      const auto decoded = decode(m[i+1].str());
-      if (!decoded || variables.contains(names[i].name)) return std::nullopt;
-      variables[names[i].name] = *decoded;
-    }
-    // 禁止宽松匹配导致编码变体或歧义模板错误指向另一个资源。
-    if (expand_uri_template(pattern,variables) != uri) return std::nullopt;
-    return Json(std::move(variables));
-  } catch (const std::exception&) {return std::nullopt;}
+    if (u!=uri.size()) return std::nullopt;
+    if (expand_uri_template(pattern,Json(vars))!=uri) return std::nullopt;
+    return Json(std::move(vars));
+  } catch(const std::exception&) {return std::nullopt;}
 }
 } // namespace mymcp
