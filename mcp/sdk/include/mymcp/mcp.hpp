@@ -130,6 +130,9 @@ public:
       });
   }
   void resource(std::string uri, std::string name, std::function<std::string()> reader, std::string mime_type = "text/plain");
+  // Reader 返回二进制原始字节（允许 NUL）；resources/read 使用 MCP blob Base64 编码。
+  void resource_binary(std::string uri, std::string name, std::function<std::string()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
@@ -138,6 +141,8 @@ public:
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
                    Json arguments = json::array{});
+  // 可选的 MCP Prompt 显示元数据（title、icons 等）；保留基础 name/description/arguments。
+  void prompt_metadata(const std::string& name, Json metadata);
   void completion(std::function<Json(const Json&)> handler);
   void method(std::string method_name, std::function<Json(const Json&)> handler);
   void extension(std::string extension_id, Json settings = json::object{});
@@ -181,9 +186,10 @@ public:
   const Json* tool_schema(const std::string& name) const;
 private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
-  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; };
+  struct Resource { std::string name; std::string mime; std::function<std::string()> reader; bool binary = false; };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
-                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
+                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{};
+                  Json metadata = json::object{}; };
   struct ResourceTemplate {
     std::string name, mime, description;
     std::function<Json(const std::string&, const Json&)> reader;
