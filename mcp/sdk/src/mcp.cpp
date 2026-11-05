@@ -594,6 +594,7 @@ void Server::page_size(std::size_t value) {
   if (!value || value > 100000) throw std::invalid_argument("Invalid page size");
   page_size_ = value;
 }
+namespace { std::string secure_task_id(); }
 std::shared_ptr<Server::Subscription> Server::subscribe(Json id, Json filter) {
   if (!(id.is_string() || id.is_int64() || id.is_uint64()) || !filter.is_object())
     throw Error(-32602, "Invalid subscription ID/filter");
@@ -617,16 +618,61 @@ std::shared_ptr<Server::Subscription> Server::subscribe(Json id, Json filter) {
   auto sub = std::make_shared<Subscription>();
   sub->id = std::move(id);
   sub->notifications = std::move(accepted);
-  // Acknowledgement is always queued before any other notification.
-  sub->messages.push_back(json::object{{"jsonrpc", "2.0"}, {"method", "notifications/subscriptions/acknowledged"},
+  sub->stream_id = secure_task_id();
+  sub->expires_at = std::chrono::steady_clock::now()+std::chrono::minutes(5);
+  Json ack=json::object{{"jsonrpc", "2.0"}, {"method", "notifications/subscriptions/acknowledged"},
     {"params", json::object{{"_meta", json::object{{"io.modelcontextprotocol/subscriptionId", sub->id}}},
-                {"notifications", sub->notifications}}}});
+                {"notifications", sub->notifications}}}};
+  const auto event_id=sub->stream_id+":"+std::to_string(++sub->next_event);
+  sub->messages.push_back(ack);
+  sub->event_ids.push_back(event_id);
+  sub->history.emplace_back(event_id,std::move(ack));
   {
     std::lock_guard lock(subscriber_mutex_);
+    for(auto it=replay_subscriptions_.begin();it!=replay_subscriptions_.end();){
+      if(std::chrono::steady_clock::now()>it->second->expires_at)
+        it=replay_subscriptions_.erase(it);
+      else ++it;
+    }
+    if(replay_subscriptions_.size()>=256)
+      throw Error(-32603,"Too many resumable subscriptions");
     subscribers_.erase(std::remove_if(subscribers_.begin(), subscribers_.end(),
-       [](const auto& entry){ return entry.expired(); }), subscribers_.end());
+       [](const auto& entry){return entry.expired();}),subscribers_.end());
+    replay_subscriptions_.emplace(sub->stream_id,sub);
     subscribers_.push_back(sub);
   }
+  return sub;
+}
+std::shared_ptr<Server::Subscription> Server::resume_subscription(
+    const std::string& last_event_id,const Json& filter,const std::string& owner_digest){
+  if(last_event_id.empty()||last_event_id.size()>128)
+    throw Error(-32026,"Invalid Last-Event-ID");
+  auto colon=last_event_id.find(':');
+  if(colon==std::string::npos||colon==0||
+     last_event_id.find(':',colon+1)!=std::string::npos)
+    throw Error(-32026,"Invalid Last-Event-ID");
+  std::shared_ptr<Subscription> sub;
+  {
+    std::lock_guard lock(subscriber_mutex_);
+    auto it=replay_subscriptions_.find(last_event_id.substr(0,colon));
+    if(it==replay_subscriptions_.end() ||
+       std::chrono::steady_clock::now()>it->second->expires_at)
+      throw Error(-32026,"Expired SSE replay stream");
+    sub=it->second;
+  }
+  std::lock_guard lock(sub->mutex);
+  if(sub->owner_digest!=owner_digest||sub->notifications!=filter)
+    throw Error(-32026,"SSE subscription identity/filter mismatch");
+  auto marker=std::find_if(sub->history.begin(),sub->history.end(),
+    [&](const auto& event){return event.first==last_event_id;});
+  if(marker==sub->history.end())throw Error(-32026,"SSE replay history expired");
+  sub->messages.clear();sub->event_ids.clear();
+  for(++marker;marker!=sub->history.end();++marker){
+    sub->event_ids.push_back(marker->first);
+    sub->messages.push_back(marker->second);
+  }
+  sub->closed=false;
+  sub->expires_at=std::chrono::steady_clock::now()+std::chrono::minutes(5);
   return sub;
 }
 void Server::publish(const std::string& method, Json params) {
@@ -655,7 +701,17 @@ void Server::publish(const std::string& method, Json params) {
     Json event = json::object{{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(payload)}};
     {
       std::lock_guard stream_lock(sub->mutex);
-      if (!sub->closed && sub->messages.size() < 4096) sub->messages.push_back(std::move(event));
+      // 64 KiB 单项和 128 项历史；队列溢出时显式关闭，要求客户端续传。
+      if (json::serialize(event).size() > 65536) sub->closed=true;
+      else {
+        const auto event_id=sub->stream_id+":"+std::to_string(++sub->next_event);
+        sub->history.emplace_back(event_id,event);
+        while(sub->history.size()>128)sub->history.pop_front();
+        if(!sub->closed) {
+          if(sub->messages.size()>=128)sub->closed=true;
+          else {sub->event_ids.push_back(event_id);sub->messages.push_back(std::move(event));}
+        }
+      }
     }
     sub->ready.notify_one();
   }
@@ -1121,6 +1177,7 @@ void Server::run_stdio() {
               if (subscription->closed) return;
               item = std::move(subscription->messages.front());
               subscription->messages.pop_front();
+              if(!subscription->event_ids.empty())subscription->event_ids.pop_front();
             }
             output(item);
           }
