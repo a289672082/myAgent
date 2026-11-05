@@ -294,9 +294,14 @@ public:
   // The SDK retries the original request with inputResponses and the opaque requestState.
   void on_input_required(std::function<Json(const Json&)> handler) {
     input_handler_ = std::move(handler);
-    capabilities_["elicitation"] = json::object{{"form", json::object{}}, {"url", json::object{}}};
-    capabilities_["sampling"] = json::object{};
-    capabilities_["roots"] = json::object{};
+    capabilities_["elicitation"] = json::object{{"form", json::object{}}};
+  }
+  // 由宿主显式声明已经实现的可选 MRTR 能力，不虚报采样或工作区根目录。
+  void enable_mrtr_capabilities(bool url_elicitation, bool sampling, bool roots) {
+    if (!input_handler_) throw std::logic_error("Register MRTR callback first");
+    if (url_elicitation) capabilities_["elicitation"]["url"] = json::object{};
+    if (sampling) capabilities_["sampling"] = json::object{};
+    if (roots) capabilities_["roots"] = json::object{};
   }
 private:
   std::function<Json(const Json&)> send_;
