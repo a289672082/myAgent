@@ -321,3 +321,48 @@ client.enable_roots();
 HTTP 订阅可通过 `Client::listen_http_resilient(url, filter, callback, 3)` 使用有限次数重连。**重连不是事件回放**：断线期间可能丢失通知，应重新读取资源或工具目录来同步状态。不要自动重放会执行写入的工具。
 
 **安全约束**：JWT 验证器仅支持 RS256、公钥来自宿主可信 JWKS、固定预期签发者/资源受众、严格到期和权限校验。它不是完整 OAuth 授权服务器，也不会自动完成 JWKS 发现与轮换。MRTR 的不透明 `requestState` 需要应用自行加密或认证，避免状态被篡改；采样和 Roots 是兼容旧能力，最新协议已将其列为弃用功能。
+
+## 从旧 PR #35/#36/#37 整合的扩展接口（2026 年 11 月）
+
+本节代码基于内置 MCP SDK；与已合并的二进制资源、提示词和 MRTR API 保持兼容。
+
+~~~cpp
+#include "mymcp/uri_template.hpp"
+#include "mymcp/jwt.hpp"
+
+// RFC6570 URI 模板：支持保留字符、多个变量、列表/对象及前缀修饰符。
+mymcp::Json vars = mymcp::json::object{{"path", "docs/main.cpp"}};
+auto uri = mymcp::expand_uri_template("file:///{+path}", vars);
+
+// vector<uint8_t> 注册为原始二进制资源；原有 string 读取器仍有效。
+server.resource_binary("demo://bytes", "字节",
+  [] {return std::vector<std::uint8_t>{0x00,0xff,0x10};});
+
+// Prompt 可选 JSON Schema；同时保留原来的四参数版本用法。
+server.prompt_full("review", "代码审查", handler, arguments, result_schema);
+
+// Prompt/Resources 多轮重试：handler 可以读取 requestState、inputResponses。
+server.prompt_context("approval", "征询确认", prompt_context_handler);
+server.resource_template_context("demo://ids/{id}", "上下文资源",
+  resource_context_handler);
+
+// 客户端 MRTR 独立处理器：注册处理能力后才能对服务端宣告。
+client.on_sampling(sampling_handler);
+client.on_roots(roots_handler);
+client.on_elicitation_url(url_elicitation_handler);
+
+// 只读请求 HTTP 安全重试：1～4 次、每次新 JSON-RPC ID、总超时预算。
+// 禁止用于 tools/call、prompts/get 或任何副作用方法。
+auto data = client.request_readonly_retry("resources/read",
+  mymcp::json::object{{"uri","demo://readme"}}, 2);
+
+// SSE 订阅有界超时、取消和帧限额；重连不能保证断线期间无损恢复。
+mymcp::ListenOptions listen_options;
+listen_options.timeout = std::chrono::seconds(120);
+listen_options.max_frame_bytes = 1024 * 1024;
+mymcp::Client::listen_http(url, filters, on_event, listen_options);
+~~~
+
+OAuth：先通过已验证的发行者元数据获知 `jwks_uri`，再由宿主确认信任后调用 `oauth::fetch_jwks_https(trusted_jwks_uri)` 获取公钥，传入 `oauth::JwtVerifier`（需要明确的 `JwtPolicy.issuer`、`audience` 和 `required_scopes`）。该函数不允许 HTTP 或重定向；密钥轮换与缓存由宿主管理。已注册 OAuth 客户端的 `Session::authorize_loopback(navigate, scopes, timeout)` 可在临时回环端口接收浏览器回调，由 `navigate` 打开授权链接，不调用 Shell。
+
+**合并策略**：旧 PR #35 中基于 `Last-Event-ID` 的 SSE 历史重放实现不纳入 MCP 2026-07-28 协议主线。断线重建订阅后应主动重新读取最新目录/资源状态。本次不宣称达到官方全量符合性。
