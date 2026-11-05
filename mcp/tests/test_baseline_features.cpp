@@ -125,6 +125,48 @@ int main() {
   url_client.on_input_required([](const Json&)->Json {return json::object{};});
   CHECK(url_client.call("url-approval").at("content")[0].at("text")=="url-approved");
 
+  // Prompt 和 ResourceTemplate 的上下文处理器保留 MRTR 的 requestState。
+  Server contextual("contextual");
+  contextual.prompt_context("confirm","确认继续",[](const Json& request)->Json {
+    if(request.contains("inputResponses")) {
+      CHECK(request.at("requestState")=="prompt-state");
+      CHECK(request.at("inputResponses").contains("confirmation"));
+      return json::object{{"messages",json::array{
+        json::object{{"role","user"},{"content",
+          json::object{{"type","text"},{"text","prompt-complete"}}}}}}};
+    }
+    Json question=json::object{{"method","elicitation/create"},{"params",
+      json::object{{"mode","form"},{"message","确认继续？"},
+        {"requestedSchema",json::object{{"type","object"},{"properties",json::object{}}}}}}};
+    return json::object{{"resultType","input_required"},{"requestState","prompt-state"},
+      {"inputRequests",json::object{{"confirmation",question}}}};
+  });
+  contextual.resource_template_context("demo://items/{id}","Item",
+    [](const std::string& uri,const Json& vars,const Json& request)->Json {
+      if(request.contains("inputResponses")) {
+        CHECK(request.at("requestState")=="resource-state");
+        CHECK(request.at("inputResponses").contains("roots"));
+        return json::object{{"contents",json::array{
+          json::object{{"uri",uri},{"text",vars.at("id")}}}}};
+      }
+      Json roots=json::object{{"method","roots/list"},{"params",json::object{}}};
+      return json::object{{"resultType","input_required"},{"requestState","resource-state"},
+        {"inputRequests",json::object{{"roots",roots}}}};
+    });
+  Client contextual_client([&](const Json& request){return contextual.handle(request);});
+  contextual_client.on_input_required([](const Json& requests)->Json {
+    CHECK(requests.contains("confirmation"));
+    return json::object{{"confirmation",
+      json::object{{"action","accept"},{"content",json::object{}}}}};
+  });
+  contextual_client.on_roots([](const Json&)->Json {
+    return json::object{{"roots",json::array{
+      json::object{{"uri","file:///tmp"},{"name","workspace"}}}}};
+  });
+  CHECK(contextual_client.get_prompt("confirm").at("messages")[0].at("content")
+    .at("text")=="prompt-complete");
+  CHECK(contextual_client.read("demo://items/42").at("contents")[0].at("text")=="42");
+
   // JWT/JWKS：仅接受可信 JWKS 中的 RS256 公钥，核对 issuer/audience/scope/exp。
   using Key=std::unique_ptr<EVP_PKEY,decltype(&EVP_PKEY_free)>;
   using KeyCtx=std::unique_ptr<EVP_PKEY_CTX,decltype(&EVP_PKEY_CTX_free)>;
