@@ -364,6 +364,8 @@ client.on_roots([](const mymcp::Json&) {
 });
 ```
 
+对于 `prompts/get` 或 `resources/read` 的 MRTR，请使用新增的 `Server::prompt_context()` 与 `Server::resource_template_context()`：它们将完整请求参数交给回调，因此可以读取重试时的 `inputResponses` 和 `requestState`；原 `prompt_full()` 与 `resource_template()` 仍保持旧签名。URL 征询可使用 `Client::on_elicitation_url()` 显式注册，和表单征询分别声明能力。
+
 `input_required` 仅允许在 `tools/call`、`prompts/get` 和 `resources/read` 上使用，严格核查请求类型、客户端能力和回调响应 ID；`requestState` 仍是不透明、可能被篡改的数据，若用于授权必须由服务端使用 HMAC 或 AEAD 完整性保护。
 
 **验证：** `ctest --test-dir build-mcp -R baseline_features --output-on-failure`。有关其他尚未支持的功能及生产环境限制，参见 [协议兼容性矩阵](COMPATIBILITY.md)和[安全说明](SECURITY.md)。
