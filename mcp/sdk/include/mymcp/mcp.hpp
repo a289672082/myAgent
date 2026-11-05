@@ -178,6 +178,11 @@ public:
                                           const std::string& method,
                                           const std::string& name)>;
   void protect_http(Json protected_resource_metadata, TokenVerifier verifier);
+  // 使用可信 JWKS 验证 RS256 Bearer JWT。每个操作可使用自定义 TokenVerifier
+  // 实现不同 scope；此便利接口统一要求 required_scopes。
+  void protect_http_jwks(Json protected_resource_metadata, Json jwks,
+                         std::string expected_issuer, std::string expected_audience,
+                         std::vector<std::string> required_scopes = {});
   bool verify_http(const std::string& token, const std::string& method,
                    const std::string& name) const;
   Json protected_resource_metadata() const { return protected_resource_metadata_; }
