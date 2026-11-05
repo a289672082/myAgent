@@ -4,6 +4,7 @@
 #include "mymcp/mcp.hpp"
 #include "mymcp/schema.hpp"
 #include "mymcp/oauth_client.hpp"
+#include "mymcp/oauth_jwt.hpp"
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <ctime>
@@ -516,6 +517,15 @@ void Server::protect_http(Json metadata, TokenVerifier verifier) {
   token_verifier_ = std::move(verifier);
   protected_resource_metadata_ = std::move(metadata);
   cache_scope_ = "private"; // authenticated responses must not be shared between callers
+}
+void Server::protect_http_jwt(Json metadata, oauth::JwtPolicy policy) {
+  // 令牌校验器必须和 Server 生命周期一致，使用 shared_ptr 捕获。
+  auto verifier = std::make_shared<oauth::JwtVerifier>(std::move(policy));
+  protect_http(std::move(metadata),
+    [verifier](const std::string& token, const std::string& method,
+               const std::string& name) {
+      return verifier->verify(token, method, name);
+    });
 }
 bool Server::verify_http(const std::string& token, const std::string& method,
                          const std::string& name) const {
