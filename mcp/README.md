@@ -288,3 +288,82 @@ auto response = client.request("tools/list", mymcp::json::object{}, limits);
 stdio 默认上限 8 MiB，HTTP SSE 帧默认上限 4 MiB。指定 max_response_bytes 时，也限制累计响应字节。显式 timeout=0 表示关闭截止时间，不建议用于不可信 MCP。
 
 注意：自定义 Client 回调、宿主 C++ 函数、OAuth 提供方的同步凭据处理及不合作的回调代码无法通过强杀线程安全中断。需要真正可终止的工具时，请使用独立 MCP stdio 子进程，并在 OS 层增加权限、资源和进程树隔离。
+
+
+## 五组 MCP 功能的基础实现（2026 年 11 月）
+
+以下功能是**基础支持**，不是完整 RFC6570、完整 OAuth 2.1 运行时，也不代表通过全部官方 MCP 一致性测试。原有代码示例与接口保持兼容。
+
+### 1. Resources：二进制资源与常用 URI 模板
+
+调用 \`Server::resource_binary(uri, name, reader, mime_type)\` 注册二进制读取器，SDK 自动将原始字节编码为 MCP \`resources/read\` 的 \`blob\`（base64），同时保留 \`uri\` 与 \`mimeType\`：
+
+\`\`\`cpp
+server.resource_binary("demo://image", "示例图像", [] {
+  return std::vector<std::uint8_t>{0x89, 0x50, 0x4E, 0x47};
+}, "image/png");
+\`\`\`
+
+为避免超出单次 HTTP 传输限制，单个资源读取器最多返回 2 MiB 原始数据。资源模板增加常用单变量运算符：\`{var}\`、\`{+var}\`、\`{#var}\`、\`{.var}\`、\`{/var}\`、\`{;var}\`、\`{?var}\`、\`{&var}\`。**多变量、爆炸修饰符（\`*\`）和长度前缀（\`:N\`）尚未实现，不能宣称完整 RFC6570。**
+
+### 2. Prompts：参数与输出校验
+
+\`Server::prompt_full()\` 会验证声明的参数名称唯一、必填参数、参数类型（MCP PromptArguments 使用字符串）、可选的服务端 \`schema\`，并校验 \`messages\` 的角色和内容类型。为保持线上协议兼容，\`schema\` 仅用于服务端输入校验，不会出现在 \`prompts/list\` 的公开参数描述中：
+
+\`\`\`cpp
+server.prompt_full("review", "代码审查", [](const mymcp::Json& args) -> mymcp::Json {
+  return mymcp::json::object{{"messages", mymcp::json::array{
+    mymcp::json::object{{"role","user"},{"content",
+      mymcp::json::object{{"type","text"},{"text",args.at("topic")}}}}}}};
+}, mymcp::json::array{
+  mymcp::json::object{{"name","topic"},{"required",true},
+    {"schema",mymcp::json::object{{"type","string"},{"minLength",3}}}}
+});
+\`\`\`
+
+### 3. Streamable HTTP：断线后的有界重新订阅
+
+\`Client::listen_http(url, filters, callback, max_reconnects)\` 可在异常断线后通过新的 \`subscriptions/listen\` 请求重新订阅；默认最多重连三次，\`max_reconnects=0\` 禁止自动重连。客户端支持 LF/CRLF 的 SSE 帧分隔、心跳忽略及单帧大小限制，既有请求超时与取消机制继续适用。
+
+**MCP 2026-07-28 已取消旧版 \`Last-Event-ID\`/会话式 SSE 恢复**：此处只重建订阅，不回放断线期间的通知；绝不自动重放 \`tools/call\`、文件写入等可能产生副作用的请求。服务端阻塞处理函数的即时强制取消仍受 C++ 回调协作能力限制。
+
+### 4. OAuth：可信 JWKS 与 RS256 JWT 验证
+
+引入 \`mymcp/oauth_jwt.hpp\`。调用 \`oauth::fetch_jwks(trusted_jwks_uri)\` 获取**宿主已信任的**公钥集合，\`oauth::verify_jwt_rs256(token, jwks, issuer, audience, required_scopes)\` 验证 RS256 签名、密钥 \`kid\`、发行者、受众、到期时间及权限范围。仅接受符合最小 RSA 2048 位要求的公钥，不从客户端令牌指定的 \`jku\`、\`x5u\` 地址动态获取密钥。
+
+\`\`\`cpp
+#include "mymcp/oauth_jwt.hpp"
+
+// jwks_uri 必须来自经过可信 HTTPS 元数据发现的授权服务器。
+const auto jwks = mymcp::oauth::fetch_jwks(trusted_jwks_uri);
+server.protect_http(protected_resource_metadata,
+  [jwks](const std::string& token, const std::string& method, const std::string&) {
+    const std::vector<std::string> scopes =
+      method == "tools/call" ? std::vector<std::string>{"tools:read"}
+                             : std::vector<std::string>{};
+    return mymcp::oauth::verify_jwt_rs256(
+      token, jwks, "https://issuer.example", "https://resource.example/mcp", scopes);
+  });
+\`\`\`
+
+现有 OAuth 客户端继续支持受保护资源/授权服务器发现、PKCE、回调验证、授权码交换及刷新；元数据现在额外提供 \`jwks_uri\`。生产应用须自行配置浏览器、凭据安全存储、密钥轮换及授权策略；对于不使用 JWT 的不透明令牌应使用可信令牌内省，而非将其作为 JWT 验证。
+
+### 5. MRTR：采样与根目录的客户端回调
+
+\`Client::on_input_required(handler)\` 保持原有聚合回调行为。新增 \`Client::on_sampling(handler)\` 和 \`Client::on_roots(handler)\`；SDK 只有注册回调后才声明相应客户端能力，服务端拒绝向不支持该能力的客户端发送采样或根目录请求。
+
+\`\`\`cpp
+client.on_sampling([](const mymcp::Json& params) {
+  // 宿主须执行自己的权限检查与模型调用。
+  return mymcp::json::object{{"role","assistant"},{"content",
+    mymcp::json::object{{"type","text"},{"text","模型回答"}}}};
+});
+client.on_roots([](const mymcp::Json&) {
+  return mymcp::json::object{{"roots",mymcp::json::array{
+    mymcp::json::object{{"uri","file:///workspace"},{"name","工作区"}}}}};
+});
+\`\`\`
+
+\`input_required\` 仅允许在 \`tools/call\`、\`prompts/get\` 和 \`resources/read\` 上使用，严格核查请求类型、客户端能力和回调响应 ID；\`requestState\` 仍是不透明、可能被篡改的数据，若用于授权必须由服务端使用 HMAC 或 AEAD 完整性保护。
+
+**验证：** \`ctest --test-dir build-mcp -R baseline_features --output-on-failure\`。有关其他尚未支持的功能及生产环境限制，参见 [协议兼容性矩阵](COMPATIBILITY.md)和[安全说明](SECURITY.md)。
