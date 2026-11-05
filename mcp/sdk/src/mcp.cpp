@@ -297,6 +297,14 @@ void Server::resource_template(std::string uri_template, std::string name,
            std::move(description), std::move(reader)}).second)
     throw std::invalid_argument("Duplicate resource template");
 }
+void Server::resource_template_context(std::string uri_template, std::string name,
+    std::function<Json(const std::string&, const Json&, const Json&)> reader,
+    std::string mime, std::string description) {
+  if (!reader || uri_template.empty()) throw std::invalid_argument("Invalid resource template");
+  if (!templates_.emplace(uri_template, ResourceTemplate{std::move(name), std::move(mime),
+          std::move(description), {}, std::move(reader)}).second)
+    throw std::invalid_argument("Duplicate resource template");
+}
 void Server::prompt_full(std::string name, std::string description,
                          std::function<Json(const Json&)> handler, Json arguments) {
   if (!handler || name.empty() || !arguments.is_array()) throw std::invalid_argument("Invalid prompt");
@@ -312,6 +320,12 @@ void Server::prompt_full(std::string name, std::string description,
   if (!prompts_.emplace(name, Prompt{std::move(description), {}, std::move(handler),
                                      std::move(arguments)}).second)
     throw std::invalid_argument("Duplicate prompt");
+}
+void Server::prompt_context(std::string name, std::string description,
+                            std::function<Json(const Json&)> handler, Json arguments) {
+  const auto key=name;
+  prompt_full(std::move(name),std::move(description),std::move(handler),std::move(arguments));
+  prompts_.at(key).with_context=true;
 }
 void Server::completion(std::function<Json(const Json&)> handler) {
   if (!handler) throw std::invalid_argument("Invalid completion handler");
@@ -704,7 +718,9 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         for (const auto& [pattern, entry] : templates_) {
           auto bindings = template_match(pattern, uri);
           if (!bindings) continue;
-          result = entry.reader(uri, *bindings);
+          result = entry.context_reader
+            ? entry.context_reader(uri, *bindings, params)
+            : entry.reader(uri, *bindings);
           matched = true;
           break;
         }
@@ -769,7 +785,7 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         for (const auto& member : values.object_range())
           if (!declared.contains(std::string(member.key())))
             throw Error(-32602,"Unknown prompt argument: "+std::string(member.key()));
-        result = it->second.full_reader(values);
+        result = it->second.full_reader(it->second.with_context ? params : Json(values));
       } else result = json::object{{"messages", json::array{json::object{{"role", "user"}, {"content", json::object{{"type", "text"}, {"text", it->second.reader(values)}}}}}}};
       if (string_of(result,"resultType")!="input_required") {
         if (!result.is_object() || !find(result,"messages").is_array())
