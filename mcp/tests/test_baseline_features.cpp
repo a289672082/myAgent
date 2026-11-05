@@ -75,15 +75,14 @@ int main() {
         return json::object{{"content",json::array{
           json::object{{"type","text"},{"text","accepted"}}}}};
       }
+      Json message=json::object{{"role","user"},
+        {"content",json::object{{"type","text"},{"text","Hello"}}}};
+      Json sampling=json::object{{"method","sampling/createMessage"},
+        {"params",json::object{{"messages",json::array{message}},{"maxTokens",64}}}};
+      Json roots=json::object{{"method","roots/list"},{"params",json::object{}}};
+      Json requests=json::object{{"sampling",sampling},{"roots",roots}};
       return json::object{{"resultType","input_required"},{"requestState","opaque"},
-        {"inputRequests",json::object{
-          {"sampling",json::object{{"method","sampling/createMessage"},
-            {"params",json::object{{"messages",json::array{
-              json::object{{"role","user"},{"content",
-                json::object{{"type","text"},{"text","Hello"}}}}}}},
-              {"maxTokens",64}}}}},
-          {"roots",json::object{{"method","roots/list"},{"params",json::object{}}}}
-        }}};
+                          {"inputRequests",std::move(requests)}};
     });
   Client mrtr_client([&](const Json& request){return mrtr.handle(request);});
   mrtr_client.on_sampling([](const Json& p)->Json {
