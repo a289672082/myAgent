@@ -828,9 +828,11 @@ Json Server::handle(const Json& req, bool allow_legacy) {
         if (!item.is_object() || !request_params.is_object())
           throw Error(-32603, "Invalid MRTR input request");
         if (method_name=="elicitation/create") {
-          if (!find(client_caps,"elicitation").is_object())
-            throw Error(-32021, "Client does not support elicitation");
-          auto mode=string_of(request_params,"mode","form");
+          const auto mode=string_of(request_params,"mode","form");
+          const auto& elicit_cap=find(client_caps,"elicitation");
+          if (!elicit_cap.is_object() || (mode=="form" && !find(elicit_cap,"form").is_object()) ||
+              (mode=="url" && !find(elicit_cap,"url").is_object()))
+            throw Error(-32021, "Client does not support this elicitation mode");
           if (!find(request_params,"message").is_string() ||
               (mode!="form" && mode!="url") ||
               (mode=="form" && !find(request_params,"requestedSchema").is_null() && !find(request_params,"requestedSchema").is_object()) ||
@@ -1872,6 +1874,8 @@ Json Client::request(const std::string& method, Json params,
         std::function<Json(const Json&)>* handler=nullptr;
         if (kind=="sampling/createMessage") handler=&sampling_handler_;
         else if (kind=="roots/list") handler=&roots_handler_;
+        else if (kind=="elicitation/create" && string_of(input_params,"mode","form")=="url")
+          handler=&elicitation_url_handler_;
         else if (kind!="elicitation/create")
           throw Error(-32603,"Unsupported MRTR input request");
         if (handler && *handler) {
