@@ -8,16 +8,16 @@
 | 现代无状态生命周期 | `server/discover`、请求 `_meta` 中要求的协议版本、客户端身份与能力，以及服务端响应元数据、`resultType` | 官方符合性测试及与 TS v2/Kotlin/C# SDK 的互操作验证 |
 | 旧版 2025-11-25 | stdio 与基础 Streamable HTTP `initialize` 回退、无状态工具调用 | 基于 GET 的通知、会话恢复及完整旧版行为兼容 |
 | 工具 | 强类型注册、jsoncons JSON Schema 验证、上下文工具、异步任务工具、HTTP 请求头注解 | 远程 Schema 引用、结构化输出及 `outputSchema` 验证、图标和注解 |
-| 资源 | 纯文本资源、简单 URI 模板变量、更新通知 | 二进制资源及完整 RFC6570 URI 模板 |
-| 提示词与补全 | 丰富的提示词回调、参数、补全回调 | Schema 校验及全面字段覆盖 |
+| 资源 | **基础支持**：文本与 Base64 blob 二进制资源（4 MiB 限额）、RFC6570 标量/数组/对象展开、可确定的标量 URI 反向匹配、资源更新通知 | 完整复杂列表/对象 URI 模板反向匹配、所有 RFC6570 非可逆情形的处理 |
+| 提示词与补全 | **基础支持**：完整消息回调、必填字符串参数与描述符校验、角色及消息内容校验、可选响应 JSON Schema、补全回调 | 其余内容类型及所有规范元数据字段的进一步覆盖 |
 | 列表分页与缓存 | 确定性内存分页、`ttlMs`、`cacheScope`；已认证 HTTP 强制使用私有缓存范围 | 快照游标和缓存重新验证 |
-| MRTR | 基础 `input_required` 与携带 `requestState` 的重试 | 采样与用户信息征询的完整校验、状态安全和全部交互行为 |
+| MRTR | **基础支持**：表单/URL 征询、Sampling 与 Roots 的能力声明和请求形状校验、inputResponses 键校验、requestState 多轮往返 | 不透明状态的生产级签名及重放防护、完整各类模型采样参数/响应 Schema |
 | Tasks 扩展 | 显式能力开关、加密随机任务 ID、轮询、请求输入及更新、协作式取消、TTL 过期、HTTP 路由头 | 重启后持久化、`taskIds` 订阅和 `notifications/tasks`、外部任务后端及互操作符合性 |
-| 请求进度与取消 | 并发 stdio、`notifications/progress`、协作式取消，以及 HTTP 单请求 SSE 进度和增量客户端回调 | HTTP 阻塞工具断线时及时取消、重试与超时完善、健壮的 stdio 流式 API |
+| 请求进度与取消 | **基础支持**：并发 stdio、请求级 SSE 进度、LF/CRLF/CR 解析、订阅取消/限额、带新请求 ID 的显式只读 HTTP 重试 | 阻塞型进程内回调的强制取消、更多网络故障分类及跨 SDK 压力测试 |
 | 订阅 | 显式 `subscriptions/listen`、确认、过滤、HTTP SSE 和 stdio 取消 | 任务状态订阅、重连及恢复、优雅关闭接口集成 |
-| HTTP 传输 | 2026 请求头校验、4 MiB 请求限制、回环地址监听、元数据及 Bearer 验证回调 | 可对公网监听的原生 HTTPS 服务、认证反向代理部署指南、负载及拒绝服务防护调优、旧版 HTTP 会话 |
+| HTTP 传输 | **基础支持**：2026 请求头校验、4 MiB 请求限制、回环地址监听、SSE 增量帧校验、显式只读断线重试、OAuth 验证回调 | 公网原生 HTTPS 服务、负载/DoS 调优、完全断线检测与强制进程内取消、旧版 HTTP 会话 |
 | HTTPS 客户端 | OpenSSL TLS 证书与主机名验证、可配置 Bearer 令牌 | HTTPS SSE 订阅路径、超时/重试/证书固定选项 |
-| OAuth 资源服务端 | 类 RFC9728 元数据端点及 Bearer 认证质询；由调用者提供令牌验证回调（**必须**校验令牌、权限范围、受众及签发者） | 内置 JWT 校验与 JWKS 发现、OAuth 增量提权、与授权服务器互操作 |
+| OAuth 资源服务端 | **基础支持**：受保护资源元数据与 Bearer 质询、可插拔验证回调、RS256 JWT/JWKS 验签、iss/aud/exp/scope 校验及可信 HTTPS JWKS 读取 | ES256/其他签名算法、内建密钥刷新/撤销、完整 OAuth 提权与第三方授权服务器互操作 |
 | OAuth 客户端 | 受保护资源及授权服务器发现、PKCE S256、状态和签发者校验、DCR 注册、授权码交换、刷新与 Bearer 令牌附加 | CIMD 内容验证、浏览器交互及重定向监听、安全持久化凭据、权限提升与重新授权 |
 | 扩展 | 命名空间能力声明、自定义方法注册表、部分 Tasks 实现 | Apps、其他非核心扩展、完整协商及独立扩展符合性测试 |
 | 官方符合性 | Linux 与 Windows 上的 CTest 测试集 | 官方符合性测试集、TS v2/Kotlin 集成、更多操作系统 CI 验证 |
