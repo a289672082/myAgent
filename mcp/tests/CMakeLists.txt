@@ -34,6 +34,12 @@ if(Python3_Interpreter_FOUND)
  endforeach()
 endif()
 
+# 二进制 Resources、RFC6570 模板、完整 Prompt 内容与 MRTR 模拟回归。
+add_executable(mymcp_baseline_tests test_baseline.cpp)
+target_link_libraries(mymcp_baseline_tests PRIVATE mymcp)
+add_test(NAME mcp_baseline COMMAND mymcp_baseline_tests)
+set_tests_properties(mcp_baseline PROPERTIES TIMEOUT 20)
+
 # Local mock OAuth authorization server: discovery, registration, PKCE, token exchange and refresh.
 add_executable(mymcp_oauth_session_tests test_oauth_session.cpp)
 target_link_libraries(mymcp_oauth_session_tests PRIVATE mymcp)
