@@ -82,6 +82,19 @@ std::string encode_b64(std::string_view s) {
   }
   return result;
 }
+// SSE 既允许 LF 也允许 CRLF 和 CR，分隔符可能跨多次网络读取。
+std::pair<std::size_t,std::size_t> sse_boundary(std::string_view text) {
+  std::pair<std::size_t,std::size_t> best{std::string_view::npos,0};
+  for (const auto marker : {std::string_view{"\r\n\r\n"},
+                            std::string_view{"\n\n"},
+                            std::string_view{"\r\r"}}) {
+    const auto index=text.find(marker);
+    if (index!=std::string_view::npos &&
+        (best.first==std::string_view::npos || index<best.first))
+      best={index,marker.size()};
+  }
+  return best;
+}
 std::optional<std::string> decode_b64(std::string_view input) {
   if (input.size() % 4) return std::nullopt;
   std::string r;
@@ -1574,10 +1587,10 @@ struct HttpState {
         received_total+=length;
         pending.append(data,length);
         for (;;) {
-          auto end = pending.find("\n\n");
+          const auto [end, boundary_bytes] = sse_boundary(pending);
           if (end == std::string::npos) break;
           std::string frame = pending.substr(0, end);
-          pending.erase(0, end + 2);
+          pending.erase(0, end + boundary_bytes);
           std::istringstream lines(frame);
           std::string line, event_data;
           while (std::getline(lines, line)) {
@@ -1592,9 +1605,11 @@ struct HttpState {
           if (event_data.empty()) continue;
           try {
             Json event = json::parse(event_data);
-            if (find(event,"id") == find(msg,"id") && event.contains("id"))
+            if (event.contains("id")) {
+              if (find(event,"id") != find(msg,"id") || !streamed_result.is_null())
+                throw std::runtime_error("SSE response ID mismatch or duplicate result");
               streamed_result = std::move(event);
-            else if (find(event,"method").is_string()) {
+            } else if (find(event,"method").is_string()) {
               if(string_of(event,"method")=="notifications/tools/list_changed")
                 invalidate_tool_catalog();
               if(on_notification)on_notification(event);
@@ -1625,7 +1640,11 @@ struct HttpState {
 } // namespace
 
 void Client::listen_http(const std::string& url, Json notifications,
-                         std::function<bool(const Json&)> on_event) {
+                         std::function<bool(const Json&)> on_event,
+                         const ListenOptions& options) {
+  if (!on_event || !notifications.is_object() || options.max_frame_bytes==0 ||
+      options.max_frame_bytes>4*1024*1024 || options.timeout.count()<0)
+    throw std::invalid_argument("Invalid MCP SSE listen options");
   const auto target=parse_url(url);
   const Json request=json::object{{"jsonrpc","2.0"},{"id",1},{"method","subscriptions/listen"},
     {"params",json::object{{"notifications",std::move(notifications)},
@@ -1634,27 +1653,74 @@ void Client::listen_http(const std::string& url, Json notifications,
          {"io.modelcontextprotocol/clientInfo",json::object{{"name","mymcp-listener"},{"version","1.0"}}}}}}}};
   auto c=new_http_client(target);
   c->set_read_timeout(3600,0);
+  if (options.timeout.count()>0) c->set_max_timeout(options.timeout);
   httplib::Headers headers{{"Accept","application/json, text/event-stream"},
     {"MCP-Protocol-Version",ProtocolVersion},{"Mcp-Method","subscriptions/listen"}};
-  std::string pending;
-  bool continue_reading=true;
-  auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
-    [&](const char* data,std::size_t len){
-      pending.append(data,len);
-      for(;;){auto sep=pending.find("\n\n");if(sep==std::string::npos)break;
-        auto frame=pending.substr(0,sep);pending.erase(0,sep+2);
-        std::string event;std::istringstream lines(frame);std::string line;
-        while(std::getline(lines,line)){
-          if(!line.empty()&&line.back()=='\r')line.pop_back();
-          if(line.starts_with("data:")){if(!event.empty())event+='\n';auto part=line.substr(5);if(!part.empty()&&part[0]==' ')part.erase(0,1);event+=part;}
+  const auto deadline=options.timeout.count()>0
+    ? std::chrono::steady_clock::now()+options.timeout
+    : std::chrono::steady_clock::time_point::max();
+  std::atomic_bool cancelled{false};
+  std::jthread watcher;
+  if (options.cancelled || deadline != std::chrono::steady_clock::time_point::max()) {
+    watcher=std::jthread([&](std::stop_token stop) {
+      while (!stop.stop_requested()) {
+        if ((options.cancelled && options.cancelled()) ||
+            std::chrono::steady_clock::now()>=deadline) {
+          cancelled=true;
+          c->stop();
+          return;
         }
-        if(!event.empty()&&!on_event(json::parse(event))){continue_reading=false;return false;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
-      if(pending.size()>4*1024*1024)throw std::runtime_error("SSE frame too large");
+    });
+  }
+  std::string pending, parse_error;
+  bool user_closed=false;
+  auto response=c->Post(target.target,headers,json::serialize(request),"application/json",
+    [&](const char* data,std::size_t len) -> bool {
+      if (cancelled.load()) {user_closed=true;return false;}
+      if (len>options.max_frame_bytes ||
+          pending.size()>options.max_frame_bytes-len) {
+        parse_error="SSE subscription frame too large";
+        return false;
+      }
+      pending.append(data,len);
+      for (;;) {
+        const auto [sep, sep_bytes]=sse_boundary(pending);
+        if (sep==std::string::npos) break;
+        auto frame=pending.substr(0,sep);
+        pending.erase(0,sep+sep_bytes);
+        std::string payload,line;
+        std::istringstream lines(frame);
+        while (std::getline(lines,line)) {
+          if (!line.empty()&&line.back()=='\r')line.pop_back();
+          if (line.starts_with("data:")) {
+            if (!payload.empty())payload+='\n';
+            auto part=line.substr(5);
+            if (!part.empty()&&part.front()==' ')part.erase(0,1);
+            payload+=part;
+          }
+        }
+        if (payload.empty()) continue; // 忽略心跳与注释。
+        try {
+          if (!on_event(json::parse(payload))) {
+            user_closed=true;
+            return false;
+          }
+        } catch(const std::exception& e) {
+          parse_error=std::string("Invalid SSE subscription event: ")+e.what();
+          return false;
+        }
+      }
       return true;
     });
-  if(!res&&continue_reading)throw std::runtime_error("HTTP SSE connection failed");
-  if(res&&res->status!=200)throw std::runtime_error("HTTP SSE subscription rejected");
+  if (!parse_error.empty())throw std::runtime_error(parse_error);
+  if (cancelled.load() || user_closed) return;
+  if (!response)throw std::runtime_error("HTTP SSE connection failed");
+  if (response->status!=200 ||
+      !response->get_header_value("Content-Type").starts_with("text/event-stream"))
+    throw std::runtime_error("HTTP SSE subscription rejected or invalid content type");
+  // 服务端可以优雅结束订阅；断流不会使用已移除的 Last-Event-ID。
 }
 
 Client::Client(std::function<Json(const Json&)> send, std::string name)
