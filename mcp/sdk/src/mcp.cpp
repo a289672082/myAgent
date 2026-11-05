@@ -1707,8 +1707,15 @@ void Client::listen_http(const std::string& url, Json notifications,
   auto res=c->Post(target.target,headers,json::serialize(request),"application/json",
     [&](const char* data,std::size_t len){
       pending.append(data,len);
-      for(;;){auto sep=pending.find("\n\n");if(sep==std::string::npos)break;
-        auto frame=pending.substr(0,sep);pending.erase(0,sep+2);
+      for(;;){
+        auto sep=pending.find("\n\n");
+        auto crlf=pending.find("\r\n\r\n");
+        std::size_t delimiter=2;
+        if(crlf!=std::string::npos && (sep==std::string::npos || crlf<sep)) {
+          sep=crlf;delimiter=4;
+        }
+        if(sep==std::string::npos)break;
+        auto frame=pending.substr(0,sep);pending.erase(0,sep+delimiter);
         std::string event;std::istringstream lines(frame);std::string line;
         while(std::getline(lines,line)){
           if(!line.empty()&&line.back()=='\r')line.pop_back();
@@ -1721,6 +1728,30 @@ void Client::listen_http(const std::string& url, Json notifications,
     });
   if(!res&&continue_reading)throw std::runtime_error("HTTP SSE connection failed");
   if(res&&res->status!=200)throw std::runtime_error("HTTP SSE subscription rejected");
+}
+
+void Client::listen_http_resilient(const std::string& url, Json notifications,
+                                   std::function<bool(const Json&)> on_event,
+                                   std::size_t max_reconnects) {
+  if (!on_event || max_reconnects > 32)
+    throw std::invalid_argument("Invalid SSE listener or reconnect budget");
+  bool closed_by_user = false;
+  std::size_t attempts = 0;
+  for (;;) {
+    try {
+      listen_http(url, notifications, [&](const Json& message) {
+        if (!on_event(message)) { closed_by_user = true; return false; }
+        return true;
+      });
+      return; // 收到正常终止信号，不能自动重放已处理事件。
+    } catch (const std::exception&) {
+      if (closed_by_user || attempts >= max_reconnects) throw;
+    }
+    ++attempts;
+    // 有限指数退避，避免断线后重试风暴；不自动重新执行工具调用。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+      (std::min)(std::size_t(2000), std::size_t(125) << (std::min)(attempts, std::size_t(4)))));
+  }
 }
 
 Client::Client(std::function<Json(const Json&)> send, std::string name)
