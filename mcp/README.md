@@ -1,11 +1,11 @@
 # myMcpTools
 
-A C++20 MCP client and server library with convenient typed tool registration.
+提供 MCP 客户端与服务端功能的 C++20 库，支持便捷的强类型工具注册。
 
-> **Status: experimental prototype, NOT certified against the full MCP specification.**
-> Implements a subset of the MCP **2026-07-28** wire protocol. Do not use it as a production-facing unauthenticated service.
+> **项目状态：实验性原型，尚未通过完整 MCP 规范符合性认证。**
+> 当前仅实现 MCP **2026-07-28** 传输协议的部分功能。请勿将其作为未经身份认证的公网生产服务。
 
-## Example (server)
+## 服务端示例
 
 ```cpp
 #include "mymcp/mcp.hpp"
@@ -17,11 +17,11 @@ int main() {
               arg<int>("a", "First number"), arg<int>("b", "Second number"));
   server.resource("app://status", "Status", [] { return std::string("OK"); });
   server.prompt("welcome", "Welcome prompt", [](const Json&) { return "Hi!"; });
-  server.run_stdio();                 // or server.run_http(3000)
+  server.run_stdio();                 // 也可使用 server.run_http(3000)
 }
 ```
 
-## Example (client)
+## 客户端示例
 
 ```cpp
 #include "mymcp/mcp.hpp"
@@ -35,19 +35,19 @@ int main() {
 }
 ```
 
-For an HTTP client:
+HTTP 客户端的创建方式：
 
 ```cpp
 auto client = mymcp::Client::http("http://127.0.0.1:3000/mcp");
 ```
 
-## Standalone no-argument demos
+## 无命令行参数的独立演示程序
 
-See **[examples/README.md](examples/README.md)**. Every demonstration is a standalone executable named `run_xxxx_demo`, containing a matching `run_xxxx_demo()` function and a zero-argument `main()`. Examples include `run_tools_demo`, `run_resources_demo`, `run_prompts_demo`, `run_tasks_demo`, `run_mrtr_demo`, `run_stdio_client_demo`, `run_progress_demo` and `run_oauth_demo` (local mock OAuth). The old CLI-driven examples are retained only as integration test fixtures in `tests/fixtures/`.
+参见 **[演示程序指南](examples/README.md)**。每个示例都是独立的 `run_xxxx_demo` 可执行程序，包含同名的 `run_xxxx_demo()` 函数和无参数 `main()`。例如 `run_tools_demo`、`run_resources_demo`、`run_prompts_demo`、`run_tasks_demo`、`run_mrtr_demo`、`run_stdio_client_demo`、`run_progress_demo` 和 `run_oauth_demo`（本机模拟 OAuth）。旧版带命令行参数的程序仅保留在 `tests/fixtures/` 中作为集成测试辅助程序。
 
-## Build
+## 构建
 
-Requirements (migration): C++20, CMake >= 3.20, OpenSSL, Threads, and the checked-in third-party sources (`third_party/jsoncons` and `third_party/cpp-httplib`). Configuration and builds are offline by default. No Boost dependency; OpenSSL remains a system prerequisite.
+构建要求：C++20、CMake 3.20 或更新版本、OpenSSL、线程库，以及仓库内置的第三方源码（`third_party/jsoncons` 和 `third_party/cpp-httplib`）。默认离线配置与构建，不依赖 Boost；OpenSSL 仍需要由系统提供。
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -55,42 +55,42 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Run from the build output directory (Windows: add `.exe`):
+请在构建输出目录运行示例（Windows 需追加 `.exe`）：
 
 ```sh
 ./run_tools_demo
 ./run_resources_demo
-./run_oauth_demo  # local, no external credentials
+./run_oauth_demo  # 本地模拟，不需要外部凭据
 ```
 
-To exercise HTTP and SSE, run `run_http_server_demo` in one terminal, then `run_http_client_demo` and `run_subscriptions_demo` in another. Nothing requires command-line parameters.
+测试 HTTP 与 SSE 时，在一个终端运行 `run_http_server_demo`，再在另一个终端运行 `run_http_client_demo` 和 `run_subscriptions_demo`。这些程序均不要求命令行参数。
 
-## Protocol coverage — October 2026
+## 协议覆盖情况（2026 年 10 月）
 
-**Target: MCP specification 2026-07-28. Experimental SDK, NOT full conformance.**
+**目标版本：MCP 2026-07-28。本 SDK 仍属实验性实现，不代表完全符合规范。**
 
-Implemented and covered by local tests:
+已实现且有本地测试覆盖的功能：
 
-- Modern stateless request metadata and `resultType`, `server/discover`, legacy stdio fallback.
-- Typed C++ tool registration, tool listing/calling, raw handlers for rich tool results.
-- Resources and URI templates (simple `{variable}` expansion), full prompt-result handlers and completion.
-- Deterministic listing and opaque cursor pagination for tools/resources/prompts/templates; caching `ttlMs` and `cacheScope` on all six required operations.
-- MRTR `input_required` on valid operations, client-side callback and `requestState` round trips.
-- `subscriptions/listen`: stdio acknowledgement and cancellation, HTTP long-lived SSE with acknowledgement/keepalive, per-subscription filters and explicit `Server::publish(...)`, `Client::listen_http(...)`.
-- Custom method handler and extension-capability advertisement APIs.
-- Streamable HTTP POST routing/header verification, `x-mcp-header` projection, origin checks, loopback-only listener. Request-scoped SSE progress/response streaming and incremental client event delivery; JSON is used for fast server responses.
+- 现代无状态请求元数据、`resultType`、`server/discover`，以及旧版 stdio 兼容回退。
+- C++ 强类型工具注册、工具列表与调用，以及支持复杂结果的原始处理函数。
+- 资源和 URI 模板（简单 `{variable}` 变量展开）、完整的提示词结果处理函数和补全功能。
+- 工具、资源、提示词和模板的确定性列表与不透明游标分页；六项必需操作支持 `ttlMs`、`cacheScope` 缓存字段。
+- 在有效操作中使用 MRTR `input_required`，客户端回调与 `requestState` 多轮往返。
+- `subscriptions/listen`：stdio 确认与取消、HTTP 长连接 SSE 的确认及保活、按订阅过滤事件，并支持 `Server::publish(...)` 和 `Client::listen_http(...)`。
+- 自定义方法处理函数，以及扩展能力声明接口。
+- Streamable HTTP POST 路由及请求头校验、`x-mcp-header` 参数映射、来源校验和仅监听回环地址的服务端；支持单请求 SSE 进度/结果流与客户端增量事件处理，快速请求则返回 JSON。
 
-Still incomplete (important before production use):
+尚未完整实现的功能（生产使用前务必了解）：
 
-- Remote schema retrieval and schema-derived output validation, typed content types and URI template operators beyond simple variables. The JSON Schema validator now uses jsoncons with 2020-12 support for local schemas.
-- OAuth gaps: an in-app browser/callback listener, secure persistent token storage, automatic authorization retry and incremental scope escalation, Client ID Metadata validation, and built-in JWT/JWKS verification. The client has discovery + PKCE + token/refresh flows; the server offers a Bearer verifier callback. The HTTP server binds loopback only; use a trusted HTTPS proxy for remote deployment.
-- Full legacy HTTP sessions/GET notification channels, reliable disconnect cancellation of blocked handlers, log notifications, and custom timeout/retry configuration.
-- Complete Tasks / Apps / EMA extension implementations (raw custom method dispatch and namespaced capability advertisement are available, but **do not** imply extension conformance).
-- SSE replay/resumption and automatic stream restart, full stdio asynchronous client subscription management, cross-platform concurrency load testing, full official SDK conformance/interop tests.
+- 远程 Schema 获取、根据 Schema 校验输出、全部结构化内容类型，以及超出简单变量替换范围的 URI 模板运算符。当前 JSON Schema 校验器使用 jsoncons，支持本地 2020-12 Schema。
+- OAuth 尚缺：应用内浏览器及回调监听的通用封装、安全持久化令牌、自动重新授权与渐进式权限提升、客户端 ID 元数据校验、内置 JWT/JWKS 校验。客户端已有发现、PKCE、令牌交换与刷新流程；服务端提供 Bearer 验证回调。HTTP 服务端仅绑定回环地址，远程部署应使用可信 HTTPS 代理。
+- 完整的旧版 HTTP 会话及 GET 通知通道、阻塞处理函数的断线可靠取消、日志通知，以及全方位自定义超时与重试。
+- 完整的 Tasks / Apps / EMA 扩展实现（虽然支持原始自定义方法分发和命名空间能力声明，但**不代表通过扩展规范验证**）。
+- SSE 重放与恢复、自动重新建立流、完整的 stdio 异步客户端订阅管理、跨平台并发压力测试，以及官方 SDK 符合性与互操作测试。
 
-See [COMPATIBILITY.md](COMPATIBILITY.md) for a conservative per-feature matrix. Passing local tests is not an official compliance certificate.
+详细功能矩阵请参见 [协议兼容性说明](COMPATIBILITY.md)。通过本地测试并不等同于通过官方规范认证。
 
-## New API examples
+## 新增 API 使用示例
 
 ```cpp
 Server server("books", "1.0");
@@ -105,10 +105,10 @@ server.completion([](const Json&) -> Json {
   return json::object{{"completion", json::object{{"values", json::array{"cpp", "c++"}}, {"hasMore", false}}}};
 });
 
-// Consumers can transparently aggregate all pages:
+// 客户端可以透明地合并全部分页：
 auto all = client.list_all("tools/list", "tools");
 
-// HTTP notifications: callback returns false to close the SSE connection.
+// HTTP 通知：回调返回 false 时关闭 SSE 连接。
 Client::listen_http("http://127.0.0.1:3000/mcp", json::object{{"toolsListChanged", true}},
   [](const Json& event) {
     std::cout << json::serialize(event) << "\n";
@@ -116,18 +116,18 @@ Client::listen_http("http://127.0.0.1:3000/mcp", json::object{{"toolsListChanged
   });
 ```
 
-For stdio/HTTP subscriptions, event producers call `server.publish("notifications/tools/list_changed")` or `server.publish("notifications/resources/updated", json::object{{"uri", "..."}})`. The SDK enforces the requested subscription filter and sends an acknowledgment first. Tool catalogs should be registered before starting the server; dynamic mutation of handler maps is not currently thread safe.
+对于 stdio/HTTP 订阅，事件发布方可调用 `server.publish("notifications/tools/list_changed")` 或 `server.publish("notifications/resources/updated", json::object{{"uri", "..."}})`。SDK 会应用订阅过滤规则，并首先发送确认消息。应在启动服务端之前注册工具目录；当前不保证运行时动态修改处理函数映射的线程安全。
 
-## Spec references
+## 协议规范参考
 
 - [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
-- [Discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
-- [Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
-- [Tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+- [服务发现](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
+- [Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
+- [工具](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
 
-## Expanded APIs (October 2026)
+## 扩展 API（2026 年 10 月）
 
-Tasks are opt-in and are advertised to clients explicitly:
+Tasks 任务功能需要主动启用，服务端会明确向客户端声明相关能力：
 
 ```cpp
 server.enable_tasks();
@@ -138,29 +138,29 @@ server.add_task_tool("background", "Long-running work", {{"type", "object"}},
     });
 
 mymcp::Client client = mymcp::Client::process("./my_server");
-client.enable_tasks(); // must be called before discover()
+client.enable_tasks(); // 必须在 discover() 之前调用
 auto handle = client.call("background");
 auto state = client.get_task(std::string(handle.at("taskId").as_string()));
 // client.update_task(taskId, inputResponses);  client.cancel_task(taskId);
 ```
 
-The server task registry is process-local, **not durable across restarts**. HTTP tasks calls also validate the `Mcp-Name` header against `taskId`.
+服务端任务注册表仅保存在当前进程内，**重启后不会保留**。HTTP 任务调用还会核对 `Mcp-Name` 请求头与 `taskId` 是否一致。
 
-A stdio server may report progress from inside an active tool handler using `server.progress(value, total, "message")`, and honor cancellation using `server.is_cancelled()`; the client can use `request_with_progress` and a `Client::process` notification callback. HTTP progress uses a request-scoped SSE response when `progressToken` is present; the SDK delivers these notifications incrementally, but cancellation of a blocked handler still depends on a failed SSE write.
+stdio 服务端可以在运行中的工具处理函数内调用 `server.progress(value, total, "message")` 报告进度，使用 `server.is_cancelled()` 响应取消；客户端可使用 `request_with_progress` 和 `Client::process` 通知回调。HTTP 请求包含 `progressToken` 时，进度信息会通过当前请求的 SSE 响应流增量返回；但阻塞处理函数的取消仍依赖 SSE 写入失败后的检测。
 
-For protected HTTP, `server.protect_http(protected_resource_metadata, token_verifier)` installs the metadata endpoint and authorization callback. The verifier must validate issuer, audience, expiry and required scopes. The test fixture server supports a local-only authentication test using `MYMCP_TEST_TOKEN`; new no-argument demo programs live in `examples/`. `Client::http("https://host/mcp", token)` validates TLS certificates/hostnames and includes a Bearer token. `mymcp/oauth_client.hpp` provides OAuth metadata discovery, PKCE S256, registration, token exchange and refresh. It does **not** independently implement interactive browser login or durable token storage.
+对于需要保护的 HTTP 服务，`server.protect_http(protected_resource_metadata, token_verifier)` 会安装受保护资源元数据端点与授权回调。验证器必须检查令牌签发者、受众、到期时间与操作权限范围。测试服务仅通过 `MYMCP_TEST_TOKEN` 演示本机身份认证，新的无参数程序见 `examples/`。`Client::http("https://host/mcp", token)` 校验 TLS 证书和主机名，并携带 Bearer 令牌。`mymcp/oauth_client.hpp` 提供 OAuth 元数据发现、PKCE S256、注册、令牌交换与刷新，但**不会**独立完成浏览器交互登录或安全持久化存储令牌。
 
-All raw tool handlers are checked with jsoncons JSON Schema validation (see `include/mymcp/schema.hpp`). Schema violations return JSON-RPC `-32602`, not tool `isError`. Remote schema reference handling and official MCP conformance testing remain outstanding. See [COMPATIBILITY.md](COMPATIBILITY.md) and [SECURITY.md](SECURITY.md).
+所有原始工具处理函数均使用 jsoncons JSON Schema 进行输入校验（见 `include/mymcp/schema.hpp`）。Schema 违规会返回 JSON-RPC 错误 `-32602`，而不是工具级 `isError`。远程 Schema 引用与官方 MCP 符合性测试尚待完善，参见 [兼容性说明](COMPATIBILITY.md)和[安全说明](SECURITY.md)。
 
-## Dependency migration (C++20 / cpp-httplib / jsoncons)
+## 第三方依赖迁移（C++20 / cpp-httplib / jsoncons）
 
-This experimental migration removes Boost headers/libraries from the SDK. CMake fetches
-pinned `cpp-httplib` and `jsoncons` revisions at configuration time (network access required
-on first configure); OpenSSL remains required for TLS and PKCE. JSON values are
-`mymcp::Json` (`jsoncons::json`), so callers directly using `boost::json::value`
-need to update their source. CMake package exporting vendored dependencies is still being refined.
+此次实验性迁移移除了 SDK 对 Boost 头文件与库的依赖。
+`cpp-httplib` 与 `jsoncons` 的固定版本源码已经随仓库内置，
+CMake 配置时不需要从网络获取它们；TLS 与 PKCE 仍依赖系统 OpenSSL。JSON 值类型为
+`mymcp::Json`（即 `jsoncons::json`），此前直接使用 `boost::json::value` 的调用方
+需要修改源码。包含内置依赖的 CMake 包导出机制仍在完善。
 
-OAuth client-side interface:
+OAuth 客户端接口示例：
 
 ```cpp
 #include "mymcp/mcp.hpp"
@@ -169,20 +169,20 @@ auto session = std::make_shared<mymcp::oauth::Session>("https://mcp.example/mcp"
 session->discover();
 session->client_id("https://client.example/oauth-metadata.json");
 auto authorization = session->begin_authorization("http://127.0.0.1:8900/callback", {"tools:read"});
-// Open authorization.url in a browser, receive redirect code/state/iss through the app.
+// 在浏览器打开 authorization.url，由应用接收重定向中的 code/state/iss。
 session->exchange_code(authorization, code, returned_state, returned_issuer,
                        "http://127.0.0.1:8900/callback");
 auto client = mymcp::Client::http_oauth("https://mcp.example/mcp", session);
 auto tools = client.tools();
 ```
 
-The SDK does **not** host an OAuth Authorization Server or control the browser; OAuth
-redirect handling must be implemented by the application. Token validation on the
-server remains pluggable through `Server::protect_http(metadata, verifier)`, where
-`verifier` is responsible for cryptographically validating the credential and enforcing
-issuer, audience, expiration, subject and operation-level scopes.
+SDK **不负责**托管 OAuth 授权服务器或控制浏览器；OAuth
+重定向处理必须由宿主应用实现。服务端的令牌校验仍可通过
+`Server::protect_http(metadata, verifier)` 注入自定义验证器，
+`verifier` 必须以密码学手段验证令牌，并检查
+签发者、受众、有效期、主体身份及操作级权限范围。
 
-The migration must pass Linux + Windows CI before it is treated as a release.
+只有 Linux 与 Windows CI 验证通过后，才可将此迁移版本视作可发布候选。
 
 ## OAuth 资源隔离与 HTTP x-mcp-header 缓存
 
@@ -200,31 +200,31 @@ ctest --test-dir build -R "(oauth_resource_binding|http_header_routing)" --outpu
 
 tests/test_oauth_resource_binding.cpp 验证跨资源令牌拒绝及本机 HTTP 兼容；tests/test_http_header_routing.cpp 使用真实 loopback HTTP Mock 验证两页 Schema、请求头映射、刷新、SSE 失效和重复注解拒绝。
 
-## Desktop OAuth callback helper
+## 桌面应用 OAuth 回调辅助接口
 
 ```cpp
 auto session = std::make_shared<mymcp::oauth::Session>("https://mcp.example/mcp");
 session->discover();
 session->client_id("your-registered-client-id");
 auto flow = session->begin_authorization("http://127.0.0.1:8765/callback");
-// Open flow.url in the OS browser, then receive the redirect in your app.
-// The helper checks the full redirect URI, state, issuer and percent-encoding.
+// 使用系统浏览器打开 flow.url，再由应用接收重定向。
+// 辅助接口校验完整重定向 URI、state、issuer 和百分号编码。
 session->exchange_callback_url(flow, received_callback_url,
                                "http://127.0.0.1:8765/callback");
 auto client = mymcp::Client::http_oauth("https://mcp.example/mcp", session);
-auto tools = client.tools();  // refreshes expiring tokens automatically
+auto tools = client.tools();  // 自动刷新即将过期的令牌
 ```
 
-Dynamic registration for a desktop/CLI app uses `application_type=native` by default,
-which is required for interoperability with some OpenID Connect servers. Web apps
-can pass `"web"` explicitly to `register_dynamic(redirects, name, "web")`.
-The host application still owns browser navigation, redirect listener and safe
-credential storage; this is **not** a built-in authorization server.
+桌面或命令行应用动态注册时默认使用 `application_type=native`，
+以便兼容部分 OpenID Connect 服务端。Web 应用
+可以显式调用 `register_dynamic(redirects, name, "web")` 传入 `"web"`。
+浏览器跳转、回调监听和凭据安全存储仍由宿主应用负责；
+这里**不提供**内置授权服务器。
 
-## Independent, no-argument demos
+## 独立、无参数的演示程序
 
-`examples/` now contains single-purpose programs named `run_xxxx_demo.cpp`,
-each with `run_xxxx_demo()` and a zero-argument `main()`. For example:
+`examples/` 包含以 `run_xxxx_demo.cpp` 命名的独立示例程序，
+每个程序包含 `run_xxxx_demo()` 和无参数 `main()`，例如：
 
 ```sh
 ./run_tools_demo
@@ -232,21 +232,21 @@ each with `run_xxxx_demo()` and a zero-argument `main()`. For example:
 ./run_prompts_demo
 ./run_tasks_demo
 ./run_mrtr_demo
-./run_oauth_demo             # local mock provider, no credentials
+./run_oauth_demo             # 本地模拟提供方，不需要凭据
 ```
 
-For HTTP and SSE, launch `run_http_server_demo` in another terminal, then run
-`run_http_client_demo` or `run_subscriptions_demo`. For a real provider, edit the
-configuration constants in `examples/run_oauth_login_demo.cpp` and run it.
-See [the demo guide](examples/README.md). Old parameterized executables are
-retained only in `tests/fixtures/` for regression testing.
+要演示 HTTP 与 SSE，先在另一终端启动 `run_http_server_demo`，
+再运行 `run_http_client_demo` 或 `run_subscriptions_demo`。连接真实 OAuth 服务时，
+需要先编辑 `examples/run_oauth_login_demo.cpp` 中的配置常量，再运行该示例。
+详情参见 [演示程序指南](examples/README.md)。旧版带命令行参数的可执行程序
+仅在 `tests/fixtures/` 中保留，供回归测试使用。
 
 
-## Codex / Claude Code and Streamable HTTP
+## Codex / Claude Code 与 Streamable HTTP
 
-Use Streamable HTTP as the preferred network transport; **SSE is a response format inside it**, not a separate transport. The HTTP SDK now supports modern `2026-07-28` requests, a basic legacy Streamable HTTP adapter (2025-03-26 to 2025-11-25), and tool progress over request-scoped SSE. See [INTEROPERABILITY.md](INTEROPERABILITY.md) for connection commands, compatibility limits and security instructions.
+网络传输优先使用 Streamable HTTP；**SSE 是其中的响应格式，而非独立传输方式**。HTTP SDK 支持现代 `2026-07-28` 请求、基本的旧版 Streamable HTTP 兼容适配（2025-03-26 至 2025-11-25）以及请求级 SSE 工具进度流。连接命令、兼容限制和安全要求参见 [互操作说明](INTEROPERABILITY.md)。
 
-A tool can report progress without caring whether it runs on stdio or HTTP:
+无论工具使用 stdio 还是 HTTP，都可以通过相同接口报告进度：
 
 ```cpp
 server.add_tool("count", "Report progress", mymcp::json::object{{"type", "object"}},
@@ -256,20 +256,20 @@ server.add_tool("count", "Report progress", mymcp::json::object{{"type", "object
   });
 ```
 
-In an HTTP client, install a progress event callback and include a `progressToken`:
+HTTP 客户端需要注册进度事件回调，并提供 `progressToken`：
 
 ```cpp
 auto client = mymcp::Client::http("http://127.0.0.1:3000/mcp", {},
-  [](const mymcp::Json& event) { /* handle notifications/progress */ });
+  [](const mymcp::Json& event) { /* 处理 notifications/progress 事件 */ });
 auto result = client.request_with_progress("tools/call",
   mymcp::json::object{{"name", "count"}, {"arguments", mymcp::json::object{}}}, "my-token");
 ```
 
-To run a complete no-argument client/server pair, start `run_http_server_demo`, then `run_http_progress_demo` in another terminal.
+完整运行无参数的客户端/服务端示例时，先启动 `run_http_server_demo`，再在另一个终端运行 `run_http_progress_demo`。
 
-## All-in-one agent toolbox demo
+## 一体化智能体工具箱示例
 
-**`examples/run_agent_tools_demo.cpp`** is a single no-argument stdio MCP server that registers 23 useful tools across 10 groups: file reads/writes, directories, filename/content search, precise edits/patches, Git, allowlisted commands and a fixed build example, restricted HTTPS fetch/download, and C++ project inspection. The implementation has Chinese inline comments and runs within an automatically created `demo_workspace/` directory. It is intended for local Codex/Claude MCP experiments, **not** a hardened sandbox. See [examples/README.md](examples/README.md) for the complete tool matrix, security limits, and usage.
+**`examples/run_agent_tools_demo.cpp`** 是不需要命令行参数的 stdio MCP 服务端示例，共注册 10 组 23 个工具：文件读写、目录操作、文件名和内容搜索、精确替换与补丁、Git 查询、白名单命令及固定编译样例、受限 HTTPS 获取/下载和 C++ 工程分析。源码附有中文注释，会自动创建 `demo_workspace/` 工作区。本程序仅适合本地 Codex/Claude MCP 实验，**不能当作安全沙箱**。完整工具列表、安全边界与运行方法见 [演示程序指南](examples/README.md)。
 
 
 ## MCP 传输截止时间与资源限额（P0/P1）
