@@ -692,7 +692,7 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (it != resources_.end()) {
         if (it->second.binary_reader) {
           const auto bytes = it->second.binary_reader();
-          if (bytes.size() > 4 * 1024 * 1024) throw Error(-32603,"Binary resource too large");
+          if (bytes.size() > 2 * 1024 * 1024) throw Error(-32603,"Binary resource too large");
           result = json::object{{"contents",json::array{json::object{
             {"uri",uri},{"mimeType",it->second.mime},
             {"blob",encode_b64(std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size()))}}}}};
@@ -821,13 +821,15 @@ Json Server::handle(const Json& req, bool allow_legacy) {
           auto mode=string_of(request_params,"mode","form");
           if (!find(request_params,"message").is_string() ||
               (mode!="form" && mode!="url") ||
-              (mode=="form" && !find(request_params,"requestedSchema").is_object()) ||
+              (mode=="form" && !find(request_params,"requestedSchema").is_null() && !find(request_params,"requestedSchema").is_object()) ||
               (mode=="url" && !find(request_params,"url").is_string()))
             throw Error(-32603,"Invalid elicitation request");
         } else if (method_name=="sampling/createMessage") {
           if (!find(client_caps,"sampling").is_object())
             throw Error(-32021,"Client does not support sampling");
-          if (!find(request_params,"messages").is_array() || !find(request_params,"maxTokens").is_number())
+          if (!find(request_params,"messages").is_array() ||
+              !(find(request_params,"maxTokens").is_int64() || find(request_params,"maxTokens").is_uint64()) ||
+              find(request_params,"maxTokens").as_integer<std::int64_t>() <= 0)
             throw Error(-32603,"Invalid sampling request");
         } else if (method_name=="roots/list") {
           if (!find(client_caps,"roots").is_object())
