@@ -159,10 +159,20 @@ public:
     std::mutex mutex;
     std::condition_variable ready;
     std::deque<Json> messages;
+    // event_ids 与 messages 一一对应；history 用于短期 SSE 断线续传。
+    std::deque<std::string> event_ids;
+    std::deque<std::pair<std::string, Json>> history;
+    std::string stream_id;
+    std::string owner_digest;
+    std::uint64_t next_event = 0;
+    std::chrono::steady_clock::time_point expires_at;
     bool closed = false;
   };
   // Raw subscription stream primitives for transports (notification filters are enforced here).
   std::shared_ptr<Subscription> subscribe(Json id, Json filter);
+  // 仅在同一客户端身份与过滤规则下，按 Last-Event-ID 恢复有界事件流。
+  std::shared_ptr<Subscription> resume_subscription(const std::string& last_event_id,
+      const Json& filter, const std::string& owner_digest);
   void publish(const std::string& method, Json params = json::object{});
   void close_subscription(const std::shared_ptr<Subscription>& sub);
   void instructions(std::string value) { instructions_ = std::move(value); }
@@ -209,6 +219,7 @@ private:
   std::size_t page_size_ = 100;
   std::mutex subscriber_mutex_;
   std::vector<std::weak_ptr<Subscription>> subscribers_;
+  std::map<std::string, std::shared_ptr<Subscription>> replay_subscriptions_;
   struct TaskState {
     std::mutex mutex;
     std::atomic_bool cancel_requested{false};
@@ -252,6 +263,11 @@ public:
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
   static void listen_http(const std::string& url, Json notifications,
                           std::function<bool(const Json&)> on_event);
+  // 仅重连订阅，不重放 tools/call 等有副作用的请求。超过次数或
+  // 服务端无法恢复历史（409）时明确失败，不能静默丢失通知。
+  static void listen_http_resumable(const std::string& url, Json notifications,
+                          std::function<bool(const Json&)> on_event,
+                          unsigned max_reconnects = 3);
   // true 仅对 SDK 自带的 stdio/HTTP 传输成立；自定义进程内 lambda
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
