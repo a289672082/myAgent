@@ -253,8 +253,11 @@ public:
   static Client http_oauth(const std::string& url, std::shared_ptr<oauth::Session> session,
                            std::function<void(const Json&)> on_notification = {});
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
+  // 2026-07-28 不提供 Last-Event-ID 流恢复；仅重新建立无副作用的订阅。
+  // max_reconnects=0 表示只建立一次连接，不自动重连。
   static void listen_http(const std::string& url, Json notifications,
-                          std::function<bool(const Json&)> on_event);
+                          std::function<bool(const Json&)> on_event,
+                          unsigned max_reconnects = 3);
   // true 仅对 SDK 自带的 stdio/HTTP 传输成立；自定义进程内 lambda
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
@@ -292,6 +295,18 @@ public:
     input_handler_ = std::move(handler);
     capabilities_["elicitation"] = json::object{{"form", json::object{}}};
   }
+  // MRTR 专项回调仅在显式注册后向服务端声明相应客户端能力。
+  // handler 接收 inputRequest.params，返回该请求对应的 MCP 响应结果。
+  void on_sampling(std::function<Json(const Json&)> handler) {
+    sampling_handler_ = std::move(handler);
+    if (sampling_handler_) capabilities_["sampling"] = json::object{};
+    else capabilities_.erase("sampling");
+  }
+  void on_roots(std::function<Json(const Json&)> handler) {
+    roots_handler_ = std::move(handler);
+    if (roots_handler_) capabilities_["roots"] = json::object{{"listChanged", false}};
+    else capabilities_.erase("roots");
+  }
 private:
   std::function<Json(const Json&)> send_;
   std::function<Json(const Json&, const RequestOptions&)> send_bounded_;
@@ -310,6 +325,8 @@ private:
   bool requires_oauth_refresh_ = false; // OAuth token acquisition currently has separate I/O.
   bool has_untrusted_callback_ = false; // C++ notification callback may never return.
   std::function<Json(const Json&)> input_handler_;
+  std::function<Json(const Json&)> sampling_handler_;
+  std::function<Json(const Json&)> roots_handler_;
 };
 
 } // namespace mymcp
