@@ -26,7 +26,7 @@ int main() {
   server.add_tool_context("typed", "Three independent callbacks", json::object{{"type","object"}},
     [](const Json& params)->Json {
       if (!params.contains("inputResponses"))
-        return json::parse(R"({"resultType":"input_required","requestState":"typed-v1","inputRequests":{"sample":{"method":"sampling/createMessage","params":{"messages":[],"maxTokens":16}},"roots":{"method":"roots/list","params":{}},"web":{"method":"elicitation/create","params":{"mode":"url","message":"授权确认","url":"https://example.org/authorize"}}}}})");
+        return json::parse(R"({"resultType":"input_required","requestState":"typed-v1","inputRequests":{"sample":{"method":"sampling/createMessage","params":{"messages":[],"maxTokens":16}},"roots":{"method":"roots/list","params":{}},"web":{"method":"elicitation/create","params":{"mode":"url","message":"授权确认","url":"https://example.org/authorize"}}}})");
       CHECK(params.at("requestState") == "typed-v1");
       CHECK(params.at("inputResponses").at("sample").at("role") == "assistant");
       CHECK(params.at("inputResponses").at("roots").at("roots").is_array());
