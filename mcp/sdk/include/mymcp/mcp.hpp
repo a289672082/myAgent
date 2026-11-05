@@ -236,6 +236,13 @@ struct RequestOptions {
   std::size_t max_response_bytes = 0;
   std::function<bool()> cancelled;
 };
+ 
+// 订阅是长连接；默认不设截止时间，单帧最大 4 MiB。
+struct ListenOptions {
+  std::chrono::milliseconds timeout{0};
+  std::size_t max_frame_bytes = 4 * 1024 * 1024;
+  std::function<bool()> cancelled;
+};
 
 class Client {
 public:
@@ -254,7 +261,8 @@ public:
                            std::function<void(const Json&)> on_notification = {});
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
   static void listen_http(const std::string& url, Json notifications,
-                          std::function<bool(const Json&)> on_event);
+                          std::function<bool(const Json&)> on_event,
+                          const ListenOptions& options = {});
   // true 仅对 SDK 自带的 stdio/HTTP 传输成立；自定义进程内 lambda
   // 无法保证回调支持强制超时，严格隔离场景必须拒绝它们。
   bool has_bounded_transport() const noexcept {
