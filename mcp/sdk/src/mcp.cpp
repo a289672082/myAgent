@@ -789,12 +789,37 @@ Json Server::handle(const Json& req, bool allow_legacy) {
       if (method != "tools/call" && method != "prompts/get" && method != "resources/read")
         throw Error(-32603, "input_required is not allowed for this method");
       const auto& requests = find(result, "inputRequests");
-      if (!requests.is_null() && !requests.is_object()) throw Error(-32603, "Invalid inputRequests");
-      if (requests.is_object()) for (auto& entry : requests.object_range()) { const auto key = entry.key(); auto& item = entry.value();
+      if (!requests.is_object() || requests.size() > 32)
+        throw Error(-32603, "Invalid inputRequests (expected a map of at most 32 requests)");
+      const auto& capabilities = find(meta, "io.modelcontextprotocol/clientCapabilities");
+      for (const auto& entry : requests.object_range()) {
+        const auto key = entry.key();
+        const auto& item = entry.value();
         const auto method_name = string_of(item, "method");
-        if (method_name != "elicitation/create" && method_name != "sampling/createMessage" && method_name != "roots/list")
-          throw Error(-32603, "Invalid input request type");
+        const auto& p = find(item, "params");
+        if (key.empty() || !p.is_object()) throw Error(-32603, "Invalid input request");
+        if (method_name == "elicitation/create") {
+          const auto& elicit = find(capabilities, "elicitation");
+          const auto mode = string_of(p, "mode", "form");
+          if (!elicit.is_object() || !find(p, "message").is_string() ||
+              (mode == "form" && (!find(elicit, "form").is_object() ||
+                                   !find(p, "requestedSchema").is_object())) ||
+              (mode == "url" && (!find(elicit, "url").is_object() ||
+                                  !find(p, "url").is_string())) ||
+              (mode != "form" && mode != "url"))
+            throw Error(-32021, "Unsupported or invalid elicitation request");
+        } else if (method_name == "sampling/createMessage") {
+          if (!find(capabilities, "sampling").is_object() ||
+              !find(p, "messages").is_array() || !find(p, "maxTokens").is_number())
+            throw Error(-32021, "Unsupported or invalid sampling request");
+        } else if (method_name == "roots/list") {
+          if (!find(capabilities, "roots").is_object())
+            throw Error(-32021, "Client does not support roots/list");
+        } else throw Error(-32603, "Invalid input request method");
       }
+      if (!find(result, "requestState").is_null() &&
+          !find(result, "requestState").is_string())
+        throw Error(-32603, "Invalid MRTR requestState");
     }
     result = complete(std::move(result), modern);
     if (modern) {
@@ -1761,14 +1786,52 @@ Json Client::request(const std::string& method, Json params,
     if (round == 8) throw Error(-32603, "Input-required rounds exceeded");
     const Json& input_requests = find(result, "inputRequests");
     if (!input_requests.is_object()) throw Error(-32603, "Invalid inputRequests");
+    if (input_requests.size() > 32) throw Error(-32603, "Too many MRTR input requests");
     Json answers = input_handler_(input_requests);
     if (!answers.is_object()) throw Error(-32602, "Input callback must return an object");
+    for (const auto& entry : answers.object_range()) {
+      if (!input_requests.contains(entry.key()) || !entry.value().is_object())
+        throw Error(-32602, "Unexpected or malformed MRTR input response");
+    }
+    if (answers.size() != input_requests.size())
+      throw Error(-32602, "MRTR callback must answer every request");
     params["inputResponses"] = std::move(answers);
     const Json& state = find(result, "requestState");
     if (state.is_string()) params["requestState"] = state;
     else params.erase("requestState");
   }
   throw Error(-32603, "Input-required rounds exceeded");
+}
+Json Client::request_readonly_retry(const std::string& method, Json params,
+                                    unsigned max_attempts, const RequestOptions& options) {
+  // 仅允许本身只读的协议操作重试；工具执行及 prompts/get 不得隐式重放。
+  static const std::set<std::string> allowed{
+    "tools/list", "resources/list", "resources/templates/list",
+    "resources/read", "prompts/list", "server/discover"};
+  if (!http_ || !allowed.contains(method) || max_attempts == 0 || max_attempts > 4)
+    throw std::invalid_argument("Read-only retry requires HTTP and an allowlisted method (1..4 attempts)");
+  const auto deadline = options.timeout.count() > 0
+    ? std::chrono::steady_clock::now() + options.timeout
+    : std::chrono::steady_clock::time_point::max();
+  for (unsigned attempt = 0; attempt < max_attempts; ++attempt) {
+    RequestOptions budget = options;
+    if (deadline != std::chrono::steady_clock::time_point::max()) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds(0))
+        throw std::runtime_error("MCP read-only retry budget exhausted");
+      budget.timeout = remaining;
+    }
+    try { return request(method, params, budget); }
+    catch (const Error&) { throw; } // 协议错误、认证错误或参数错误均不得重试。
+    catch (const std::runtime_error&) {
+      if (attempt + 1 >= max_attempts || (options.cancelled && options.cancelled()))
+        throw;
+      // 新一次 request() 自动分配新的 JSON-RPC ID；不使用已经删除的 SSE Last-Event-ID。
+      std::this_thread::sleep_for(std::chrono::milliseconds(30 * (attempt + 1)));
+    }
+  }
+  throw std::runtime_error("Unreachable MCP retry state");
 }
 Json Client::request_with_progress(const std::string& method, Json params, Json token) {
   if (!params.is_object() || !(token.is_string() || token.is_int64() || token.is_uint64()))
