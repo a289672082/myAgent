@@ -142,6 +142,18 @@ int main() {
   auto forged=token;
   forged[forged.rfind('.')+1]=(forged[forged.rfind('.')+1]=='A'?'B':'A');
   CHECK(!oauth::verify_jwt_rs256(forged,jwks,"https://issuer.example","https://api.example/mcp"));
+  // 将 JWKS 验证器直接挂接现有 Server::protect_http，实际拦截需要 HTTPS 代理。
+  Server protected_server("protected");
+  protected_server.protect_http(json::object{
+    {"resource","https://api.example/mcp"},
+    {"authorization_servers",json::array{"https://issuer.example"}}},
+    [jwks](const std::string& candidate,const std::string& method,const std::string&) {
+      return oauth::verify_jwt_rs256(candidate,jwks,"https://issuer.example",
+        "https://api.example/mcp",method=="tools/call"
+          ? std::vector<std::string>{"tools:read"} : std::vector<std::string>{});
+    });
+  CHECK(protected_server.verify_http(token,"tools/call","anything"));
+  CHECK(!protected_server.verify_http(forged,"tools/call","anything"));
   std::cout<<"MCP baseline capability tests passed\n";
   return 0;
 }
