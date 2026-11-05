@@ -4,13 +4,13 @@
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
 **Visual Studio 2022：** 仓库根目录已包含 [myAgent.sln](myAgent.sln)。
-直接打开解决方案即可使用 Console、Agent SDK/Examples/Tests 和 MCP SDK/Examples/Tests 七个项目（x64 Debug/Release）；
+直接打开解决方案即可使用控制台、Agent SDK／示例／测试，以及 MCP SDK／示例／测试共七个项目（x64，Debug／Release）；
 控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
 SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
 
-## 23 个 DeveloperTools：Agent / MCP 双重注册
+## 23 个开发工具：Agent / MCP 双重注册
 
-新增独立的 [DeveloperTools 使用指南](tools/developer_tools/README.md)。工具实现和 JSON Schema 只维护在
+新增独立的 [开发工具使用指南](tools/developer_tools/README.md)。工具实现和 JSON Schema 只维护在
 `tools/developer_tools/`；可分别使用 `developer_tools::RegisterToAgent(agent, context, options)`
 以及 `developer_tools::RegisterToMcp(server, context, options)`，无需维护两套工具定义。
 七大类别共 23 个工具可独立开关，支持只读选项。
@@ -51,7 +51,7 @@ cmake --build build-mcp --config Debug
 ctest --test-dir build-mcp -C Debug --output-on-failure
 ```
 
-若使用根项目，可传入 `-DMYAGENT_BUILD_MCP_EXAMPLES=ON -DMYAGENT_BUILD_MCP_TESTS=ON` 开启 MCP Demo 与测试；默认根项目仍以 Agent 控制台为入口。构建需要 C++20、CMake、OpenSSL 和 Threads；`mcp/third_party/` 的 jsoncons、cpp-httplib 源码与许可证已随仓库提供。
+若使用根项目，可传入 `-DMYAGENT_BUILD_MCP_EXAMPLES=ON -DMYAGENT_BUILD_MCP_TESTS=ON` 开启 MCP 示例与测试；默认仍以 Agent 控制台为入口。构建要求 C++20、CMake、OpenSSL 和线程库；`mcp/third_party/` 中已内置 jsoncons、cpp-httplib 源码及许可证。
 
 ## 目录结构与快速启动
 
@@ -126,7 +126,7 @@ ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 
 ## 构建
 
-依赖 C++20、CMake >= 3.20、OpenSSL 和 Threads。新增固定版本 **yaml-cpp 0.9.0** Git submodule（MIT），用于标准 YAML frontmatter 解析；子模块源码和 LICENSE 随 `--recurse-submodules` 克隆后可离线编译。
+依赖 C++20、CMake 3.20 或更新版本、OpenSSL 和线程库。固定版本的 **yaml-cpp 0.9.0** 以 Git 子模块引入（MIT 许可证），用于标准 YAML 前置元数据解析；通过 `--recurse-submodules` 克隆后可离线编译。
 
 ~~~sh
 git clone --recurse-submodules https://github.com/a289672082/myAgent.git
@@ -701,34 +701,34 @@ HTTP / stdio MCP、图片、音频示例使用可读的变量和 `enable...` 开
 技能文件只在按需激活时作为工具内容或手动配置的提示词加载，不执行脚本；请核查 Skills 和远程 MCP 服务的来源。会改变文件或运行命令的工具应由调用方额外做权限控制与隔离。
 媒体上限为 20 MiB，工具返回上限为 256 KiB；不包含实际 OpenAI API 联网集成测试。
 
-## 2026-11-01 audit hardening (PR #16)
+## 2026 年 11 月 1 日代码审计加固（PR #16）
 
-- **Chat Completions routing**: retains optional gateway prefixes and query strings; only `stop` and `tool_calls` are successful finish reasons. Unexpected termination and empty final text raise errors.
-- **Audio gateway**: by default transcription/speech use `/v1/audio` on the model origin. To route them elsewhere, set `Config::audio_base_url = "https://proxy.example.com/tenant"`; it appends `/v1/audio/{transcriptions|speech}`. The team YAML `config.audio_base_url` field is also supported.
-- **Cancellation**: worker-specific cancellation is combined with team cancellation; team timeout includes coordinator planning/summary and passes remaining time to workers. Model HTTP and MCP operations still use cooperative timeouts.
-- **History**: `save_history()` writes `myagent-history-v2` with model/protocol metadata; `load_history()` accepts old array files only after strict validation and rejects incompatible v2 metadata. Both save and load enforce the 8 MiB limit; saved memory files enforce their 32 MiB load limit.
-- **Idempotence**: `LoopOptions::non_idempotent_tools` identifies tool names that must not be replayed with identical arguments inside one loop run; the built-in `local__workspace_write` starts protected. Add external write/delete/payment tools explicitly (e.g., `options.non_idempotent_tools.insert("git__push")`). A different argument value or a process restart is not automatically idempotent; use host validations, operation IDs and checkpoint reconciliation.
-- **Disk safety**: checkpoint writes use a unique temporary file, flush and atomic same-directory replacement; Windows workspace operations pin parent directories and reject reparse points. These mechanisms are not an OS or tenant sandbox.
-- **Team YAML**: relative `workspace` paths resolve beside the configuration file, like Skill paths. Bulk registration rolls back already created workers if a later registration fails.
-- **Offline tests**: `myagent_full_audit` checks protocol URLs, stop reasons, token overflow guarantees, empty output, history safety, cancellation/timeout, YAML rollback, and non-idempotent replay guards.
+- **Chat Completions 请求路由**：保留可选的网关路径前缀及查询参数；只有 `stop` 和 `tool_calls` 被视为成功的结束原因。异常终止或最终文本为空时会报错。
+- **音频网关**：默认将语音转写与合成请求发送到模型地址对应的 `/v1/audio`。如需使用独立服务，请设置 `Config::audio_base_url = "https://proxy.example.com/tenant"`，SDK 会追加 `/v1/audio/{transcriptions|speech}`；团队 YAML 配置也支持 `config.audio_base_url`。
+- **取消机制**：子 Agent 的独立取消状态会与团队取消状态结合；团队超时覆盖协调器规划及汇总阶段，并将剩余时间传给各工作者。模型 HTTP 与 MCP 操作仍主要依赖协作式超时。
+- **历史记录**：`save_history()` 写入包含模型及协议元数据的 `myagent-history-v2` 格式；`load_history()` 只在严格校验通过时接受旧版数组格式，并拒绝不兼容的 v2 元数据。保存与加载均强制执行 8 MiB 限额；保存的记忆文件在加载时有 32 MiB 限额。
+- **幂等性保护**：`LoopOptions::non_idempotent_tools` 指定同一次循环内不能用相同参数重复执行的工具；内置 `local__workspace_write` 默认受保护。外部写入、删除或支付工具必须显式添加（例如 `options.non_idempotent_tools.insert("git__push")`）。修改参数或重启进程并不能自动保证幂等，应结合宿主验证、操作 ID 与 Checkpoint 对账。
+- **磁盘安全**：Checkpoint 使用唯一临时文件写入、刷新并在同目录原子替换；Windows 工作区操作固定父目录句柄并拒绝重解析点。以上机制不构成操作系统级或租户级安全沙箱。
+- **团队 YAML**：相对 `workspace` 路径以配置文件所在目录为基准解析，与 Skill 路径处理一致。批量注册时若后续子 Agent 创建失败，会回滚此前新建的工作者。
+- **离线测试**：`myagent_full_audit` 覆盖协议 URL、结束原因、Token 溢出保护、空输出、历史记录安全、取消及超时、YAML 回滚和非幂等调用防重放。
 
-For production, configure `tool_policy.default_access = ToolAccess::Deny`, allow only necessary tools, review discovered Skills, and enforce permissions at MCP servers and OS/container boundaries.
+生产环境应设置 `tool_policy.default_access = ToolAccess::Deny`，仅放行必要工具、审查自动发现的 Skill，并在 MCP 服务端和操作系统/容器边界落实权限控制。
 
-### Follow-up audit: 2026-11-01
+### 后续代码审计：2026 年 11 月 1 日
 
-- Historical v2 restores avoid jsoncons sub-object self-assignment; this regression is covered by Linux AddressSanitizer.
-- `LoopOptions.protect_unclassified_tools=true` now blocks repeated identical calls to unknown MCP tools during one loop. Add verified read-only tools to `LoopOptions.idempotent_tools`; explicit `non_idempotent_tools` always take precedence. These guards are per run, not a transactional external-system ledger.
-- `TeamOptions.timeout` is propagated to the built-in Responses and Chat Completions HTTP transports on a per-request basis. Third-party `Model` implementations may override `create_with_timeout` to support it; MCP tools and non-cooperative custom models cannot be hard-interrupted safely.
-- History and memory saves use same-directory durable atomic replacement. Checkpoint writes additionally refuse concurrent writers via `<path>.lock` directory. If the process crashes during a write, the operator may need to remove a stale lock **after** checking no writer remains.
-- Media/history/checkpoint/memory reads verify an opened regular-file handle and enforce byte limits, rejecting final symlink/reparse point or FIFO paths.
-- Worker handoff budgets now include task descriptions, dependency results and optional structured context under one aggregate byte budget.
-- YAML agent-registration rollback removes only newly created empty workspace directories; pre-existing files and directories are never recursively deleted.
+- 恢复旧版 v2 历史时避免 jsoncons 子对象自赋值；已使用 Linux AddressSanitizer 回归测试覆盖。
+- `LoopOptions.protect_unclassified_tools=true` 会阻止同一次循环内未知 MCP 工具以相同参数重复执行。已验证只读的工具可以加入 `LoopOptions.idempotent_tools`；显式 `non_idempotent_tools` 始终优先。保护只在单次运行内生效，并不提供外部系统事务账本。
+- `TeamOptions.timeout` 会按请求传递给内置 Responses 与 Chat Completions HTTP 传输。第三方 `Model` 实现可以覆盖 `create_with_timeout` 以支持超时；无法安全地强行中断 MCP 工具或不合作的自定义模型。
+- 历史与记忆保存使用同目录持久化原子替换；Checkpoint 还通过 `<path>.lock` 目录拒绝并发写入。进程写入途中崩溃可能留下过期锁；**确认没有写入进程运行后**才能清理。
+- 媒体、历史、Checkpoint 和记忆读取会校验已打开的普通文件句柄并施加字节限额，拒绝最终路径中的符号链接、重解析点或 FIFO。
+- 子 Agent 交接预算将任务描述、依赖任务结果和可选结构化上下文统一纳入总字节限额。
+- YAML 批量注册回滚只删除本次新建且为空的工作区目录，绝不会递归删除原有文件或目录。
 
-### MCP and persistence safety limits
+### MCP 与数据持久化的安全限制
 
-- The Agent uses bounded paginated MCP tool discovery and rejects oversized schemas/catalogs. The **MCP SDK transport** must also enforce payload limits; an in-process callback can still allocate a large JSON response before returning it.
-- History and Memory saves refuse simultaneous writers using an adjacent `*.lock` directory, as Checkpoints already do. A crashed process can leave a stale directory; remove it **only after verifying no writer is active**. Loaded or previously saved files also use compare-and-replace within the lock, rejecting stale revisions instead of silently overwriting newer content. First saves to a different destination have no prior revision and intentionally replace the destination. Applications should use load() before updating a shared history/memory file, or explicitly coordinate initial writes.
-- External user-supplied C++ models or in-process MCP tool callbacks cannot be forcefully stopped safely using `std::future` or thread termination. For strict deadlines, run untrusted tools in a separate supervised OS process with enforceable termination and limits. The embedded myMcpTools HTTP transport has its own network read timeout, and the pinned stdio transport now enforces a finite deadline for non-cooperative children. 
+- Agent 使用有界分页发现 MCP 工具，并拒绝过大的 Schema 或工具目录。**MCP SDK 传输层**也必须限制载荷大小；但进程内回调仍可能在返回前就分配巨大 JSON 响应。
+- 历史和记忆保存与 Checkpoint 一样，使用相邻的 `*.lock` 目录拒绝并发写入。崩溃进程可能留下过期锁；**仅在确认没有活动写入者后才能删除**。加载过或已保存的文件会在锁内进行版本比对与替换，防止旧版本覆盖新数据。首次写入另一个目标位置时不存在先前版本，按设计会直接替换该目标。更新共享历史/记忆文件前，应用应先调用 `load()`，或自行协调首次写入。
+- 外部用户提供的 C++ 模型或进程内 MCP 工具回调，无法通过 `std::future` 或终止线程安全地强制停止。严格截止时间应使用受监管的独立操作系统进程，并设置可执行的终止与资源限制。内置 myMcpTools HTTP 传输有网络读取超时；固定版本的 stdio 传输已经为不合作的子进程设置有限截止时间。
 
 
 ## P0/P1 MCP 硬截止时间与严格进程隔离（2026-11-01）
