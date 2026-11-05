@@ -287,6 +287,20 @@ public:
     input_handler_ = std::move(handler);
     capabilities_["elicitation"] = json::object{{"form", json::object{}}};
   }
+  // 专用 MRTR 回调：只有宿主配置对应能力后才向服务端声明。
+  // 回调在请求线程执行；sampling 必须经宿主授权，不能默认发起付费模型请求。
+  void on_sampling(std::function<Json(const Json&)> handler) {
+    sampling_handler_ = std::move(handler);
+    capabilities_["sampling"] = json::object{};
+  }
+  void on_elicitation(std::function<Json(const Json&)> handler) {
+    elicitation_handler_ = std::move(handler);
+    capabilities_["elicitation"] = json::object{{"form", json::object{}}, {"url", json::object{}}};
+  }
+  void on_roots(std::function<Json(const Json&)> handler) {
+    roots_handler_ = std::move(handler);
+    capabilities_["roots"] = json::object{};
+  }
 private:
   std::function<Json(const Json&)> send_;
   std::function<Json(const Json&, const RequestOptions&)> send_bounded_;
@@ -305,6 +319,9 @@ private:
   bool requires_oauth_refresh_ = false; // OAuth token acquisition currently has separate I/O.
   bool has_untrusted_callback_ = false; // C++ notification callback may never return.
   std::function<Json(const Json&)> input_handler_;
+  std::function<Json(const Json&)> sampling_handler_;
+  std::function<Json(const Json&)> elicitation_handler_;
+  std::function<Json(const Json&)> roots_handler_;
 };
 
 } // namespace mymcp
