@@ -293,7 +293,10 @@ public:
   // The SDK retries the original request with inputResponses and the opaque requestState.
   void on_input_required(std::function<Json(const Json&)> handler) {
     input_handler_ = std::move(handler);
-    capabilities_["elicitation"] = json::object{{"form", json::object{}}};
+    Json cap = capabilities_.contains("elicitation") ? capabilities_["elicitation"] : Json(json::object{});
+    if (input_handler_) cap["form"] = json::object{};
+    else cap.erase("form");
+    capabilities_["elicitation"] = std::move(cap);
   }
   // MRTR 专项回调仅在显式注册后向服务端声明相应客户端能力。
   // handler 接收 inputRequest.params，返回该请求对应的 MCP 响应结果。
