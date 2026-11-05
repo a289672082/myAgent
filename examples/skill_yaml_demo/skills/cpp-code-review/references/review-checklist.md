@@ -1,6 +1,6 @@
-# Review checklist
+# 代码审查清单
 
-- CHECK_NULL_POINTERS: verify null checks before pointer dereferences.
-- Check array bounds and integer overflow.
-- Check resource ownership, RAII and error handling.
-- Only use approved tools; do not automatically execute scripts.
+- CHECK_NULL_POINTERS: 解引用指针前确认空指针检查。
+- 检查数组边界和整数溢出。
+- 检查资源所有权、RAII 和错误处理。
+- 只使用已获授权的工具，不自动执行脚本。
