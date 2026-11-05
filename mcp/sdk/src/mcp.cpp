@@ -272,7 +272,81 @@ std::optional<json::object> template_match(std::string_view pattern, std::string
     expressions.push_back(std::move(ex));
     pos = end;
   }
-  rx += '} // anonymous namespace
+  rx += '// 验证 prompt 声明字段，不允许重复名称或把非字符串值作为参数。
+void validate_prompt_arguments(const Json& arguments) {
+  if (!arguments.is_array()) throw std::invalid_argument("Prompt arguments must be an array");
+  std::set<std::string> names;
+  for (const auto& item : arguments.array_range()) {
+    if (!item.is_object() || !find(item, "name").is_string() ||
+        string_of(item, "name").empty() ||
+        (!find(item, "description").is_null() && !find(item, "description").is_string()) ||
+        (!find(item, "title").is_null() && !find(item, "title").is_string()) ||
+        (!find(item, "required").is_null() && !find(item, "required").is_bool()) ||
+        !names.insert(string_of(item, "name")).second)
+      throw std::invalid_argument("Invalid or duplicate MCP prompt argument");
+  }
+}
+void validate_prompt_values(const Json& arguments, const Json& supplied) {
+  if (!supplied.is_object()) throw Error(-32602, "Prompt arguments must be an object");
+  for (const auto& argument : arguments.array_range()) {
+    const auto name = string_of(argument, "name");
+    const Json& value = find(supplied, name);
+    if (value.is_null()) {
+      if (find(argument, "required") == true)
+        throw Error(-32602, "Missing required prompt argument: " + name);
+    } else if (!value.is_string()) throw Error(-32602, "Prompt arguments must be strings: " + name);
+  }
+  // 忽略未知参数以保持旧客户端互操作性，但不将其误认为已声明字段。
+}
+void validate_prompt_content(const Json& content) {
+  if (content.is_array()) {
+    if (content.empty()) throw Error(-32603, "Empty prompt content list");
+    for (const auto& item : content.array_range()) validate_prompt_content(item);
+    return;
+  }
+  if (!content.is_object()) throw Error(-32603, "Prompt content must be an object");
+  const auto type = string_of(content, "type");
+  if (type == "text") {
+    if (!find(content, "text").is_string()) throw Error(-32603, "Invalid prompt text");
+  } else if (type == "image" || type == "audio") {
+    if (!find(content, "data").is_string() || !find(content, "mimeType").is_string() ||
+        !decode_b64(string_of(content, "data")))
+      throw Error(-32603, "Invalid prompt binary content");
+  } else if (type == "resource") {
+    const auto& resource = find(content, "resource");
+    if (!resource.is_object() || !find(resource, "uri").is_string() ||
+        (find(resource, "text").is_string() == find(resource, "blob").is_string()) ||
+        (find(resource, "blob").is_string() && !decode_b64(string_of(resource, "blob"))))
+      throw Error(-32603, "Invalid embedded prompt resource");
+  } else if (type == "resource_link") {
+    if (!find(content, "uri").is_string() || !find(content, "name").is_string())
+      throw Error(-32603, "Invalid resource link");
+  } else throw Error(-32603, "Unknown prompt content type");
+}
+void validate_prompt_output(const Json& result) {
+  if (!result.is_object() || !find(result, "messages").is_array())
+    throw Error(-32603, "Prompt result requires messages array");
+  if (!find(result, "description").is_null() && !find(result, "description").is_string())
+    throw Error(-32603, "Invalid prompt result description");
+  for (const auto& message : find(result, "messages").array_range()) {
+    if (!message.is_object() ||
+        (string_of(message, "role") != "user" && string_of(message, "role") != "assistant"))
+      throw Error(-32603, "Invalid prompt message role");
+    validate_prompt_content(find(message, "content"));
+  }
+}
+void validate_resource_output(const Json& result) {
+  if (!result.is_object() || !find(result, "contents").is_array())
+    throw Error(-32603, "Resource result requires contents");
+  for (const auto& item : find(result, "contents").array_range()) {
+    if (!item.is_object() || !find(item, "uri").is_string() ||
+        (find(item, "text").is_string() == find(item, "blob").is_string()) ||
+        (!find(item, "mimeType").is_null() && !find(item, "mimeType").is_string()) ||
+        (find(item, "blob").is_string() && !decode_b64(string_of(item, "blob"))))
+      throw Error(-32603, "Invalid resource contents");
+  }
+}
+} // anonymous namespace
 
 namespace detail {
 Json make_tool_result(const Json& v) {
