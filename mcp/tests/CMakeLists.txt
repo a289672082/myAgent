@@ -120,3 +120,13 @@ add_executable(mymcp_baseline_features_tests test_baseline_features.cpp)
 target_link_libraries(mymcp_baseline_features_tests PRIVATE mymcp)
 add_test(NAME baseline_features COMMAND mymcp_baseline_features_tests)
 set_tests_properties(baseline_features PROPERTIES TIMEOUT 20)
+
+# 2026 Streamable HTTP 没有 Last-Event-ID；断线重连应使用全新的订阅请求。
+if(Python3_Interpreter_FOUND)
+  add_executable(mymcp_http_sse_reconnect_tests test_http_sse_reconnect.cpp)
+  target_link_libraries(mymcp_http_sse_reconnect_tests PRIVATE mymcp)
+  add_test(NAME http_sse_reconnect
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/http_sse_reconnect.py"
+      "$<TARGET_FILE:mymcp_http_sse_reconnect_tests>")
+  set_tests_properties(http_sse_reconnect PROPERTIES TIMEOUT 25)
+endif()
