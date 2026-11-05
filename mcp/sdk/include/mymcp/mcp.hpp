@@ -133,6 +133,10 @@ public:
   // 二进制资源：reader 返回原始字节，SDK 按 MCP 规范进行 Base64 编码并填充 blob。
   void resource_binary(std::string uri, std::string name, std::function<std::string()> reader,
                        std::string mime_type = "application/octet-stream");
+  // 兼容 vector<uint8_t> 读取器；底层仍使用原始字节与 Base64 blob。
+  void resource_binary(std::string uri, std::string name,
+                       std::function<std::vector<std::uint8_t>()> reader,
+                       std::string mime_type = "application/octet-stream");
   void prompt(std::string name, std::string description, std::function<std::string(const Json&)> reader);
   // Higher-level APIs preserve the full MCP JSON result representation.
   void resource_template(std::string uri_template, std::string name,
@@ -140,7 +144,7 @@ public:
                          std::string mime_type = "text/plain", std::string description = "");
   void prompt_full(std::string name, std::string description,
                    std::function<Json(const Json&)> handler,
-                   Json arguments = json::array{});
+                   Json arguments = json::array{}, Json result_schema = json::object{});
   // 使用 MCP 标准参数描述（name、description、required）校验请求与结果。
   // 所有 prompt_full 的参数描述和消息结果都经过运行时结构校验。
   void completion(std::function<Json(const Json&)> handler);
@@ -193,7 +197,8 @@ private:
   struct Tool { std::string description; Json schema; ToolHandler handler; bool with_context = false; bool requires_tasks = false; };
   struct Resource { std::string name; std::string mime; std::function<std::string()> reader; bool binary = false; };
   struct Prompt { std::string description; std::function<std::string(const Json&)> reader;
-                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{}; };
+                  std::function<Json(const Json&)> full_reader; Json arguments = json::array{};
+                  Json result_schema = json::object{}; };
   struct ResourceTemplate {
     std::string name, mime, description;
     std::function<Json(const std::string&, const Json&)> reader;
@@ -228,6 +233,12 @@ private:
   bool legacy_initialized_ = false;
 };
 
+// HTTP 长连接订阅的单帧限额、主动取消和总超时。
+struct ListenOptions {
+  std::chrono::milliseconds timeout{std::chrono::milliseconds(0)};
+  std::size_t max_frame_bytes = 4 * 1024 * 1024;
+  std::function<bool()> cancelled;
+};
 // 每次 MCP 请求的资源约束。响应字节数 0 表示 SDK 默认上限；超时默认 30 秒，显式 0 表示不设截止时间。
 // Cancel callback 必须能安全地由调用线程读取；不可信进程建议使用 process() 隔离。
 struct RequestOptions {
@@ -253,7 +264,8 @@ public:
                            std::function<void(const Json&)> on_notification = {});
   // Blocks while a long-lived HTTP subscription is open. Return false to disconnect.
   static void listen_http(const std::string& url, Json notifications,
-                          std::function<bool(const Json&)> on_event);
+                          std::function<bool(const Json&)> on_event,
+                          const ListenOptions& options = {});
   // SSE 断线后的有限次数重连；重新建立订阅，不保证离线期间事件回放。
   // 若 on_event 返回 false，则主动关闭且不重连。
   static void listen_http_resilient(const std::string& url, Json notifications,
@@ -268,6 +280,9 @@ public:
   Json discover(const RequestOptions& options = {});
   Json request(const std::string& method, Json params = json::object{},
                const RequestOptions& options = {});
+  // 只对指定的只读 HTTP 操作重试，不能自动重放工具等有副作用的方法。
+  Json request_readonly_retry(const std::string& method, Json params = json::object{},
+                              unsigned max_attempts = 2, const RequestOptions& options = {});
   Json request_with_progress(const std::string& method, Json params, Json progress_token);
   Json tools();
   // HTTP tools/call：首次调用先完整读取 tools/list 全部分页，
@@ -299,6 +314,15 @@ public:
   // 显式公布旧版 Sampling/Roots 能力（现代协议通过 MRTR 请求响应）。
   void enable_sampling() { capabilities_["sampling"] = json::object{}; }
   void enable_roots() { capabilities_["roots"] = json::object{}; }
+  // 仅在应用确实能够响应对应类型时才宣告能力。
+  void enable_mrtr_capabilities(bool url_elicitation, bool sampling, bool roots) {
+    if (url_elicitation) {
+      if (!capabilities_.contains("elicitation")) capabilities_["elicitation"] = json::object{};
+      capabilities_["elicitation"]["url"] = json::object{};
+    }
+    if (sampling) enable_sampling();
+    if (roots) enable_roots();
+  }
 private:
   std::function<Json(const Json&)> send_;
   std::function<Json(const Json&, const RequestOptions&)> send_bounded_;
