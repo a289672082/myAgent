@@ -40,7 +40,7 @@ int main(){
     response.set_chunked_content_provider("text/event-stream",
       [](std::size_t,httplib::DataSink& sink) {
         static constexpr char frame[]=
-          "data: {\\"jsonrpc\\":\\"2.0\\",\\"method\\":\\"notifications/tools/list_changed\\"}\\r\\n\\r\\n";
+          "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\r\n\r\n";
         sink.write(frame,sizeof(frame)-1);
         sink.done();
         return false;
