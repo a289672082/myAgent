@@ -297,6 +297,14 @@ public:
   }
   // MRTR 专项回调仅在显式注册后向服务端声明相应客户端能力。
   // handler 接收 inputRequest.params，返回该请求对应的 MCP 响应结果。
+  // URL 模式的征询单独显式授权，不与 form 数据征询混用。
+  void on_elicitation_url(std::function<Json(const Json&)> handler) {
+    elicitation_url_handler_ = std::move(handler);
+    Json cap = capabilities_.contains("elicitation") ? capabilities_["elicitation"] : Json(json::object{});
+    if (elicitation_url_handler_) cap["url"] = json::object{};
+    else cap.erase("url");
+    capabilities_["elicitation"] = std::move(cap);
+  }
   void on_sampling(std::function<Json(const Json&)> handler) {
     sampling_handler_ = std::move(handler);
     if (sampling_handler_) capabilities_["sampling"] = json::object{};
@@ -325,6 +333,7 @@ private:
   bool requires_oauth_refresh_ = false; // OAuth token acquisition currently has separate I/O.
   bool has_untrusted_callback_ = false; // C++ notification callback may never return.
   std::function<Json(const Json&)> input_handler_;
+  std::function<Json(const Json&)> elicitation_url_handler_;
   std::function<Json(const Json&)> sampling_handler_;
   std::function<Json(const Json&)> roots_handler_;
 };
