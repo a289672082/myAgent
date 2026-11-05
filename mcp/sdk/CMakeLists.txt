@@ -18,7 +18,7 @@ foreach(path IN ITEMS
     message(FATAL_ERROR "Missing embedded MCP source: ${path}")
   endif()
 endforeach()
-add_library(mymcp STATIC src/mcp.cpp src/schema.cpp src/oauth.cpp src/oauth_client.cpp)
+add_library(mymcp STATIC src/mcp.cpp src/schema.cpp src/oauth.cpp src/oauth_client.cpp src/uri_template.cpp)
 add_library(mymcp::mymcp ALIAS mymcp)
 target_include_directories(mymcp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
