@@ -3,8 +3,11 @@
   <!-- VS2022 原生工程的公共属性。所有代码均由 MSVC / MSBuild 编译，不调用 CMake/cmd/NMake。 -->
   <PropertyGroup>
     <NativeRoot>$(MSBuildThisFileDirectory)..\</NativeRoot>
-    <!-- 可在 VS 属性管理器中修改 OpenSslRoot；CI 的 OpenSSL 默认安装于以下位置。 -->
+    <!-- 优先尊重用户属性 / 环境变量，并自动识别常见 OpenSSL x64 安装目录。 -->
     <OpenSslRoot Condition="'$(OpenSslRoot)' == '' and '$(OPENSSL_ROOT_DIR)' != ''">$(OPENSSL_ROOT_DIR)</OpenSslRoot>
+    <OpenSslRoot Condition="'$(OpenSslRoot)' == '' and Exists('C:\Program Files\OpenSSL\include\openssl\ssl.h')">C:\Program Files\OpenSSL</OpenSslRoot>
+    <OpenSslRoot Condition="'$(OpenSslRoot)' == '' and Exists('C:\Program Files\OpenSSL-Win64\include\openssl\ssl.h')">C:\Program Files\OpenSSL-Win64</OpenSslRoot>
+    <OpenSslRoot Condition="'$(OpenSslRoot)' == '' and Exists('C:\OpenSSL-Win64\include\openssl\ssl.h')">C:\OpenSSL-Win64</OpenSslRoot>
     <OpenSslRoot Condition="'$(OpenSslRoot)' == ''">C:\Program Files\OpenSSL</OpenSslRoot>
     <OpenSslLibDir Condition="'$(Configuration)' == 'Debug'">$(OpenSslRoot)\lib\VC\x64\MDd</OpenSslLibDir>
     <OpenSslLibDir Condition="'$(Configuration)' != 'Debug'">$(OpenSslRoot)\lib\VC\x64\MD</OpenSslLibDir>
@@ -28,4 +31,22 @@
       <AdditionalDependencies>libssl.lib;libcrypto.lib;ws2_32.lib;crypt32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
+  <!-- 构建前就报告真正缺少的依赖，避免 100+ 条文件找不到的连锁错误。 -->
+  <!-- 独立 SDK 项目不强制依赖 FTXUI / yaml-cpp；只在实际需要的项目中检查它们。 -->
+  <Target Name="ValidateNativeBuildDependencies" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(MSBuildProjectName)' == 'yaml_cpp' and !Exists('$(NativeRoot)third_party\yaml-cpp\src\binary.cpp')"
+           Text="VS2022 依赖缺失：third_party/yaml-cpp 未包含源码。请通过支持 Git 子模块的客户端检出完整仓库（包含子模块），不要直接使用 GitHub Download ZIP。操作指南：vs2022/README.md。" />
+    <Error Condition="'$(MSBuildProjectName)' == 'yaml_cpp' and !Exists('$(NativeRoot)third_party\yaml-cpp\include\yaml-cpp\yaml.h')"
+           Text="VS2022 依赖缺失：找不到 third_party/yaml-cpp/include/yaml-cpp/yaml.h；请初始化 yaml-cpp 子模块。" />
+    <Error Condition="$(MSBuildProjectName.StartsWith('ftxui_')) and !Exists('$(NativeRoot)third_party\FTXUI\src\ftxui\screen\box.cpp')"
+           Text="VS2022 依赖缺失：third_party/FTXUI 未包含源码。请通过支持 Git 子模块的客户端检出完整仓库（包含子模块），不要直接使用 GitHub Download ZIP。操作指南：vs2022/README.md。" />
+    <Error Condition="$(MSBuildProjectName.StartsWith('ftxui_')) and !Exists('$(NativeRoot)third_party\FTXUI\include\ftxui\component\app.hpp')"
+           Text="VS2022 依赖缺失：找不到 third_party/FTXUI/include/ftxui/component/app.hpp；请初始化 FTXUI 子模块。" />
+    <Error Condition="!$(MSBuildProjectName.StartsWith('ftxui_')) and '$(MSBuildProjectName)' != 'yaml_cpp' and !Exists('$(OpenSslRoot)\include\openssl\ssl.h')"
+           Text="VS2022 OpenSSL 依赖缺失：找不到 $(OpenSslRoot)\include\openssl\ssl.h。请安装包含开发头文件与 MSVC x64 库的 OpenSSL，或在 vs2022/myAgent.Native.props 中设置 OpenSslRoot。" />
+    <Error Condition="!$(MSBuildProjectName.StartsWith('ftxui_')) and '$(MSBuildProjectName)' != 'yaml_cpp' and !Exists('$(OpenSslLibDir)\libssl.lib')"
+           Text="VS2022 OpenSSL 库缺失：找不到 $(OpenSslLibDir)\libssl.lib（$(Configuration)|$(Platform)）。请安装与配置匹配的 OpenSSL x64 开发库，或设置 OpenSslRoot。" />
+    <Error Condition="!$(MSBuildProjectName.StartsWith('ftxui_')) and '$(MSBuildProjectName)' != 'yaml_cpp' and !Exists('$(OpenSslLibDir)\libcrypto.lib')"
+           Text="VS2022 OpenSSL 库缺失：找不到 $(OpenSslLibDir)\libcrypto.lib（$(Configuration)|$(Platform)）。请确认 OpenSSL 安装包含对应的 MD/MDd 链接库。" />
+  </Target>
 </Project>
