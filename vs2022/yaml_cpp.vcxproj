@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion><ProjectGuid>{00000000-0000-4000-8000-000000000004}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword><RootNamespace>yaml_cpp</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <Import Project="myAgent.Native.props" />
+  <ItemGroup>
+    <ClCompile Include="..\third_party\yaml-cpp\src\binary.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\contrib\graphbuilder.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\contrib\graphbuilderadapter.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\convert.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\depthguard.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\directives.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\emit.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\emitfromevents.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\emitter.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\emitterstate.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\emitterutils.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\exceptions.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\exp.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\fptostring.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\memory.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\node.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\node_data.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\nodebuilder.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\nodeevents.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\null.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\ostream_wrapper.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\parse.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\parser.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\regex_yaml.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\scanner.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\scanscalar.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\scantag.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\scantoken.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\simplekey.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\singledocparser.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\stream.cpp" />
+    <ClCompile Include="..\third_party\yaml-cpp\src\tag.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

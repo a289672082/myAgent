@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion><ProjectGuid>{00000000-0000-4000-8000-000000000002}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword><RootNamespace>ftxui_dom</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <Import Project="myAgent.Native.props" />
+  <ItemDefinitionGroup><ClCompile><PreprocessorDefinitions>IS_FTXUI_DOM_IMPL=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile></ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\automerge.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\selection_style.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\blink.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\bold.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\border.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\box_helper.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\canvas.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\clear_under.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\color.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\composite_decorator.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\dbox.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\dim.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\flex.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\flexbox.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\flexbox_config.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\flexbox_helper.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\focus.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\frame.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\gauge.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\graph.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\gridbox.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\hbox.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\hyperlink.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\inverted.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\italic.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\linear_gradient.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\node.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\node_decorator.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\paragraph.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\reflect.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\scroll_indicator.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\selection.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\separator.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\size.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\spinner.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\strikethrough.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\table.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\text.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\underlined.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\underlined_double.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\util.cpp" />
+    <ClCompile Include="..\third_party\FTXUI\src\ftxui\dom\vbox.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="ftxui_screen.vcxproj"><Project>{00000000-0000-4000-8000-000000000001}</Project><LinkLibraryDependencies>true</LinkLibraryDependencies></ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
