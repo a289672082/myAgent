@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $missing = Join-Path $env:RUNNER_TEMP "myagent-no-submodules"
-          $output = & msbuild .\\vs2022\\ftxui_screen.vcxproj /t:ValidateNativeBuildDependencies /p:Configuration=Release /p:Platform=x64 "/p:NativeRoot=$missing\\" /nologo /v:minimal 2>&1 | Out-String
+          $output = & msbuild .\\vs2022\\ftxui_screen.vcxproj /t:ValidateNativeBuildDependencies /p:Configuration=Release /p:Platform=x64 "/p:NativeRoot=$missing" /nologo /v:minimal 2>&1 | Out-String
           if ($LASTEXITCODE -eq 0) { throw "Missing native FTXUI submodule was not detected" }
           if ($output -notmatch "FTXUI") { throw "Expected FTXUI preflight message, got: $output" }
       - name: Build native MCP demo project directly from its vcxproj
