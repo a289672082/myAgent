@@ -4,6 +4,7 @@
 #include "session.hpp"
 #include "httplib.h"
 #include <chrono>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -94,39 +95,110 @@ int main() {
           "Chat after /new failed");
     check(model->requests==3 && tool_approvals==0,
           "Extra model or unauthorized MCP execution observed");
+    // 模拟服务端先发送首个 SSE token，待客户端收到后才发送结束事件。
+    // 旧测试用 set_content 一次返回全部内容，无法识别“只在结束后显示”的回归。
     httplib::Server server;
-    std::string received;
+    std::string received,chat_received;
+    std::atomic_bool first_delta_seen{false},responses_finished{false},responses_live{false};
+    std::atomic_bool chat_first_seen{false},chat_finished{false},chat_live{false};
     server.Post("/v1/responses",[&](const httplib::Request& req,httplib::Response& res) {
       received=req.body;
-      res.set_content("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n"
-        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}]}}\n\n", "text/event-stream");
+      res.set_header("X-Accel-Buffering","no");
+      res.set_chunked_content_provider("text/event-stream",
+        [&](std::size_t,httplib::DataSink& sink) {
+          static constexpr char first[]=
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n";
+          if(!sink.write(first,sizeof(first)-1))return false;
+          for(int i=0;i<200&&!first_delta_seen.load();++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          responses_finished=true;
+          static constexpr char last[]=
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}]}}\n\n";
+          sink.write(last,sizeof(last)-1);
+          sink.done();
+          return false;
+        });
+    });
+    server.Post("/v1/chat/completions",[&](const httplib::Request& req,httplib::Response& res) {
+      chat_received=req.body;
+      res.set_header("X-Accel-Buffering","no");
+      res.set_chunked_content_provider("text/event-stream",
+        [&](std::size_t,httplib::DataSink& sink) {
+          static constexpr char first[]=
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Chat \"},\"finish_reason\":null}]}\n\n";
+          if(!sink.write(first,sizeof(first)-1))return false;
+          for(int i=0;i<200&&!chat_first_seen.load();++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          chat_finished=true;
+          static constexpr char last[]=
+            "data: {\"choices\":[{\"delta\":{\"content\":\"live\"},\"finish_reason\":\"stop\"}]}\n\n"
+            "data: [DONE]\n\n";
+          sink.write(last,sizeof(last)-1);
+          sink.done();
+          return false;
+        });
     });
     const int port=server.bind_to_any_port("127.0.0.1");
     check(port>0,"could not bind test server");
     std::jthread listener([&]{server.listen_after_bind();});
-    for(int i=0;i<200 && !server.is_running();++i)std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for(int i=0;i<200 && !server.is_running();++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto origin="http://127.0.0.1:"+std::to_string(port);
     myagent_console::ConsoleSession http_session({},dir.path/"http-config.json");
     http_session.set_api_key("TEST-LOG-SECRET");
-    check(http_session.handle("/baseurl http://127.0.0.1:"+std::to_string(port)).kind==myagent_console::CommandKind::Info,"test base URL rejected");
-    const auto http_result=http_session.chat("HTTP test",[](const auto&,const auto&){},
-      [](const auto&){return false;},[](const auto&){},[]{return false;});
+    check(http_session.handle("/baseurl "+origin).kind==myagent_console::CommandKind::Info,
+          "test base URL rejected");
+    const auto http_result=http_session.chat("HTTP test",
+      [&](const auto& phase,const auto& delta) {
+        if(phase=="react"&&delta=="OK") {
+          responses_live=!responses_finished.load();
+          first_delta_seen=true;
+        }
+      },[](const auto&){return false;},[](const auto&){},[]{return false;});
+    check(http_result.status==myagent::LoopStatus::Completed && http_result.answer=="OK",
+          "Responses HTTP stream failed");
+    check(responses_live.load(),
+          "Responses delta was not delivered until after SSE response completed");
+
+    myagent_console::ConsoleSession chat_session({},dir.path/"chat-config.json");
+    chat_session.set_api_key("TEST-LOG-SECRET");
+    check(chat_session.handle("/baseurl "+origin).kind==myagent_console::CommandKind::Info,
+          "Chat test base URL rejected");
+    check(chat_session.handle("/protocol chat").kind==myagent_console::CommandKind::Info,
+          "Chat protocol selection failed");
+    const auto chat_result=chat_session.chat("Chat HTTP stream",
+      [&](const auto& phase,const auto& delta) {
+        if(phase=="react"&&delta=="Chat ") {
+          chat_live=!chat_finished.load();
+          chat_first_seen=true;
+        }
+      },[](const auto&){return false;},[](const auto&){},[]{return false;});
     server.stop();listener.join();
-    check(http_result.status==myagent::LoopStatus::Completed,"HTTP test failed");
+    check(chat_result.status==myagent::LoopStatus::Completed && chat_result.answer=="Chat live",
+          "Chat Completions HTTP stream failed");
+    check(chat_live.load(),
+          "Chat Completions delta was not delivered until after SSE response completed");
+    check(mymcp::json::parse(received).at("stream").as_bool(),
+          "Responses request did not enable stream");
+    check(mymcp::json::parse(chat_received).at("stream").as_bool(),
+          "Chat request did not enable stream");
     std::ifstream log(dir.path/"myagent_console.log",std::ios::binary);
-    std::string line; bool request_seen=false,response_seen=false;
+    std::string line; bool request_seen=false,chat_request_seen=false,response_seen=false;
     while(std::getline(log,line)) {
       const auto record=mymcp::json::parse(line);
       const auto event=std::string(record.at("event").as_string());
       if(event=="request") {
-        check(mymcp::json::serialize(record.at("data"))==mymcp::json::serialize(mymcp::json::parse(received)),"logged request differs from HTTP body");
-        request_seen=true;
+        const auto logged=mymcp::json::serialize(record.at("data"));
+        if(logged==mymcp::json::serialize(mymcp::json::parse(received)))request_seen=true;
+        if(logged==mymcp::json::serialize(mymcp::json::parse(chat_received)))chat_request_seen=true;
       } else if(event=="response" && record.at("data").contains("type") &&
                 std::string(record.at("data").at("type").as_string())=="response.completed")response_seen=true;
       check(line.find("TEST-LOG-SECRET")==std::string::npos,"API Key exposed in log");
     }
-    check(request_seen && response_seen,"HTTP JSON request or response missing from log");
+    check(request_seen && chat_request_seen && response_seen,
+          "HTTP JSON request or response missing from log");
 
-    std::cout<<"myagent_console_chat: offline multi-turn, history reset and SDK API OK\n";
+    std::cout<<"myagent_console_chat: offline history and real-time Responses/Chat SSE OK\n";
     return 0;
   }catch(const std::exception& e) {
     std::cerr<<"myagent_console_chat failed: "<<e.what()<<'\n';

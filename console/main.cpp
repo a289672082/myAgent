@@ -80,6 +80,18 @@ std::string visible(std::string text,std::size_t limit=24*1024) {
   return text;
 }
 
+// 长回复只在正在流式生成时展示最新部分，避免超过上限后屏幕永远停在开头。
+std::string visible_latest(std::string value,std::size_t limit=24*1024) {
+  if(value.size()>limit) {
+    std::size_t start=value.size()-limit;
+    // 不从 UTF-8 多字节字符中间截断，保持 FTXUI 中文显示正确。
+    while(start<value.size() &&
+          (static_cast<unsigned char>(value[start])&0xc0)==0x80)++start;
+    value="[前文已省略，实时显示最新内容]\n"+value.substr(start);
+  }
+  return visible(std::move(value),limit+128);
+}
+
 std::string label(Role role) {
   switch(role) {
     case Role::System:return "• System";
@@ -138,7 +150,12 @@ class ConsoleApp {
         "输入任务并回车；使用 /help 查看命令。MCP 工具默认需要人工审批。"
         "\nAPI Key、模型和地址会保存到用户配置；配置修改会重置对话。");
 
-    auto mark_dirty=[&]() {app.PostEvent(Event::Custom);};
+    // 合并密集 token 引发的重绘事件：每轮 UI 仅保留一个待处理刷新。
+    // 否则大量 SSE 片段会堆积完整布局计算，最后看起来像一次性输出。
+    auto mark_dirty=[&]() {
+      if(!redraw_queued_.exchange(true,std::memory_order_acq_rel))
+        app.PostEvent(Event::Custom);
+    };
 
     std::function<void()> send_input;
     std::function<void()> send_key;
@@ -183,6 +200,7 @@ class ConsoleApp {
       {
         std::lock_guard lock(ui_mutex_);
         stream_.clear();
+        stream_chunks_=0;
         activity_="正在请求模型...";
       }
       history_.push_back(command.message);
@@ -199,7 +217,16 @@ class ConsoleApp {
               (void)phase;
               {
                 std::lock_guard lock(ui_mutex_);
-                if(stream_.size()<100*1024)stream_+=chunk;
+                // 使用滑动窗口保存最新文本，长回复也不会在固定字节数后停止更新。
+                // 达到 96 KiB 时回收旧内容至 64 KiB，减少每个 token 的内存搬移。
+                stream_+=chunk;
+                if(stream_.size()>96*1024) {
+                  std::size_t trim=stream_.size()-64*1024;
+                  while(trim<stream_.size() &&
+                        (static_cast<unsigned char>(stream_[trim])&0xc0)==0x80)++trim;
+                  stream_.erase(0,trim);
+                }
+                ++stream_chunks_;
               }
               mark_dirty();
             },
@@ -230,23 +257,34 @@ class ConsoleApp {
             },
             [&]() {return cancelled_.load();}
           );
+          std::string incomplete_stream;
           {
             std::lock_guard lock(ui_mutex_);
+            if(outcome.status!=myagent::LoopStatus::Completed)
+              incomplete_stream=std::move(stream_);
             stream_.clear();
+            stream_chunks_=0;
             activity_.clear();
           }
-          // 不将失败状态误表示为已完成；用户可以看见具体的 Loop 错误。
+          // 网络失败或取消后保留已收到的增量文本，便于诊断断流问题。
+          if(!incomplete_stream.empty())
+            add(Role::Assistant,"（未完成的流式输出）\n"+incomplete_stream);
           if(outcome.status==myagent::LoopStatus::Completed)
             add(Role::Assistant,outcome.answer.empty()?"（模型未返回正文）":outcome.answer);
           else
             add(Role::Error,"任务未完成：" +
                 (outcome.error.empty()?std::string("Loop 状态异常"):outcome.error));
         } catch(const std::exception& e) {
+          std::string incomplete_stream;
           {
             std::lock_guard lock(ui_mutex_);
+            incomplete_stream=std::move(stream_);
             stream_.clear();
+            stream_chunks_=0;
             activity_.clear();
           }
+          if(!incomplete_stream.empty())
+            add(Role::Assistant,"（未完成的流式输出）\n"+incomplete_stream);
           add(Role::Error,std::string("请求失败：")+e.what());
         }
         busy_=false;
@@ -270,11 +308,13 @@ class ConsoleApp {
     auto display=Renderer(input_tabs,[&]() -> Element {
       std::deque<Entry> snapshot;
       std::string partial,activity;
+      std::size_t stream_chunks=0;
       {
         std::lock_guard lock(ui_mutex_);
         snapshot=entries_;
         partial=stream_;
         activity=activity_;
+        stream_chunks=stream_chunks_;
       }
       std::vector<Element> log;
       log.reserve(snapshot.size()+4);
@@ -287,8 +327,8 @@ class ConsoleApp {
       }
       if(!partial.empty()) {
         log.push_back(vbox({
-          text("• myAgent · streaming")|bold|color(Color::Green),
-          paragraph(visible(std::move(partial)))
+          text("• myAgent · 实时输出 ("+std::to_string(stream_chunks)+" 段)")|bold|color(Color::Green),
+          paragraph(visible_latest(std::move(partial)))
         }));
       }
       if(log.empty())log.push_back(text("开始一段对话。"));
@@ -362,6 +402,11 @@ class ConsoleApp {
     });
 
     auto root=CatchEvent(display,[&](Event event) {
+      if(event==Event::Custom) {
+        // 主线程已取出一次刷新请求；后续 SSE 片段现在可以再次发起刷新。
+        redraw_queued_.store(false,std::memory_order_release);
+        return false;
+      }
       if(event==Event::CtrlC) {
         const auto selected=app.GetSelection();
         if(!selected.empty()) {
@@ -468,6 +513,8 @@ class ConsoleApp {
   std::mutex ui_mutex_;
   std::deque<Entry> entries_;
   std::string stream_,activity_;
+  std::size_t stream_chunks_=0; // 由 ui_mutex_ 保护，仅用于实时显示进度。
+  std::atomic_bool redraw_queued_{false};
   std::vector<std::string> history_;
   std::atomic_bool busy_{false},cancelled_{false};
   ApprovalGate approval_;

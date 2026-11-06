@@ -80,6 +80,24 @@ ctest --test-dir build-sdk-tests -C Debug --output-on-failure
 模型 HTTP JSON 自动追加到程序当前工作目录的 `myagent_console.log`；每行 JSON 包含 `event`（`request` 或 `response`）和 `data`（原始 JSON 正文）。流式响应按服务端 SSE JSON 事件逐条记录。请求头和 API Key 不会主动记录；日志可能包含完整上下文、工具数据和服务端返回的敏感内容，请妥善保管。
 用户修改的 Key、Base URL 和模型会自动保存并在下次启动时加载；Windows 下配置位于 `%APPDATA%\myAgent\console.json`，Key 使用当前 Windows 用户的 DPAPI 加密。其他系统将配置放在用户配置目录，Key 以明文存储并限制配置目录和文件权限。直接输入 Key 时，输入框中会显示明文。远端 MCP HTTP 只能用 HTTPS；
 Bearer Token 只从环境变量获取。默认每次 MCP 工具调用都需在界面确认。
+## 对话流式显示与排查
+
+当模型端使用 SSE 增量返回正文时，FTXUI 会在对话区域实时显示“myAgent · 实时输出（N 段）”，
+每收到文本增量就更新内容。大量短分片会合并 UI 重绘事件，避免刷新队列积压；
+输出超过单屏展示上限后会显示最新部分（不会一直停在旧文本）。
+模型或网络中途失败时，已经收到的内容会以“未完成的流式输出”保留在聊天区域。
+
+如果仍然只有等待回复结束才能看到正文，可以先检查工作目录中的 `myagent_console.log`：
+`request.data.stream` 应为 `true`；Responses 模式应收到
+`response.output_text.delta`，Chat Completions 模式应收到
+`choices[].delta.content`。如果日志里的 SSE 增量也只能在请求结束时集中出现，
+需要检查模型服务、HTTP 网关、反向代理是否缓冲了 SSE；本地终端无法从未到达的网络数据中恢复实时输出。
+部分自定义模型不支持增量接口，SDK 对这类模型不会伪造流式结果。
+
+可在 Visual Studio 2022 中右键生成并运行 `myagent_console_chat_tests`，
+该离线测试使用本机 HTTP 模拟服务器分两批发送 SSE，验证结束前即可收到首个正文增量，
+分别覆盖 Responses 与 Chat Completions，无需真实模型 API Key。
+
 斜杠命令候选可用上下方向键选择，按 Tab 或 Enter 补全。
 对话区域可使用鼠标滚轮或 Page Up / Page Down 浏览；滚回底部或发送新消息后自动跟随新内容。
 在 Windows 中选中文本后按 Ctrl+C 复制；没有选区时，Ctrl+C 清空输入或取消正在执行的任务，Ctrl+D 或 /exit 退出。Windows Terminal 也支持按住 Shift 选择终端文本，再使用 Ctrl+Shift+C 复制。
