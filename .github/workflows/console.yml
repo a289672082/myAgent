@@ -2,9 +2,9 @@ name: Console entry (pinned local FTXUI)
 on:
   push:
     branches: [main]
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   pull_request:
-    paths: ['CMakeLists.txt', 'CMakePresets.json', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
+    paths: ['CMakeLists.txt', 'CMakePresets.json', 'myAgent.sln', 'vs2022/**', 'console/**', 'sdk/**', 'tools/**', 'mcp_servers/**', 'mcp/**', 'third_party/FTXUI', '.gitmodules', '.github/workflows/console.yml']
   workflow_dispatch:
 concurrency:
   group: myagent-console-${{ github.event.pull_request.number || github.ref }}
@@ -32,6 +32,10 @@ jobs:
           submodules: recursive
       - name: Enable VS2022 MSBuild
         uses: microsoft/setup-msbuild@v2
+      - name: Build checked-in native MSBuild C++ console (no CMake or NMake)
+        run: msbuild .\\vs2022\\myAgentConsole.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:2 /nologo /v:minimal
+      - name: Build native MCP demo project directly from its vcxproj
+        run: msbuild .\\vs2022\\run_resources_demo.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:2 /nologo /v:minimal
       - name: Generate VS2022 native solution using the checked-in CMake preset
         run: |
           cmake --preset vs2022-console -DFETCHCONTENT_FULLY_DISCONNECTED=ON
