@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- VS2022 原生工程的公共属性。所有代码均由 MSVC / MSBuild 编译，不调用 CMake/cmd/NMake。 -->
+  <PropertyGroup>
+    <NativeRoot>$(MSBuildThisFileDirectory)..\</NativeRoot>
+    <!-- 可在 VS 属性管理器中修改 OpenSslRoot；CI 的 OpenSSL 默认安装于以下位置。 -->
+    <OpenSslRoot Condition="'$(OpenSslRoot)' == '' and '$(OPENSSL_ROOT_DIR)' != ''">$(OPENSSL_ROOT_DIR)</OpenSslRoot>
+    <OpenSslRoot Condition="'$(OpenSslRoot)' == ''">C:\Program Files\OpenSSL</OpenSslRoot>
+    <OpenSslLibDir Condition="'$(Configuration)' == 'Debug'">$(OpenSslRoot)\lib\VC\x64\MDd</OpenSslLibDir>
+    <OpenSslLibDir Condition="'$(Configuration)' != 'Debug'">$(OpenSslRoot)\lib\VC\x64\MD</OpenSslLibDir>
+    <OutDir>$(NativeRoot)build-vs2022\native-msbuild\$(Configuration)\bin\</OutDir>
+    <IntDir>$(NativeRoot)build-vs2022\native-msbuild\$(Configuration)\obj\$(MSBuildProjectName)\</IntDir>
+    <TargetExt Condition="'$(ConfigurationType)' == 'StaticLibrary'">.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ConformanceMode>true</ConformanceMode>
+      <WarningLevel>Level3</WarningLevel>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(NativeRoot)sdk\include;$(NativeRoot)mcp\sdk\include;$(NativeRoot)mcp\third_party\jsoncons\include;$(NativeRoot)mcp\third_party\cpp-httplib;$(NativeRoot)third_party\yaml-cpp\include;$(NativeRoot)third_party\yaml-cpp\src;$(NativeRoot)third_party\FTXUI\include;$(NativeRoot)third_party\FTXUI\src;$(NativeRoot)tools\developer_tools\include;$(NativeRoot)console;$(OpenSslRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>CPPHTTPLIB_OPENSSL_SUPPORT;YAML_CPP_STATIC_DEFINE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalLibraryDirectories>$(OpenSslLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libssl.lib;libcrypto.lib;ws2_32.lib;crypt32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

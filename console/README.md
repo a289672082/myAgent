@@ -3,7 +3,19 @@
 根 `CMakeLists.txt` 默认构建控制台；`sdk/` 是可独立编译和链接的通用库，
 `examples/` 和 `tests/` 是独立模块。界面只是 Codex 风格测试 TUI，不是 Codex 本体。
 
-## 构建
+## Visual Studio 2022 原生工程（推荐，无需 CMD）
+
+1. 确保仓库的 Git 子模块 `third_party/FTXUI` 与 `third_party/yaml-cpp` 已获取，并安装 Visual Studio 2022 C++ 桌面开发工作负载、x64 OpenSSL。
+2. 在文件资源管理器中**双击根目录的 `myAgent.sln`**；选择 `Debug|x64`。
+3. 右键 `myAgentConsole` → **设为启动项目**；点击 **生成 → 生成解决方案**。
+4. 点击 **本地 Windows 调试器 / F5**。无需先打开 CMD、执行 `cmake`、`build.cmd` 或使用 NMake。
+
+所有原生 `.vcxproj` 随仓库维护，OpenSSL 默认位于 `C:\\Program Files\\OpenSSL`，
+路径不同时在 VS 属性管理器修改 `vs2022/myAgent.Native.props` 的 `OpenSslRoot`。
+选择独立 Agent/MCP Demo 后可右键**生成**，默认生成解决方案只编译核心库与控制台。
+完整说明见 [VS2022 原生工程指南](../vs2022/README.md)。
+
+## 其他平台与 CMake 构建
 
 将 FTXUI v7.0.3 固定作为 Git 子模块下载到 `third_party/FTXUI`：
 

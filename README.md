@@ -3,9 +3,18 @@
 仓库根目录默认构建 **myagent_console**（Codex 风格 FTXUI 终端交互应用），
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
-**Visual Studio 2022：** 使用 `cmake --preset vs2022-native-ide` 生成原生 C++ 解决方案，
-然后打开 `build-vs2022/project/myAgentConsole.sln`。控制台、SDK、依赖、示例和测试
-通过 Visual Studio 的 C++ 项目直接编译，生成文件位于 `build-vs2022/output/`。
+**Visual Studio 2022（无需 CMD/CMake 配置）：** 直接双击仓库根目录的
+[`myAgent.sln`](myAgent.sln)（已提交的原生 MSBuild C++ 解决方案），选择
+`Debug|x64` 或 `Release|x64`，右键 `myAgentConsole` 设为启动项目后点击
+**生成 → 生成解决方案** 或按 `Ctrl+Shift+B`，再按 `F5` 运行。
+`vs2022/*.vcxproj` 均是 MSVC 原生 `ClCompile` / `Link` 工程，
+**不包含 NMake、build.cmd、配置前置命令，也不调用 CMake**。
+Agent / MCP SDK、FTXUI、yaml-cpp、DeveloperTools、Console 和每个独立 Demo
+都作为 VS 项目展示（Demo 默认不参与全量构建，可右键单独生成）。
+本地输出位于 `build-vs2022/native-msbuild/`，具体依赖及 OpenSSL 配置参见
+[原生 VS2022 指南](vs2022/README.md)。
+原有 `CMakePresets.json` 仍保留供跨平台或需要生成额外工程的开发者选用，
+不是 Windows VS 用户的必需操作。
 
 ## 23 个开发工具：Agent / MCP 双重注册
 
