@@ -217,8 +217,15 @@ class ConsoleApp {
               (void)phase;
               {
                 std::lock_guard lock(ui_mutex_);
-                if(stream_.size()<100*1024)
-                  stream_.append(chunk,0,std::min(chunk.size(),100*1024-stream_.size()));
+                // 使用滑动窗口保存最新文本，长回复也不会在固定字节数后停止更新。
+                // 达到 96 KiB 时回收旧内容至 64 KiB，减少每个 token 的内存搬移。
+                stream_+=chunk;
+                if(stream_.size()>96*1024) {
+                  std::size_t trim=stream_.size()-64*1024;
+                  while(trim<stream_.size() &&
+                        (static_cast<unsigned char>(stream_[trim])&0xc0)==0x80)++trim;
+                  stream_.erase(0,trim);
+                }
                 ++stream_chunks_;
               }
               mark_dirty();
