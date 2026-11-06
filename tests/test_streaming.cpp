@@ -5,6 +5,7 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -26,15 +27,23 @@ static std::string chat_stream() {
 }
 int main() {
   httplib::Server server;
-  server.Post("/v1/responses",[](const httplib::Request& req,httplib::Response& res){
+  std::mutex received_mutex;
+  std::string received_body;
+  server.Post("/v1/responses",[&](const httplib::Request& req,httplib::Response& res){
+    {std::lock_guard lock(received_mutex);received_body=req.body;}
     const auto payload=j::parse(req.body);
     assert(payload.at("stream").as_bool());
     res.set_content(answer_stream(),"text/event-stream");
   });
-  server.Post("/v1/chat/completions",[](const httplib::Request& req,httplib::Response& res){
+  server.Post("/v1/chat/completions",[&](const httplib::Request& req,httplib::Response& res){
+    {std::lock_guard lock(received_mutex);received_body=req.body;}
     const auto payload=j::parse(req.body);
     assert(payload.at("stream").as_bool());
     res.set_content(chat_stream(),"text/event-stream");
+  });
+  server.Post("/auth/v1/responses",[](const httplib::Request&,httplib::Response& res){
+    res.status=401;
+    res.set_content(R"({"error":{"message":"bad key"}})","application/json");
   });
   const int port=server.bind_to_any_port("127.0.0.1");
   if(port<=0)throw std::runtime_error("Cannot bind SSE test server");
@@ -42,6 +51,19 @@ int main() {
   for(int i=0;i<200&&!server.is_running();++i)
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   try {
+    {
+      Config config;
+      config.api_key="placeholder";
+      config.base_url="http://127.0.0.1:"+std::to_string(port)+"/auth";
+      bool error_logged=false;
+      config.on_model_http_json=[&](std::string_view kind,const Json& data) {
+        if(kind=="response" && data.contains("error"))error_logged=true;
+      };
+      OpenAIResponses model(config);
+      try {model.create_stream(j::object{{"model","test"},{"input",j::array{}}},{},{});assert(false);}
+      catch(const std::runtime_error&) {}
+      assert(error_logged);
+    }
     for(const auto mode:{ModelProtocol::Responses,ModelProtocol::ChatCompletions}) {
       Config config;
       config.api_key="local-test-placeholder";
@@ -50,6 +72,12 @@ int main() {
       config.model_protocol=mode;
       config.auto_discover_skills=false;
       config.auto_skill_selection=false;
+      std::string observed_request;
+      unsigned response_events=0;
+      config.on_model_http_json=[&](std::string_view kind,const Json& value) {
+        if(kind=="request")observed_request=j::serialize(value);
+        else if(kind=="response")++response_events;
+      };
       Agent agent(config);
       std::string streamed;
       int deltas=0;
@@ -65,6 +93,9 @@ int main() {
       assert(deltas==2);
       assert(streamed==(mode==ModelProtocol::Responses?"Hello":"Chat SSE"));
       assert(result.answer==streamed);
+      {std::lock_guard lock(received_mutex);
+        assert(observed_request==j::serialize(j::parse(received_body)));}
+      assert(response_events>=3);
       if(mode==ModelProtocol::ChatCompletions)assert(result.usage.total_tokens==14);
 
       // 新 API 不能仅适用于 ReAct：验证普通 ask() 真实走 SSE 并接收到回调。

@@ -15,7 +15,10 @@
       "cacheVariables": {
         "MYAGENT_BUILD_CONSOLE": "ON",
         "MYAGENT_BUILD_EXAMPLES": "OFF",
-        "MYAGENT_BUILD_TESTS": "OFF"
+        "MYAGENT_BUILD_TESTS": "OFF",
+        "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-console/bin",
+        "CMAKE_ARCHIVE_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-console/lib",
+        "CMAKE_LIBRARY_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-console/lib"
       }
     },
     {
@@ -27,7 +30,29 @@
       "cacheVariables": {
         "MYAGENT_BUILD_CONSOLE": "OFF",
         "MYAGENT_BUILD_EXAMPLES": "ON",
-        "MYAGENT_BUILD_TESTS": "ON"
+        "MYAGENT_BUILD_TESTS": "ON",
+        "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-sdk-demos/bin",
+        "CMAKE_ARCHIVE_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-sdk-demos/lib",
+        "CMAKE_LIBRARY_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/native-sdk-demos/lib"
+      }
+    },
+    {
+      "name": "vs2022-native-ide",
+      "displayName": "VS2022 native C++ projects (x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build-vs2022/project",
+      "cacheVariables": {
+        "CMAKE_SUPPRESS_REGENERATION": "ON",
+        "MYAGENT_BUILD_CONSOLE": "ON",
+        "MYAGENT_BUILD_EXAMPLES": "ON",
+        "MYAGENT_BUILD_TESTS": "ON",
+        "MYAGENT_BUILD_MCP_EXAMPLES": "ON",
+        "MYAGENT_BUILD_MCP_TESTS": "ON",
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /utf-8",
+        "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/bin",
+        "CMAKE_ARCHIVE_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/lib",
+        "CMAKE_LIBRARY_OUTPUT_DIRECTORY": "${sourceDir}/build-vs2022/output/lib"
       }
     }
   ],

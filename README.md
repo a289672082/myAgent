@@ -3,10 +3,9 @@
 仓库根目录默认构建 **myagent_console**（Codex 风格 FTXUI 终端交互应用），
 SDK 头文件和源码位于 `sdk/`，与控制台代码/依赖完全隔离。
 
-**Visual Studio 2022：** 仓库根目录已包含 [myAgent.sln](myAgent.sln)。
-直接打开解决方案即可使用控制台、Agent SDK／示例／测试，以及 MCP SDK／示例／测试共七个项目（x64，Debug／Release）；
-控制台默认参与生成，并配置了 F5 调试路径。工程具体说明见 [vs2022/README.md](vs2022/README.md)。
-SDK/FTXUI 依赖由 CMake 统一构建，不维护第二套 MSVC 编译配置。
+**Visual Studio 2022：** 使用 `cmake --preset vs2022-native-ide` 生成原生 C++ 解决方案，
+然后打开 `build-vs2022/project/myAgentConsole.sln`。控制台、SDK、依赖、示例和测试
+通过 Visual Studio 的 C++ 项目直接编译，生成文件位于 `build-vs2022/output/`。
 
 ## 23 个开发工具：Agent / MCP 双重注册
 
@@ -1085,6 +1084,42 @@ ctest --test-dir build --output-on-failure -R "myagent_(conversation_callbacks|t
 回复、流式、工具、失败、多模态脱敏），以及
 `examples/run_team_conversation_callbacks_demo.cpp`（团队广播、任务 ID、
 后注册 Worker、协调器自动协作）。
+
+### 模型 HTTP JSON 回调
+
+对话生命周期回调提供用户消息和最终回复，不代表实际 HTTP 正文。要观察
+内置 `OpenAIResponses` 或 `ChatCompletionsModel` 发送的 JSON 正文和服务端返回的
+JSON，请在创建 `Agent` 之前设置 `Config::on_model_http_json`：
+
+```cpp
+myagent::Config config;
+config.base_url = "https://api.example.com";
+config.api_key = "YOUR_API_KEY"; // 实际使用时从安全存储读取
+config.on_model_http_json = [](std::string_view event, const myagent::Json& data) {
+  std::cout << myagent::json::serialize(myagent::json::object{
+    {"event", std::string(event)}, {"data", data}}) << '\n';
+};
+myagent::Agent agent(config);
+```
+
+`request` 是实际发送的 JSON：Chat Completions 已转换为 `messages` 格式，
+流式请求包含 `stream` 参数。`response` 是非流式 JSON 正文或每条 SSE JSON
+事件；若 HTTP 失败且正文是有效 JSON，也会提供该正文。网络错误、非 JSON 错误正文
+和 SSE 的 `[DONE]` 标记没有对应的 JSON 回调。回调不包含 HTTP 请求头、状态码或 URL，
+不能仅凭该事件判断 HTTP 是否成功。自定义 `Model` 需要自行实现类似观察逻辑。
+
+回调在发起请求或处理响应的线程中同步执行；与对话生命周期回调不同，
+HTTP JSON 回调抛出的异常会中断当前模型调用。重试、工具调用和上下文压缩可能
+产生多组请求及响应事件。JSON 可能含完整历史、工具参数和结果、图片数据或其他
+敏感信息；请求头不会主动记录，但调用方仍需控制访问和脱敏。控制台的
+`myagent_console.log` 采用每行一个 `event`/`data` JSON 对象的格式。
+
+离线运行 [HTTP JSON 回调示例](examples/run_model_http_json_demo.cpp)：
+
+```sh
+cmake --build build --target run_model_http_json_demo
+ctest --test-dir build --output-on-failure -R myagent_model_http_json_demo
+```
 
 
 ## 智能 Agent 路由（独立 AgentRouter）

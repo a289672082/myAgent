@@ -7,6 +7,7 @@
 #include <ftxui/component/component_options.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/dom/node.hpp>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -18,6 +19,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 using namespace ftxui;
@@ -25,6 +32,46 @@ using namespace myagent_console;
 
 enum class Role { System, User, Assistant, Error, Tool };
 struct Entry {Role role;std::string text;};
+
+#ifdef _WIN32
+class ConsoleInputMode {
+ public:
+  ConsoleInputMode() : handle_(GetStdHandle(STD_INPUT_HANDLE)) {
+    if(handle_!=INVALID_HANDLE_VALUE && GetConsoleMode(handle_,&original_))
+      changed_=SetConsoleMode(handle_,original_ & ~ENABLE_PROCESSED_INPUT)!=0;
+  }
+  ~ConsoleInputMode() {if(changed_)SetConsoleMode(handle_,original_);}
+  ConsoleInputMode(const ConsoleInputMode&)=delete;
+  ConsoleInputMode& operator=(const ConsoleInputMode&)=delete;
+ private:
+  HANDLE handle_;
+  DWORD original_=0;
+  bool changed_=false;
+};
+#endif
+
+bool copy_selection(const std::string& value) {
+#ifdef _WIN32
+  const int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value.data(),
+                                     static_cast<int>(value.size()),nullptr,0);
+  if(size<=0)return false;
+  HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(static_cast<size_t>(size)+1)*sizeof(wchar_t));
+  if(!memory)return false;
+  auto* text=static_cast<wchar_t*>(GlobalLock(memory));
+  if(!text) {GlobalFree(memory);return false;}
+  MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value.data(),
+                      static_cast<int>(value.size()),text,size);
+  text[size]=L'\0';GlobalUnlock(memory);
+  if(!OpenClipboard(nullptr)) {GlobalFree(memory);return false;}
+  const bool ok=EmptyClipboard() && SetClipboardData(CF_UNICODETEXT,memory);
+  CloseClipboard();
+  if(!ok)GlobalFree(memory);
+  return ok;
+#else
+  (void)value;
+  return false;
+#endif
+}
 
 std::string visible(std::string text,std::size_t limit=24*1024) {
   if(text.size()>limit)text=text.substr(0,limit)+"\n[内容已截断]";
@@ -73,6 +120,10 @@ class ConsoleApp {
     auto app=App::Fullscreen();
     app.ForceHandleCtrlC(false);
     std::string composer_text,password;
+    int composer_cursor=0;
+    int suggestion_index=-1;
+    int scroll_offset=0;
+    Element transcript_content;
     int tab=0; // 0=聊天输入；1=遮挡的 API Key 输入。
     bool approved_once=false;
     (void)approved_once;
@@ -85,7 +136,7 @@ class ConsoleApp {
     add(Role::System,
         "myAgent Console | Codex 风格测试客户端\n"
         "输入任务并回车；使用 /help 查看命令。MCP 工具默认需要人工审批。"
-        "\nAPI Key 不显示、不写入文件；配置修改会重置对话。");
+        "\nAPI Key、模型和地址会保存到用户配置；配置修改会重置对话。");
 
     auto mark_dirty=[&]() {app.PostEvent(Event::Custom);};
 
@@ -107,6 +158,7 @@ class ConsoleApp {
 
     send_input=[&]() {
       if(busy_.load() || tab!=0)return;
+      scroll_offset=0;
       auto line=std::move(composer_text);
       composer_text.clear();
       const auto command=session_.handle(line);
@@ -204,6 +256,8 @@ class ConsoleApp {
 
     InputOption composer_opts;
     composer_opts.multiline=false;
+    composer_opts.cursor_position=&composer_cursor;
+    composer_opts.on_change=[&]{suggestion_index=-1;};
     composer_opts.on_enter=[&]{send_input();};
     auto composer=Input(&composer_text,"输入消息或 /help",composer_opts);
     InputOption secret_opts;
@@ -238,8 +292,12 @@ class ConsoleApp {
         }));
       }
       if(log.empty())log.push_back(text("开始一段对话。"));
-      Element transcript=vbox(std::move(log))
-        | focusPositionRelative(0.0f,1.0f)
+      const int content_height=transcript_content?std::max(1,transcript_content->requirement().min_y):1;
+      auto content=vbox(std::move(log));
+      transcript_content=content;
+      Element transcript=(scroll_offset==0
+        ?content | focusPositionRelative(0.0f,1.0f)
+        :content | focusPosition(0,std::max(0,content_height-1-scroll_offset)))
         | vscroll_indicator | frame | flex;
 
       std::string status=
@@ -266,24 +324,27 @@ class ConsoleApp {
       } else {
         if(!activity.empty() && busy_.load())
           bottom.push_back(text("● "+activity)|color(Color::Yellow));
-        bottom.push_back(hbox({
-          text(tab==1?" API Key › ":" › ")|bold|color(Color::Cyan),
-          (tab==1?secret->Render():composer->Render())|flex
-        })|border);
         if(tab==0) {
           const auto matches=session_.suggestions(composer_text);
           if(composer_text.starts_with("/") && !matches.empty()) {
             std::vector<Element> hints;
-            for(const auto& command:matches)
-              hints.push_back(text(" "+command)|color(Color::GrayDark));
+            for(std::size_t i=0;i<matches.size();++i) {
+              const bool selected=static_cast<int>(i)==suggestion_index;
+              hints.push_back(text(std::string(selected?" › ":"   ")+matches[i]) |
+                              color(selected?Color::Cyan:Color::GrayDark));
+            }
             bottom.push_back(vbox(std::move(hints)));
           }
         }
+        bottom.push_back(hbox({
+          text(tab==1?" API Key › ":" › ")|bold|color(Color::Cyan),
+          (tab==1?secret->Render():composer->Render())|flex
+        })|border);
       }
       bottom.push_back(
         text(tab==1?"输入框已遮挡 · Esc 取消":
              busy_.load()?"Esc / Ctrl+C 取消任务":
-                          "Enter 发送 · /help 命令 · /permissions 设置工具审批 · Ctrl+D 退出")
+                          "Enter 发送 · ↑↓ 命令 · Tab 补全 · 滚轮/PgUp/PgDn 浏览 · Ctrl+D 退出")
         | color(Color::GrayDark)
       );
       bottom.push_back(text(status)|color(Color::GrayDark));
@@ -291,7 +352,7 @@ class ConsoleApp {
         hbox({
           text("  >_  myAgent Console")|bold|color(Color::Cyan),
           filler(),
-          text("C++20 · TEST CLIENT  ")|color(Color::GrayDark)
+          text("C++20 · by二狗  ")|color(Color::GrayDark)
         }),
         separator(),
         transcript,
@@ -301,6 +362,14 @@ class ConsoleApp {
     });
 
     auto root=CatchEvent(display,[&](Event event) {
+      if(event==Event::CtrlC) {
+        const auto selected=app.GetSelection();
+        if(!selected.empty()) {
+          if(!copy_selection(selected))
+            add(Role::Error,"复制失败；可按住 Shift 使用终端选择并复制。");
+          return true;
+        }
+      }
       if(event==Event::CtrlC || event==Event::Escape) {
         if(tab==1) {
           tab=0;
@@ -311,7 +380,13 @@ class ConsoleApp {
           approval_.respond(false);
           add(Role::System,"已请求取消当前任务；等待安全边界或网络超时。");
         } else if(event==Event::CtrlC) {
-          app.Exit();
+          if(!composer_text.empty()) {
+            composer_text.clear();
+            composer_cursor=0;
+            suggestion_index=-1;
+          } else {
+            add(Role::System,"退出请使用 Ctrl+D 或 /exit。");
+          }
         }
         return true;
       }
@@ -337,14 +412,50 @@ class ConsoleApp {
         }
         if(approval_.request)return true; // 审批期间禁止其它输入
       }
+      const bool scroll_up=event==Event::PageUp ||
+        (event.is_mouse() && event.mouse().button==Mouse::WheelUp);
+      const bool scroll_down=event==Event::PageDown ||
+        (event.is_mouse() && event.mouse().button==Mouse::WheelDown);
+      if(scroll_up || scroll_down) {
+        const int height=transcript_content?std::max(1,transcript_content->requirement().min_y):1;
+        const int step=event.is_mouse()?3:10;
+        scroll_offset=std::clamp(scroll_offset+(scroll_up?step:-step),0,height);
+        return true;
+      }
+      if(tab==0 && !busy_.load()) {
+        const auto matches=session_.suggestions(composer_text);
+        if(!matches.empty() && !(matches.size()==1 && matches[0]==composer_text)) {
+          if(event==Event::ArrowDown || event==Event::ArrowUp) {
+            const int count=static_cast<int>(matches.size());
+            if(suggestion_index<0)
+              suggestion_index=event==Event::ArrowDown?0:count-1;
+            else
+              suggestion_index=(suggestion_index+(event==Event::ArrowDown?1:count-1))%count;
+            return true;
+          }
+          if(event==Event::Tab || (event==Event::Return && suggestion_index>=0)) {
+            const int index=std::clamp(suggestion_index,0,static_cast<int>(matches.size())-1);
+            composer_text=matches[index];
+            composer_cursor=static_cast<int>(composer_text.size());
+            suggestion_index=-1;
+            return true;
+          }
+        }
+      }
       if(event==Event::ArrowUp && tab==0 && composer_text.empty() &&
          !busy_.load() && !history_.empty()) {
         composer_text=history_.back();
+        composer_cursor=static_cast<int>(composer_text.size());
         return true;
       }
       return false;
     });
 
+#ifdef _WIN32
+    // Let FTXUI receive Ctrl+C as input instead of a Windows CTRL_C_EVENT.
+    // Construct before Loop: FTXUI saves and later restores the mode it sees.
+    ConsoleInputMode input_mode;
+#endif
     app.Loop(root);
     cancelled_=true;
     approval_.respond(false);

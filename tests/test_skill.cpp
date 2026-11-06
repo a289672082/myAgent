@@ -58,6 +58,10 @@ int main() {
     "---\nname: code-review\ndescription: Alternate reviewer\n---\nDUPLICATE\n");
   fs::current_path(project);
 
+  // A malformed automatically discovered skill must not block valid skills.
+  write(project / ".claude" / "skills" / "bad-metadata" / "SKILL.md",
+    "---\nname: bad-metadata\ndescription: Bad metadata\nmetadata:\n  credits:\n    author: Test\n---\n");
+
   // Loading metadata does not eagerly read the full instructions.
   SkillLibrary library;
   library.load(project / ".agents" / "skills");
@@ -175,9 +179,10 @@ int main() {
   fs::remove_all(dynamic);
   agent.refresh_skills();
   try {agent.skills().get("new-skill");assert(false);}catch(const std::out_of_range&){}
-  // 校验失败必须回滚整个刷新，不可丢失已正常加载的 Skill。
+  // 自动发现时跳过无效 Skill，刷新后仍保留有效 Skill。
   write(dynamic / "SKILL.md","---\nname: new-skill\n---\nINVALID\n");
-  try {agent.refresh_skills();assert(false);}catch(const std::runtime_error&){}
+  agent.refresh_skills();
+  try {agent.skills().get("new-skill");assert(false);}catch(const std::out_of_range&){}
   assert(agent.skills().get("code-review").description=="Review C++ code for correctness");
   fs::remove_all(dynamic);
 

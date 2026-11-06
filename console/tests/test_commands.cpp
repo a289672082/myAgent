@@ -2,6 +2,9 @@
 // 不属于 SDK 测试，也不向 SDK 的公共头或链接依赖引入 console 模块。
 #include "session.hpp"
 #include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -16,15 +19,23 @@ bool is(ConsoleSession& session,std::string_view command,CommandKind expected) {
 }
 int main() {
   try {
-    ConsoleSession session;
+    const auto settings=std::filesystem::temp_directory_path()/
+      ("myagent-console-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))/"console.json";
+    ConsoleSession session({},settings);
     check(is(session,"/help",CommandKind::Info),"help failed");
     check(is(session,"/unknown",CommandKind::Error),"unknown command not rejected");
     check(is(session,"hello 你好",CommandKind::Send),"chat turn not forwarded");
     check(session.suggestions("/m").size()>0,"slash suggestion missing");
+    check(session.suggestions("/Mo")==session.suggestions("/mo"),"suggestions should ignore case");
+    check(is(session,"/HeLp",CommandKind::Info),"command should ignore case");
     check(is(session,"/apikey",CommandKind::SecretPrompt),
           "API Key must use masked editor");
-    check(is(session,"/apikey my-secret",CommandKind::Error),
-          "API Key must not be accepted as visible command argument");
+    const auto direct_key=session.handle("/apikey my-secret");
+    check(direct_key.kind==CommandKind::Info && session.has_credentials(),
+          "direct API Key was not accepted");
+    check(direct_key.message.find("my-secret")==std::string::npos &&
+          session.status().message.find("my-secret")==std::string::npos,
+          "direct API Key leaked in output");
     session.set_api_key("VERY-SECRET-DO-NOT-PRINT");
     check(session.has_credentials(),"API Key was not stored in memory");
     check(session.status().message.find("VERY-SECRET")==std::string::npos,
@@ -45,6 +56,18 @@ int main() {
     check(is(session,"/protocol responses",CommandKind::Info),"Responses protocol rejected");
     check(is(session,"/model test-model",CommandKind::Info),"model config rejected");
     check(session.config().model=="test-model","model config not applied");
+    session.set_api_key("persistence-test-key");
+    ConsoleSession reloaded({},settings);
+    check(reloaded.config().model=="test-model" && reloaded.config().base_url=="https://api.example.com/v1" &&
+          reloaded.config().api_key=="persistence-test-key","settings were not restored");
+#ifdef _WIN32
+    std::ifstream saved(settings,std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(saved)),{});
+    saved.close();
+    check(contents.find("persistence-test-key")==std::string::npos,"key was saved unencrypted");
+#endif
+    check(is(session,"/apikey clear",CommandKind::Info),"clear saved key failed");
+    check(!ConsoleSession({},settings).has_credentials(),"cleared key returned after restart");
     check(is(session,"/mode react",CommandKind::Info),"ReAct mode unavailable");
     check(is(session,"/mode rewoo",CommandKind::Info),"ReWOO mode unavailable");
     check(is(session,"/mode execute-verify-repair",CommandKind::Error),
@@ -82,6 +105,7 @@ int main() {
     check(is(session,"/clear",CommandKind::ClearView),"clear view failed");
     check(is(session,"/exit",CommandKind::Exit),"quit failed");
 
+    std::filesystem::remove_all(settings.parent_path());
     std::cout<<"myagent_console_commands: slash commands, token privacy, MCP, protocol OK\n";
     return 0;
   } catch(const std::exception& e) {

@@ -364,7 +364,7 @@ bool valid_skill_name(const std::string& name) {
 } // namespace
 
 void SkillLibrary::load_directory(const std::filesystem::path& directory,
-                                  bool ignore_duplicates) {
+                                  bool ignore_duplicates, bool skip_invalid) {
   if (!std::filesystem::is_directory(directory))
     throw std::invalid_argument("Skill directory does not exist: " + directory.string());
   std::vector<Skill> added;
@@ -372,6 +372,7 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
            directory, std::filesystem::directory_options::skip_permission_denied)) {
     if (entry.is_symlink() || !entry.is_regular_file() ||
         entry.path().filename() != "SKILL.md") continue;
+    try {
     const auto& path = entry.path();
     auto root = yaml_unique_map(read_frontmatter(path), path, "frontmatter");
     Skill skill;
@@ -430,9 +431,12 @@ void SkillLibrary::load_directory(const std::filesystem::path& directory,
       if (ignore_duplicates) continue; // Project Skill wins over a global Skill.
       throw skill_error(path, "duplicate Skill name '" + skill.name + "'");
     }
-    added.emplace_back(std::move(skill));
-    if (skills_.size() + added.size() > 64)
+    if (skills_.size() + added.size() >= 64)
       throw skill_error(path, "too many Skills (limit 64)");
+    added.emplace_back(std::move(skill));
+    } catch (const std::exception&) {
+      if (!skip_invalid) throw;
+    }
   }
   std::sort(added.begin(), added.end(),
             [](const Skill& a, const Skill& b) { return a.name < b.name; });
@@ -452,10 +456,10 @@ void SkillLibrary::discover() {
   for (int depth = 0; depth < 16; ++depth) {
     for (const auto& relative : {".agents/skills", ".claude/skills"}) {
       const auto root = dir / relative;
-      if (fs::is_directory(root)) load_directory(root, true);
+      if (fs::is_directory(root)) load_directory(root, true, true);
     }
     if (dir == cwd && fs::is_directory(dir / "skills"))
-      load_directory(dir / "skills", true); // Backward-compatible examples.
+      load_directory(dir / "skills", true, true); // Backward-compatible examples.
     if (fs::exists(dir / ".git") || dir == dir.root_path()) break;
     const auto parent = dir.parent_path();
     if (parent == dir || parent.empty()) break;
@@ -469,14 +473,13 @@ void SkillLibrary::discover() {
   if (home && *home) {
     for (const auto& relative : {".agents/skills", ".claude/skills"}) {
       const auto root = fs::path(home) / relative;
-      if (fs::is_directory(root)) load_directory(root, true);
+      if (fs::is_directory(root)) load_directory(root, true, true);
     }
   }
   defaults_discovered_=true;
 }
 void SkillLibrary::refresh() {
-  // 在临时对象中完整验证 YAML 和文件层级；任意 Skill 解析失败时，
-  // 原目录不变，避免半更新导致后续 Agent 请求看见不一致的工具声明。
+  // 在临时对象中刷新；自动发现跳过无效条目，手动加载仍严格验证。
   SkillLibrary rebuilt;
   if(defaults_discovered_)rebuilt.discover();
   for(const auto& root:manual_roots_)rebuilt.load(root);
@@ -577,6 +580,7 @@ Json OpenAIResponses::create_with_timeout(const Json& request,
   configure(client, config_.http_timeout_seconds, timeout);
   // Receive incrementally: limiting result->body after Post is too late.
   std::string body;bool oversized=false;
+  if(config_.on_model_http_json)config_.on_model_http_json("request",request);
   auto result=client.Post(target,headers(config_),json::serialize(request),
       "application/json",[&](const char* chunk,std::size_t n) {
         if(n>MaxHttpJsonBytes-body.size()) {oversized=true;return false;}
@@ -584,6 +588,9 @@ Json OpenAIResponses::create_with_timeout(const Json& request,
         return true;
       });
   if(oversized)throw std::runtime_error("Model HTTP response exceeds 8 MiB");
+  if(config_.on_model_http_json && !body.empty()) {
+    try {config_.on_model_http_json("response",json::parse(body));} catch(const jsoncons::json_exception&) {}
+  }
   check_http(result,target);
   return json::parse(body);
 }
@@ -596,15 +603,19 @@ Json OpenAIResponses::create_stream(const Json& request,
   configure(client,config_.http_timeout_seconds,timeout);
   Json payload=request;
   payload["stream"]=true;
+  if(config_.on_model_http_json)config_.on_model_http_json("request",payload);
   detail::SseFrames frames;
   Json completed=nullptr;
+  std::string raw_body;
   std::exception_ptr callback_error;
   auto result=client.Post(target,headers(config_),json::serialize(payload),
       "application/json",[&](const char* chunk,std::size_t size) {
         try {
+          if(config_.on_model_http_json && raw_body.size()+size<=MaxHttpJsonBytes)raw_body.append(chunk,size);
           frames.feed(chunk,size,[&](const std::string& frame) {
             if(frame=="[DONE]")return;
             const Json event=json::parse(frame);
+            if(config_.on_model_http_json)config_.on_model_http_json("response",event);
             const auto kind=as_string(event,"type");
             if(kind=="response.output_text.delta") {
               const auto delta=as_string(event,"delta");
@@ -622,6 +633,9 @@ Json OpenAIResponses::create_stream(const Json& request,
         return true;
       });
   if(callback_error)std::rethrow_exception(callback_error);
+  if(result && (result->status<200 || result->status>=300) && config_.on_model_http_json && !raw_body.empty()) {
+    try {config_.on_model_http_json("response",json::parse(raw_body));} catch(const jsoncons::json_exception&) {}
+  }
   check_http(result,target);
   if(completed.is_null())throw std::runtime_error("Model SSE ended without response.completed");
   return completed;

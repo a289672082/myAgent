@@ -7,4 +7,5 @@ cmake-build-*/
 *.o
 *.pdb
 agent_history.json
+myagent_console.log
 build-*/

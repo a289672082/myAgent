@@ -89,6 +89,9 @@ struct Config {
   // 可选严格模式：拒绝进程内 C++ 工具和无法保证截止时间的模型/自定义 MCP Client。
   // 对无法协作取消的 C++ 回调，改用 add_mcp_stdio 运行在独立进程。
   bool strict_process_isolation = false;
+  // Optional observer of actual HTTP JSON bodies and SSE JSON events. The
+  // caller is responsible for protecting potentially sensitive contents.
+  std::function<void(std::string_view,const Json&)> on_model_http_json;
 };
 
 struct Skill {
@@ -120,7 +123,8 @@ public:
   std::vector<std::string> supporting_files(const std::string& name) const;
   std::string read_file(const std::string& name, const std::string& relative_path) const;
 private:
-  void load_directory(const std::filesystem::path& directory, bool ignore_duplicates);
+  void load_directory(const std::filesystem::path& directory, bool ignore_duplicates,
+                      bool skip_invalid = false);
   std::vector<Skill> skills_;
   std::vector<std::filesystem::path> manual_roots_;
   bool defaults_discovered_=false;

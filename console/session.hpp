@@ -4,7 +4,9 @@
 #include "myagent/agent.hpp"
 #include <atomic>
 #include <functional>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,7 +35,8 @@ enum class Permissions { Ask, Deny, Allow };
 class ConsoleSession {
  public:
   // 可注入 Model，仅供控制台自身的离线聊天回归测试使用，不修改 SDK。
-  explicit ConsoleSession(std::shared_ptr<myagent::Model> test_model = {});
+  explicit ConsoleSession(std::shared_ptr<myagent::Model> test_model = {},
+                          std::filesystem::path settings_path = {});
 
   CommandResult handle(std::string_view command);
   void set_api_key(std::string value);
@@ -58,6 +61,10 @@ class ConsoleSession {
   std::string mcp_command(const std::vector<std::string>& tokens,CommandKind& kind);
   void reset_agent();
   void ensure_agent();
+  void load_settings();
+  void save_settings() const;
+  std::filesystem::path settings_path_;
+  std::optional<std::string> saved_key_, saved_base_url_, saved_model_;
   myagent::Config config_;
   std::shared_ptr<myagent::Model> test_model_;
   std::unique_ptr<myagent::Agent> agent_;

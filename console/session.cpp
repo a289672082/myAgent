@@ -7,12 +7,62 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 
 namespace myagent_console {
 namespace {
+std::string lower_ascii(std::string text) {
+  for(char& c:text)if(c>='A' && c<='Z')c=static_cast<char>(c-'A'+'a');
+  return text;
+}
+
+std::filesystem::path default_settings_path() {
+#ifdef _WIN32
+  if(const wchar_t* base=_wgetenv(L"APPDATA"))return std::filesystem::path(base)/"myAgent"/"console.json";
+#else
+  if(const char* base=std::getenv("XDG_CONFIG_HOME"))return std::filesystem::path(base)/"myAgent"/"console.json";
+  if(const char* home=std::getenv("HOME"))return std::filesystem::path(home)/".config"/"myAgent"/"console.json";
+#endif
+  throw std::runtime_error("无法确定用户配置目录");
+}
+
+std::string protect_key(const std::string& key) {
+#ifdef _WIN32
+  if(key.empty())return {};
+  DATA_BLOB in{static_cast<DWORD>(key.size()),reinterpret_cast<BYTE*>(const_cast<char*>(key.data()))},out{};
+  if(!CryptProtectData(&in,L"myAgent API Key",nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out))
+    throw std::runtime_error("无法加密 API Key");
+  static constexpr char hex[]="0123456789abcdef";
+  std::string result; result.reserve(out.cbData*2);
+  for(DWORD i=0;i<out.cbData;++i) {result+=hex[out.pbData[i]>>4];result+=hex[out.pbData[i]&15];}
+  LocalFree(out.pbData); return result;
+#else
+  return key;
+#endif
+}
+std::string unprotect_key(const std::string& value) {
+#ifdef _WIN32
+  if(value.empty())return {};
+  if(value.size()%2)throw std::runtime_error("保存的 API Key 格式无效");
+  auto digit=[](char c)->int {if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;return -1;};
+  std::vector<BYTE> bytes;
+  for(size_t i=0;i<value.size();i+=2) {int a=digit(value[i]),b=digit(value[i+1]);if(a<0||b<0)throw std::runtime_error("保存的 API Key 格式无效");bytes.push_back(static_cast<BYTE>(a*16+b));}
+  DATA_BLOB in{static_cast<DWORD>(bytes.size()),bytes.data()},out{};
+  if(!CryptUnprotectData(&in,nullptr,nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out))throw std::runtime_error("无法解密保存的 API Key");
+  std::string result(reinterpret_cast<char*>(out.pbData),out.cbData);LocalFree(out.pbData);return result;
+#else
+  return value;
+#endif
+}
 std::string trim(std::string_view input) {
   const auto start=input.find_first_not_of(" \t\r\n");
   if(start==std::string_view::npos)return {};
@@ -105,13 +155,15 @@ std::string permission_name(Permissions p) {
 std::string help() {
   return
     "MYAGENT CONSOLE | Codex 风格独立测试客户端\n"
-    "直接输入问题并回车对话；Esc / Ctrl+C 可请求取消，Ctrl+D 空闲时退出。\n\n"
+    "直接输入问题并回车对话；Ctrl+C 复制选区、清空输入或取消任务；Ctrl+D 空闲时退出。\n\n"
     "  /help                        显示命令\n"
     "  /status                      当前配置（永不显示密钥）\n"
+    "  /listSkills                  查看已发现的 Skill\n"
     "  /baseurl <https://...>        设置模型服务地址，允许本地 HTTP\n"
     "  /model <name>                设置模型名\n"
     "  /protocol responses|chat     切换 Responses / Chat Completions\n"
-    "  /apikey                      打开遮挡输入框（不会写磁盘）\n"
+    "  /apikey                      打开遮挡输入框\n"
+    "  /apikey <key>                直接设置 API Key\n"
     "  /apikey env <VAR>            从环境变量获取 API Key\n"
     "  /apikey clear                清除 API Key\n"
     "  /mcp                        列出 MCP 服务\n"
@@ -127,14 +179,16 @@ std::string help() {
     "  /clear                      清空当前对话和屏幕\n"
     "  /usage                      显示本次客户端 Token 用量\n"
     "  /exit                       退出\n\n"
-    "安全：配置在进程内暂存。/apikey 不接受直接跟随明文密钥；"
+    "配置会自动保存；直接输入的密钥会显示在输入框中。"
     "HTTP MCP Token 从环境变量读入，不写入聊天记录。\n"
     "提示：切换模型、URL、协议、API Key、MCP 会重建 Agent，旧对话将被清空。";
 }
 } // namespace
 
-ConsoleSession::ConsoleSession(std::shared_ptr<myagent::Model> test_model)
-    :test_model_(std::move(test_model)) {
+ConsoleSession::ConsoleSession(std::shared_ptr<myagent::Model> test_model,
+                               std::filesystem::path settings_path)
+    :settings_path_(settings_path.empty()?default_settings_path():std::move(settings_path)),
+     test_model_(std::move(test_model)) {
   config_.agent_id="console";
   config_.instructions="You are a useful coding assistant. Use configured tools "
                         "only when necessary, and report failures accurately.";
@@ -144,12 +198,65 @@ ConsoleSession::ConsoleSession(std::shared_ptr<myagent::Model> test_model)
   if(const char* v=std::getenv("MYAGENT_MODEL");v && *v)config_.model=v;
   if(const char* v=std::getenv("MYAGENT_API_KEY");v && *v)config_.api_key=v;
   else if(const char* v=std::getenv("OPENAI_API_KEY");v && *v)config_.api_key=v;
+  load_settings();
+}
+
+void ConsoleSession::load_settings() {
+  if(!std::filesystem::exists(settings_path_))return;
+  std::ifstream input(settings_path_,std::ios::binary);
+  if(!input)throw std::runtime_error("无法读取控制台配置文件");
+  const std::string content((std::istreambuf_iterator<char>(input)),{});
+  const auto json=myagent::json::parse(content);
+  if(!json.is_object())throw std::runtime_error("控制台配置文件格式无效");
+  if(json.contains("api_key")) {
+    saved_key_=unprotect_key(std::string(json.at("api_key").as_string()));
+    config_.api_key=*saved_key_;
+  }
+  if(json.contains("base_url")) {
+    auto value=std::string(json.at("base_url").as_string());
+    if(!safe_http_url(value))throw std::runtime_error("保存的模型地址无效");
+    config_.base_url=value;saved_base_url_=std::move(value);
+  }
+  if(json.contains("model")) {
+    auto value=std::string(json.at("model").as_string());
+    if(value.empty() || value.size()>128)throw std::runtime_error("保存的模型名称无效");
+    config_.model=value;saved_model_=std::move(value);
+  }
+}
+
+void ConsoleSession::save_settings() const {
+  myagent::json::object data;
+  if(saved_key_)data["api_key"]=protect_key(*saved_key_);
+  if(saved_base_url_)data["base_url"]=*saved_base_url_;
+  if(saved_model_)data["model"]=*saved_model_;
+  const auto parent=settings_path_.parent_path();
+  if(!parent.empty())std::filesystem::create_directories(parent);
+#ifndef _WIN32
+  if(!parent.empty())std::filesystem::permissions(parent,std::filesystem::perms::owner_all,std::filesystem::perm_options::replace);
+#endif
+  auto temporary=settings_path_;temporary+=".tmp";
+  {
+    std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
+    if(!out)throw std::runtime_error("无法保存控制台配置");
+    out<<myagent::json::serialize(data);out.close();
+    if(!out)throw std::runtime_error("写入控制台配置失败");
+  }
+#ifdef _WIN32
+  if(!MoveFileExW(temporary.c_str(),settings_path_.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+    throw std::runtime_error("无法替换控制台配置文件");
+#else
+  std::filesystem::permissions(temporary,std::filesystem::perms::owner_read|std::filesystem::perms::owner_write,std::filesystem::perm_options::replace);
+  std::filesystem::rename(temporary,settings_path_);
+#endif
 }
 
 void ConsoleSession::reset_agent() {agent_.reset();}
 
 void ConsoleSession::set_api_key(std::string value) {
   if(value.size()>16384)throw std::invalid_argument("API Key 太长");
+  auto previous=saved_key_;
+  saved_key_=value;
+  try {save_settings();} catch(...) {saved_key_=std::move(previous);throw;}
   config_.api_key=std::move(value);
   reset_agent(); // 不继承旧模型/密钥的连接与会话历史
 }
@@ -171,11 +278,12 @@ CommandResult ConsoleSession::status() const {
 std::vector<std::string> ConsoleSession::suggestions(std::string_view prefix) const {
   static const std::vector<std::string> commands{
     "/help","/status","/model","/baseurl","/apikey","/protocol","/mcp","/tools",
-    "/permissions","/mode","/usage","/new","/clear","/exit"};
+    "/permissions","/mode","/usage","/new","/clear","/exit","/listSkills"};
   std::vector<std::string> output;
   if(prefix.empty() || prefix.front()!='/')return output;
+  const auto normalized=lower_ascii(std::string(prefix));
   for(const auto& command:commands)
-    if(command.starts_with(prefix) && output.size()<6)output.push_back(command);
+    if(lower_ascii(command).starts_with(normalized) && output.size()<6)output.push_back(command);
   return output;
 }
 
@@ -251,9 +359,25 @@ CommandResult ConsoleSession::handle(std::string_view input) {
   try {
     const auto w=words(line);
     if(w.empty())return {CommandKind::Info,{}};
-    const std::string& cmd=w[0];
+    const std::string cmd=lower_ascii(w[0]);
     if(cmd=="/help" && w.size()==1)return {CommandKind::Info,help()};
     if((cmd=="/status" || cmd=="/config") && w.size()==1)return status();
+    if(cmd=="/listskills" && w.size()==1) {
+      myagent::SkillLibrary discovered;
+      if(!agent_)discovered.discover();
+      const auto& skills=agent_?agent_->skills().all():discovered.all();
+      std::ostringstream output;
+      output<<(agent_?"当前 Agent 已发现的 Skill":"当前目录可发现的 Skill（Agent 尚未初始化）")
+            <<" ("<<skills.size()<<")";
+      if(skills.empty())output<<"\n未发现可用的 Skill。";
+      for(const auto& skill:skills) {
+        const auto path=skill.source.generic_u8string();
+        output<<"\n\n  "<<skill.name<<"\n    "<<skill.description
+              <<"\n    路径: "<<std::string(path.begin(),path.end())
+              <<"\n    自动调用: "<<(skill.auto_invocable?"允许":"禁用");
+      }
+      return {CommandKind::Info,output.str()};
+    }
     if((cmd=="/exit" || cmd=="/quit") && w.size()==1)
       return {CommandKind::Exit,"退出 myAgent Console"};
     if((cmd=="/new" || cmd=="/clear") && w.size()==1) {
@@ -267,7 +391,7 @@ CommandResult ConsoleSession::handle(std::string_view input) {
               "Tokens (total): "+std::to_string(agent_->total_usage().total_tokens)};
     }
     if(cmd=="/apikey") {
-      if(w.size()==1)return {CommandKind::SecretPrompt,"请输入 API Key（字符遮挡，不保存磁盘）"};
+      if(w.size()==1)return {CommandKind::SecretPrompt,"请输入 API Key（字符遮挡，设置后自动保存）"};
       if(w.size()==2 && w[1]=="clear"){
         set_api_key({});
         return {CommandKind::Info,"API Key 已清除；Agent 会话已重置。"};
@@ -278,16 +402,25 @@ CommandResult ConsoleSession::handle(std::string_view input) {
         set_api_key(value);
         return {CommandKind::Info,"API Key 已从环境变量加载（不会显示）；会话已重置。"};
       }
+      if(w.size()==2 && w[1]!="env" && !w[1].empty()) {
+        set_api_key(w[1]);
+        return {CommandKind::Info,"API Key 已设置；Agent 会话已重置。"};
+      }
       return {CommandKind::Error,
-              "请只输入 /apikey 打开安全输入框，或 /apikey env <变量名>；不接受明文参数。"};
+              "用法：/apikey [<key>|clear|env <变量名>]。"};
     }
     if(cmd=="/baseurl" && w.size()==2) {
       if(!safe_http_url(w[1]))
         return {CommandKind::Error,"模型地址必须是 HTTPS 或本机 HTTP；禁止 URL 用户信息、查询和片段。"};
+      auto previous=saved_base_url_;saved_base_url_=w[1];
+      try {save_settings();} catch(...) {saved_base_url_=std::move(previous);throw;}
       config_.base_url=w[1];reset_agent();
       return {CommandKind::Info,"模型 Base URL 已更新；Agent 会话已重置。"};
     }
     if(cmd=="/model" && w.size()==2 && w[1].size()<=128) {
+      if(w[1].empty())return {CommandKind::Error,"模型名称不能为空。"};
+      auto previous=saved_model_;saved_model_=w[1];
+      try {save_settings();} catch(...) {saved_model_=std::move(previous);throw;}
       config_.model=w[1];reset_agent();
       return {CommandKind::Info,"模型已设置为 "+w[1]+"；Agent 会话已重置。"};
     }
@@ -351,6 +484,21 @@ void ConsoleSession::ensure_agent() {
   if(agent_)return;
   if(config_.base_url=="https://api.openai.com" && !has_credentials() && !test_model_)
     throw std::runtime_error("缺少 API Key。输入 /apikey 或设置 MYAGENT_API_KEY。");
+  config_.on_model_http_json=[this](std::string_view kind,const myagent::Json& body) {
+    std::ofstream log("myagent_console.log",std::ios::binary|std::ios::app);
+    if(!log)throw std::runtime_error("无法打开当前目录的 myagent_console.log");
+    std::string serialized=myagent::json::serialize(body);
+    if(!config_.api_key.empty()) {
+      const auto quoted=myagent::json::serialize(myagent::Json(config_.api_key));
+      const auto key=quoted.substr(1,quoted.size()-2);
+      for(std::size_t pos=0;(pos=serialized.find(key,pos))!=std::string::npos;pos+=10)
+        serialized.replace(pos,key.size(),"[REDACTED]");
+    }
+    log<<"{\"event\":"<<myagent::json::serialize(myagent::Json(std::string(kind)))
+       <<",\"data\":"<<serialized<<"}\n";
+    log.flush();
+    if(!log)throw std::runtime_error("写入 myagent_console.log 失败");
+  };
   auto created=std::make_unique<myagent::Agent>(config_,test_model_);
 #ifdef MYAGENT_CONSOLE_DEVELOPER_TOOLS
   // 外部 MCP 与本地原生工具共用同一 MCP Schema/权限回路，但无需启动子进程。

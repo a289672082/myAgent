@@ -132,6 +132,8 @@
     endforeach()
   endif()
   if(MYAGENT_BUILD_EXAMPLES)
+    add_test(NAME myagent_model_http_json_demo COMMAND run_model_http_json_demo)
+    set_tests_properties(myagent_model_http_json_demo PROPERTIES TIMEOUT 30)
     add_test(NAME myagent_conversation_callbacks_demo
              COMMAND run_agent_conversation_callbacks_demo)
     set_tests_properties(myagent_conversation_callbacks_demo PROPERTIES TIMEOUT 30)

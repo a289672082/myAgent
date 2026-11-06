@@ -46,6 +46,8 @@
   add_executable(run_agent_conversation_callbacks_demo
     run_agent_conversation_callbacks_demo.cpp)
   target_link_libraries(run_agent_conversation_callbacks_demo PRIVATE myagent)
+  add_executable(run_model_http_json_demo run_model_http_json_demo.cpp)
+  target_link_libraries(run_model_http_json_demo PRIVATE myagent)
   # 团队统一回调：协调器 + 已注册 Worker + 后注册 Worker + 自动协作。
   add_executable(run_team_conversation_callbacks_demo
     run_team_conversation_callbacks_demo.cpp)

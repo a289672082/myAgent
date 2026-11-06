@@ -159,12 +159,16 @@ Json ChatCompletionsModel::create_with_timeout(const Json& request,
   // An untrusted gateway must not allocate an unbounded response body.
   constexpr std::size_t MaxJsonBytes=8*1024*1024;
   std::string body;bool oversized=false;
+  if(config_.on_model_http_json)config_.on_model_http_json("request",payload);
   auto res=client.Post(target,headers,j::serialize(payload),"application/json",
       [&](const char* chunk,std::size_t n) {
         if(n>MaxJsonBytes-body.size()){oversized=true;return false;}
         body.append(chunk,n);return true;
       });
   if(oversized)throw std::runtime_error("Chat HTTP response exceeds 8 MiB");
+  if(config_.on_model_http_json && !body.empty()) {
+    try {config_.on_model_http_json("response",j::parse(body));} catch(const jsoncons::json_exception&) {}
+  }
   if(!res)throw std::runtime_error("Chat HTTP transport failed: "+httplib::to_string(res.error()));
   if(res->status<200||res->status>=300)
     throw std::runtime_error("Chat HTTP "+std::to_string(res->status));
@@ -246,6 +250,7 @@ Json ChatCompletionsModel::create_stream(const Json& request,
   }
   if(const auto* parallel=j::if_contains(request,"parallel_tool_calls");
      parallel&&parallel->is_bool())payload["parallel_tool_calls"]=*parallel;
+  if(config_.on_model_http_json)config_.on_model_http_json("request",payload);
   httplib::Client client(origin);
   const auto configured=std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::seconds(config_.http_timeout_seconds));
@@ -265,13 +270,16 @@ Json ChatCompletionsModel::create_stream(const Json& request,
   Json usage=nullptr;
   detail::SseFrames frames;
   bool done=false;
+  std::string raw_body;
   std::exception_ptr callback_error;
   auto result=client.Post(target,headers,j::serialize(payload),"application/json",
     [&](const char* chunk,std::size_t size) {
       try {
+        if(config_.on_model_http_json && raw_body.size()+size<=8*1024*1024)raw_body.append(chunk,size);
         frames.feed(chunk,size,[&](const std::string& frame) {
           if(frame=="[DONE]"){done=true;return;}
           const Json event=j::parse(frame);
+          if(config_.on_model_http_json)config_.on_model_http_json("response",event);
           if(const auto* raw=j::if_contains(event,"usage");raw&&raw->is_object())
             usage=convert_usage(*raw);
           const auto* choices=j::if_contains(event,"choices");
@@ -307,6 +315,9 @@ Json ChatCompletionsModel::create_stream(const Json& request,
       return true;
     });
   if(callback_error)std::rethrow_exception(callback_error);
+  if(result && (result->status<200||result->status>=300) && config_.on_model_http_json && !raw_body.empty()) {
+    try {config_.on_model_http_json("response",j::parse(raw_body));} catch(const jsoncons::json_exception&) {}
+  }
   if(!result)throw std::runtime_error("Chat SSE transport failed: "+
                                       httplib::to_string(result.error()));
   if(result->status<200||result->status>=300)
