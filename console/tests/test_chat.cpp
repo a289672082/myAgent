@@ -107,13 +107,13 @@ int main() {
       res.set_chunked_content_provider("text/event-stream",
         [&](std::size_t,httplib::DataSink& sink) {
           static constexpr char first[]=
-            "data: {\\"type\\":\\"response.output_text.delta\\",\\"delta\\":\\"OK\\"}\\n\\n";
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n";
           if(!sink.write(first,sizeof(first)-1))return false;
           for(int i=0;i<200&&!first_delta_seen.load();++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
           responses_finished=true;
           static constexpr char last[]=
-            "data: {\\"type\\":\\"response.completed\\",\\"response\\":{\\"status\\":\\"completed\\",\\"output\\":[{\\"type\\":\\"message\\",\\"role\\":\\"assistant\\",\\"content\\":[{\\"type\\":\\"output_text\\",\\"text\\":\\"OK\\"}]}]}}\\n\\n";
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}]}}\n\n";
           sink.write(last,sizeof(last)-1);
           sink.done();
           return false;
@@ -125,14 +125,14 @@ int main() {
       res.set_chunked_content_provider("text/event-stream",
         [&](std::size_t,httplib::DataSink& sink) {
           static constexpr char first[]=
-            "data: {\\"choices\\":[{\\"delta\\":{\\"content\\":\\"Chat \\"},\\"finish_reason\\":null}]}\\n\\n";
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Chat \"},\"finish_reason\":null}]}\n\n";
           if(!sink.write(first,sizeof(first)-1))return false;
           for(int i=0;i<200&&!chat_first_seen.load();++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
           chat_finished=true;
           static constexpr char last[]=
-            "data: {\\"choices\\":[{\\"delta\\":{\\"content\\":\\"live\\"},\\"finish_reason\\":\\"stop\\"}]}\\n\\n"
-            "data: [DONE]\\n\\n";
+            "data: {\"choices\":[{\"delta\":{\"content\":\"live\"},\"finish_reason\":\"stop\"}]}\n\n"
+            "data: [DONE]\n\n";
           sink.write(last,sizeof(last)-1);
           sink.done();
           return false;
