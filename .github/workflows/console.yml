@@ -36,6 +36,14 @@ jobs:
         run: msbuild .\\vs2022\\myAgentConsole.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:2 /nologo /v:minimal
       - name: Build native MCP demo project directly from its vcxproj
         run: msbuild .\\vs2022\\run_resources_demo.vcxproj /t:Build /p:Configuration=Debug /p:Platform=x64 /m:2 /nologo /v:minimal
+      - name: Build the checked-in myAgent.sln directly as a VS2022 solution
+        run: msbuild .\\myAgent.sln /t:Build /p:Configuration=Debug /p:Platform=x64 /m:2 /nologo /v:minimal
+      - name: Reject legacy NMake and CMD build wrappers in native projects
+        run: |
+          $projects = Get-ChildItem .\\vs2022\\*.vcxproj
+          if ($projects.Count -lt 10) { throw "Missing native Visual C++ projects" }
+          $legacy = Select-String -Path $projects.FullName -Pattern 'NMakeBuildCommandLine|ConfigurationType>Makefile|build.cmd|cmake --build'
+          if ($legacy) { throw "Native VS project still delegates compilation to command scripts" }
       - name: Generate VS2022 native solution using the checked-in CMake preset
         run: |
           cmake --preset vs2022-console -DFETCHCONTENT_FULLY_DISCONNECTED=ON
